@@ -1,0 +1,33 @@
+All Rights Reserved
+
+Copyright (c) 2026 MKUXQQ
+
+This repository and the PKMOBA Minecraft mod contained in it are proprietary
+software. No permission is granted to use, copy, modify, merge, publish,
+distribute, sublicense, or sell copies of the source code, assets, or compiled
+binaries, except as explicitly permitted in writing by the copyright holder.
+
+You may download and use the compiled release jars for personal, non-commercial
+gameplay on your own Minecraft server, provided you do not redistribute them
+or claim authorship.
+
+Redistribution of the mod, in source or binary form, requires prior written
+permission. Forks of this repository on GitHub are only permitted for the
+purpose of pull requests and must not be publicly redistributed as standalone
+products.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Third-party notices:
+- Cobblemon (https://cobblemon.com/) — required dependency, not bundled.
+- Fabric Loader / Fabric API — required dependencies, not bundled.
+- Pokémon and Pokémon character names are trademarks of Nintendo, Creatures
+  Inc., and GAME FREAK inc. This project is a fan-made prototype and is not
+  affiliated with or endorsed by them.
+- Portrait sprites derived from PokeAPI/sprites (https://github.com/PokeAPI/sprites).

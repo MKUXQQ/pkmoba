@@ -1,7 +1,14 @@
 # PKMOBA —— 基于 Cobblemon 的宝可梦实时对战 Mod
 
+[![Release](https://img.shields.io/github/v/release/MKUXQQ/pkmoba?color=blue&label=release)](https://github.com/MKUXQQ/pkmoba/releases/latest)
+[![Minecraft](https://img.shields.io/badge/Minecraft-1.21.1-green)](https://www.minecraft.net/)
+[![Cobblemon](https://img.shields.io/badge/Cobblemon-1.8.2-orange)](https://cobblemon.com/)
+[![License](https://img.shields.io/badge/license-All%20Rights%20Reserved-lightgrey)](LICENSE)
+
 > Minecraft **1.21.1** · Fabric · **Cobblemon 1.8.2** 附属模组
 > 当前版本：**0.37.0**（喷火龙 / 水箭龟 双宝可梦 · 上帝视角实时战斗 · 1v1 对局雏形）
+>
+> **下载**：[Latest Release](https://github.com/MKUXQQ/pkmoba/releases/latest) · 直接取 `pkmoba-0.37.0.jar`
 
 ---
 
