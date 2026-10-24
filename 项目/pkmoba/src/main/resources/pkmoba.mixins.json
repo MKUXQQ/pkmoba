@@ -1,0 +1,21 @@
+{
+  "required": false,
+  "package": "com.pkmoba.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "minVersion": "0.8",
+  "refmap": "pkmoba-refmap.json",
+  "mixins": [],
+  "client": [
+    "CameraMixin",
+    "MouseHandlerMixin",
+    "KeyboardInputMixin",
+    "KeyMappingMixin",
+    "HudMixin",
+    "StarterOverlayMixin",
+    "PlayerRendererMixin",
+    "BlastoiseSpinPoseMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

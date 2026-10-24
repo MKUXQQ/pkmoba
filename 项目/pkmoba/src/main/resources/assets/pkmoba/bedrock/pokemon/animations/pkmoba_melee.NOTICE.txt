@@ -1,0 +1,15 @@
+PKMOBA isolated melee animation
+
+Source: Cobblemon 1.8.2, common/src/main/resources/assets/cobblemon/bedrock/pokemon/animations/0006_charizard/charizard.animation.json, animation.charizard.physical.
+Upstream: https://gitlab.com/cable-mc/cobblemon
+Copyright: Cobblemon Contributors. Original author/contributor rights remain with their respective holders.
+License: Mozilla Public License 2.0 (SPDX: MPL-2.0), under the upstream repository LICENSE. Full license text is supplied beside this notice as pkmoba_melee.MPL-2.0.txt.
+
+Modifications for PKMOBA: isolated the physical animation into the unique pkmoba_melee group; divided animation_length and every rotation/position/scale keyframe timestamp by 2. Bone values, interpolation data, and the original motion are unchanged. The modified source is the adjacent pkmoba_melee.animation.json, distributed in readable JSON form in the mod jar.
+
+This resource is used only when explicitly playing:
+q.bedrock_primary('pkmoba_melee','physical',q.curve('symmetrical_wide'))
+It does not replace Cobblemon's physical animation, model, poser, or other skill animations.
+
+Duration: 1.5 seconds (original 3 seconds, exactly 2x).
+Suggested server hit delay: 13 ticks. Right arm, forearm and hand converge on the original 1.25-second strike keyframe, remapped to 0.625 seconds. This is a timing inference from the authored keyframes, not a claim of client gameplay validation.

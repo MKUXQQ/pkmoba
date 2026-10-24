@@ -1,0 +1,63 @@
+plugins {
+    id 'fabric-loom' version '1.10.5'
+    // Kotlin 插件不是用来写 Kotlin 的。加上它是为了给 Loom 提供 kotlin-metadata 运行时。
+    // 注意：它并不能解决 Cobblemon 在开发环境的元数据错位问题（见 README「开发环境限制」），
+    // 但保留不影响构建。
+    id 'org.jetbrains.kotlin.jvm' version '2.2.20'
+    id 'maven-publish'
+}
+
+version = '0.37.0'
+group = 'com.pkmoba'
+
+base {
+    archivesName = 'pkmoba'
+}
+
+repositories {
+    // Cobblemon 官方制品库（发布配置里写死的地址，1.8.2 就在上面）
+    maven { name = 'Cobblemon'; url = 'https://artefacts.cobblemon.com/releases' }
+    mavenCentral()
+    maven { name = 'Fabric'; url = 'https://maven.fabricmc.net/' }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:1.21.1"
+    // 与 Cobblemon 一致用 Mojang 官方映射（Cobblemon 用 mojmap + parchment）
+    mappings loom.officialMojangMappings()
+
+    modImplementation "net.fabricmc:fabric-loader:0.17.2"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:0.116.6+1.21.1"
+
+    // 唯一硬依赖：Cobblemon 1.8.2（Fabric 版）
+    modImplementation "com.cobblemon:fabric:1.8.2+1.21.1"
+
+    // javax.annotation.Nullable 来自 JSR305，只在编译期需要
+    compileOnly 'com.google.code.findbugs:jsr305:3.0.2'
+}
+
+loom {
+    mixin {
+        defaultRefmapName.set('pkmoba-refmap.json')
+    }
+}
+
+processResources {
+    exclude '**/*.py'
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') {
+        expand 'version': project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+    options.encoding = 'UTF-8'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+}

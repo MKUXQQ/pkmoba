@@ -1,0 +1,51 @@
+# ============================================================
+#  PKMOBA —— 仓库只收源码与文档；工具链、依赖缓存、产物、素材工程不入库
+# ============================================================
+
+# ---------- 构建 / 运行产物 ----------
+build/
+.gradle/
+run/
+out/
+*.jar
+!项目/pkmoba/gradle/wrapper/gradle-wrapper.jar
+*.log
+!*.log.md
+verification-*.json
+
+# ---------- 工具链、依赖缓存、素材工程、冒烟服务器（数 GB）----------
+项目/tools/
+项目/宝可梦工程文件/
+项目/smoke/
+项目/blockbench-mcp/
+项目/blockbench-mcp-server/
+项目/assets/
+项目/pkmoba/tools/.cache_portraits/
+
+# ---------- 历史发布产物（走 GitHub Releases）----------
+项目/产物/
+pkmoba-*.jar
+
+# ---------- 大体积参考数据 ----------
+项目/pkmoba/water-assets-index.txt
+项目/pkmoba/water-reference/
+项目/pkmoba/warden-api-0.27.txt
+
+# ---------- 会话 / 本地环境 ----------
+.dsh-vision-router/
+/src/
+*.local.json
+*.tmp
+*.bak
+
+# ---------- 编辑器 / 系统 ----------
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "pkmoba",
+  "version": "${version}",
+  "name": "PKMOBA",
+  "description": "可控喷火龙实时战斗：自由/按住跟随镜头、可调边缘推屏、近战普攻、QWER 技能与紧凑战斗 HUD。",
+  "authors": ["PKMOBA"],
+  "license": "All-Rights-Reserved",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["com.pkmoba.PkmobaMod"],
+    "client": ["com.pkmoba.client.PkmobaClient"]
+  },
+  "mixins": [
+    "pkmoba.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.17.2",
+    "fabric-api": ">=0.116.6+1.21.1",
+    "minecraft": "~1.21.1",
+    "java": ">=21",
+    "cobblemon": ">=1.8.2"
+  }
+}
