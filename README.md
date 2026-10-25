@@ -6,9 +6,9 @@
 [![License](https://img.shields.io/badge/license-All%20Rights%20Reserved-lightgrey)](LICENSE)
 
 > Minecraft **1.21.1** · Fabric · **Cobblemon 1.8.2** 附属模组
-> 当前版本：**0.37.0**（喷火龙 / 水箭龟 双宝可梦 · 上帝视角实时战斗 · 1v1 对局雏形）
+> 当前版本：**0.45.2**（喷火龙 / 水箭龟 双宝可梦 · 上帝视角实时战斗 · 房间制 1v1 对战 · 场地道具化编辑）
 >
-> **下载**：[Latest Release](https://github.com/MKUXQQ/pkmoba/releases/latest) · 直接取 `pkmoba-0.37.0.jar`
+> **下载**：[Latest Release](https://github.com/MKUXQQ/pkmoba/releases/latest) · 直接取 `pkmoba-0.45.2.jar`
 
 ---
 
