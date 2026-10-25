@@ -54,14 +54,13 @@ public abstract class MouseHandlerMixin {
             ci.cancel();
             return;
         }
+        // m04660：普通攻击整体删除（连同白圈一起）。左键在上帝视角下不再做任何事，
+        // 全部战斗操作走 QWER 技能，移动走右键点地。
         if (god && !placing && button == 0 && action == 1) {
             com.pkmoba.client.SkillKeys.clearAimPreview();
-            var target = com.pkmoba.client.Targeting.pick(mc);
-            if (target != null && ClientPlayNetworking.canSend(com.pkmoba.network.BasicAttackPayload.TYPE)) {
-                ClientPlayNetworking.send(new com.pkmoba.network.BasicAttackPayload(target.getId()));
-            }
         }
         // button: 0=左键 1=右键；action: 1=按下
+        // 右键点地 = 只移动（普攻已删除，不再有"右键点敌人开打"）。
         if (button == 1 && action == 1) {
             BlockHitResult hit = pkmoba$pick(mc);
             if (hit != null && hit.getType() == HitResult.Type.BLOCK) {
@@ -70,12 +69,16 @@ public abstract class MouseHandlerMixin {
                         ClientPlayNetworking.send(new PlaceOrderPayload(hit.getBlockPos()));
                     }
                 } else {
-                    // 精确命中点，而不是方块中心
-                    Vec3 exact = hit.getLocation();
-                    ClientState.setClickedPoint(exact);
+                    // 发送"格心+贴地高度"，而不是斜面的精确命中点。
+                    // 旧版发 hit.getLocation()：点地板得到 y=floorY+1，点台阶斜面得到空中点，
+                    // 服务端寻路会为了够到那个够不着的点绕到旁边再蹭回来 —— 这就是"迂回一下"。
+                    Vec3 goal = pkmoba$walkGoal(hit);
+                    ClientState.setClickedPoint(goal);
                     if (ClientPlayNetworking.canSend(MoveOrderPayload.TYPE)) {
-                        ClientPlayNetworking.send(new MoveOrderPayload(exact));
+                        ClientPlayNetworking.send(new MoveOrderPayload(goal));
+                        com.pkmoba.client.ClickMarker.mark(goal);
                     }
+                    pkmoba$maybeSendLanding(goal);
                 }
             }
         }
@@ -85,6 +88,112 @@ public abstract class MouseHandlerMixin {
         net.minecraft.client.KeyMapping.set(input, action != 0);
         if (action == 1) net.minecraft.client.KeyMapping.click(input);
         ci.cancel();
+    }
+
+    /**
+     * 目标是否在普攻白圈内（0.39.2）。
+     *
+     * <p>半径直接取 {@code BasicAttack.rangeFor(受控宝可梦)} —— 与白圈渲染、服务端判定同一个数，
+     * 所以"圈内能打、圈外只能走"不会出现客户端/服务端两套标准。
+     * 距离用<b>包围盒间距</b>而不是脚点间距，与 {@code BasicAttack} 的判定口径一致
+     * （否则打体型大的宝可梦时会出现"贴着圈边打不到"）。
+     */
+    private static boolean pkmoba$targetInRing(Minecraft mc, net.minecraft.world.entity.LivingEntity target) {
+        if (mc.level == null) return false;
+        int id = com.pkmoba.client.ClientState.getCharizardId();
+        if (id < 0) return false;
+        var found = mc.level.getEntity(id);
+        if (!(found instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity self)) return false;
+        double range = com.pkmoba.combat.BasicAttack.rangeFor(self);
+        return pkmoba$boxDistance(self.getBoundingBox(), target.getBoundingBox()) <= range * range;
+    }
+
+    /** 两个包围盒之间的最短距离（AABB 没有现成的 distanceTo，自己按轴求间隙）。 */
+    private static double pkmoba$boxDistance(net.minecraft.world.phys.AABB a, net.minecraft.world.phys.AABB b) {
+        double dx = Math.max(0.0, Math.max(a.minX - b.maxX, b.minX - a.maxX));
+        double dy = Math.max(0.0, Math.max(a.minY - b.maxY, b.minY - a.maxY));
+        double dz = Math.max(0.0, Math.max(a.minZ - b.maxZ, b.minZ - a.maxZ));
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    /**
+     * 把命中结果转成"可站立的落点"：XZ 取格心，Y 取可站表面高度。
+     *
+     * <p>为什么不再用 {@code hit.getLocation()}：射线命中的是方块碰撞箱表面。
+     * 打到地板顶面时 y = 方块上沿（1.0），寻路会把它当成一个悬空目标；
+     * 打到台阶/斜坡的侧面时，XZ 还会落在不可站立的薄边上。
+     * 统一成"格心 + 站立面高度"后，落点和寻路节点天然对齐，不会再为了够点而绕路。
+     */
+    /** 右键点敌人：白圈内直接开打（移动攻击），圈外先走过去。 */
+    private static boolean pkmoba$maybeAttackTarget(Minecraft mc) {
+        if (mc.level == null || mc.player == null) return false;
+        net.minecraft.world.entity.LivingEntity target = pkmoba$pickTarget(mc);
+        if (target == null) return false;
+        if (target instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity) return false;
+        Vec3 goal = target.position();
+        if (pkmoba$targetInRing(mc, target)
+                && ClientPlayNetworking.canSend(com.pkmoba.network.BasicAttackPayload.TYPE)) {
+            ClientPlayNetworking.send(new com.pkmoba.network.BasicAttackPayload(target.getId()));
+            com.pkmoba.client.AttackRangeRenderer.notifyAttack();
+            return true;
+        }
+        com.pkmoba.client.ClientState.setClickedPoint(goal);
+        if (ClientPlayNetworking.canSend(com.pkmoba.network.MoveOrderPayload.TYPE)) {
+            ClientPlayNetworking.send(new com.pkmoba.network.MoveOrderPayload(goal));
+            com.pkmoba.client.ClickMarker.mark(goal);
+        }
+        pkmoba$maybeSendLanding(goal);
+        return false;
+    }
+
+    /** 光标指到的敌人（沿用 Targeting 的拾取口径，只要 LivingEntity）。 */
+    private static net.minecraft.world.entity.LivingEntity pkmoba$pickTarget(Minecraft mc) {
+        if (mc.level == null || mc.player == null) return null;
+        double reach = 48.0;
+        Vec3 eye = mc.player.getEyePosition();
+        Vec3 dir = mc.player.getViewVector(1.0F);
+        Vec3 end = eye.add(dir.scale(reach));
+        var hit = mc.level.clip(new net.minecraft.world.level.ClipContext(eye, end,
+                net.minecraft.world.level.ClipContext.Block.COLLIDER,
+                net.minecraft.world.level.ClipContext.Fluid.NONE, mc.player));
+        Vec3 stop = hit == null ? end : hit.getLocation();
+        net.minecraft.world.entity.Entity picked = null;
+        double best = Double.MAX_VALUE;
+        for (net.minecraft.world.entity.Entity e : mc.level.getEntities(mc.player,
+                new net.minecraft.world.phys.AABB(eye, stop).inflate(2.0), e -> e instanceof net.minecraft.world.entity.LivingEntity le
+                        && le.isAlive() && e != mc.player)) {
+            var box = e.getBoundingBox().inflate(0.35);
+            var clip = box.clip(eye, stop);
+            if (clip.isEmpty()) continue;
+            double d = clip.get().distanceToSqr(eye);
+            if (d < best) {
+                best = d;
+                picked = e;
+            }
+        }
+        return picked instanceof net.minecraft.world.entity.LivingEntity le ? le : null;
+    }
+
+    /** 倒计时期间点地 = 选定出战落点（方案 §三.2）。 */
+    private static void pkmoba$maybeSendLanding(Vec3 goal) {
+        if (!com.pkmoba.client.ClientRooms.inCountdown()) return;
+        int roomId = com.pkmoba.client.ClientRooms.myRoomId();
+        if (roomId == 0) return;
+        com.pkmoba.client.ClientRooms.send("LANDING", roomId,
+                goal.x + " " + goal.y + " " + goal.z);
+    }
+
+    private static Vec3 pkmoba$walkGoal(BlockHitResult hit) {
+        net.minecraft.core.BlockPos pos = hit.getBlockPos();
+        net.minecraft.world.level.Level level = Minecraft.getInstance().level;
+        boolean onSurface = hit.getDirection() == net.minecraft.core.Direction.UP;
+        if (level != null && onSurface) {
+            var box = level.getBlockState(pos).getCollisionShape(level, pos).isEmpty()
+                    ? null : level.getBlockState(pos).getCollisionShape(level, pos).bounds();
+            double top = box == null ? pos.getY() : pos.getY() + box.maxY;
+            return new Vec3(pos.getX() + 0.5, top, pos.getZ() + 0.5);
+        }
+        return new Vec3(pos.getX() + 0.5, pos.getY() + 1.0, pos.getZ() + 0.5);
     }
 
     /** 从镜头 + 光标位置（上帝视角）或玩家视线（普通视角）做一次射线。 */

@@ -31,12 +31,40 @@ public class PkmobaClient implements ClientModInitializer {
         InputHandler.init();
         SkillKeys.init();
         WalkAnimator.init();
+        // 0.38.3：喷火龙 Q/R 专用施法动画（自制动画组 pkmoba_charizard，按引导阶段切换）
+        CharizardSkillAnimator.init();
         HudOverlay.init();
         SkillHud.init();
         SelectionOutlineRenderer.init();
+        // m04660：普通攻击与普攻白圈已整体删除，不再注册 AttackRangeRenderer。
+        ClickMarker.init();
+        BallFlightFx.init();
+        RecallFx.init();
+        SkillRangeRenderer.init();
         TornadoEffects.init();
         WaterEffects.init();
+        // 0.43：水箭龟 R「水炮风暴」——地面范围圈 + 6 道旋转水柱 + 螺旋水带 + 扩散水刃
+        com.pkmoba.client.StormEffects.init();
+        // 0.38：水箭龟 R「喷水」降雨（收到 SpoutPayload 后本地生成雨滴）
+        SpoutEffects.init();
+        // 0.38.1：水箭龟 E「冲浪术」（channel 5）脚下的水墙/水花
+        SurfEffects.init();
         MatchResultOverlay.init();
+        // 0.39：命中反馈（粒子/顿帧/震屏/斩杀提示）与战斗音效（循环音量淡入淡出）
+        HitFeedback.init();
+        CombatAudio.init();
+        TargetOverlay.init();
+
+        // 投球召唤的精灵球飞行（客户端自己按抛物线渲染）
+        ClientPlayNetworking.registerGlobalReceiver(com.pkmoba.network.BallFlightPayload.TYPE, (payload, context) ->
+                context.client().execute(() -> BallFlightFx.start(payload.fx(), payload.fy(), payload.fz(),
+                        payload.tx(), payload.ty(), payload.tz(), payload.durationTicks(),
+                        payload.item(), payload.seed())));
+
+        // 红光召回 / 放出（客户端自绘光束）
+        ClientPlayNetworking.registerGlobalReceiver(com.pkmoba.network.RecallFxPayload.TYPE, (payload, context) ->
+                context.client().execute(() -> RecallFx.start(payload.entityId(), payload.playerId(),
+                        payload.durationTicks(), payload.recall())));
 
         // 上帝视角开关
         ClientPlayNetworking.registerGlobalReceiver(GodStatePayload.TYPE, (payload, context) ->
@@ -66,17 +94,45 @@ public class PkmobaClient implements ClientModInitializer {
 
         // 技能状态
         ClientPlayNetworking.registerGlobalReceiver(SkillStatePayload.TYPE, (payload, context) ->
-                context.client().execute(() -> ClientState.setSkillState(
-                        payload.hp(), payload.maxHp(), payload.points(),
-                        payload.cdQ(), payload.cdW(), payload.cdE(), payload.cdR(),
-                        payload.channel(), payload.charge(),
-                        payload.arenaDist(), payload.arenaCx(), payload.arenaCy(), payload.arenaCz(),
-                        payload.arenaRadius())));
+                context.client().execute(() -> {
+                    // 0.38.3：SkillStatePayload 里没有 entityId，客户端只能用本地实体引用自证归属。
+                    // 切换/阵亡的那一两帧里旧实体已经不在客户端，这一包很可能还是上一只的状态，
+                    // 直接写进 ClientState 就会把旧血量/冷却画到新物种的 HUD 上（"血条不同步"）。
+                    int entityId = ClientState.getCharizardId();
+                    var entity = context.client().level == null ? null : context.client().level.getEntity(entityId);
+                    boolean alive = entity instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon
+                            && pokemon.isAlive();
+                    if (!alive) {
+                        if (payload.hp() <= 0.0F) {
+                            // 阵亡/收回：没有活实体也接受服务端给的设计上限，HUD 画 0/上限。
+                            ClientState.setFaintedState(payload.maxHp());
+                        } else {
+                            // 还带血量却对不上任何活实体：只可能是过期帧，清成"同步中"并丢弃。
+                            ClientState.clearCombatState();
+                        }
+                        return;
+                    }
+                    ClientState.setSkillState(
+                            payload.hp(), payload.maxHp(), payload.points(),
+                            payload.cdQ(), payload.cdW(), payload.cdE(), payload.cdR(),
+                            payload.channel(), payload.charge(),
+                            payload.arenaDist(), payload.arenaCx(), payload.arenaCy(), payload.arenaCz(),
+                            payload.arenaRadius());
+                    // 让本地 Pokemon 对象认同服务端下发的血量上限（P 界面与血条一致）
+                    ClientHpSync.apply(entityId, payload.maxHp());
+                }));
 
         // 招式粒子特效
         ClientPlayNetworking.registerGlobalReceiver(EffectPayload.TYPE, (payload, context) ->
-                context.client().execute(() -> pkmoba$spawnEffect(payload.effectId(),
-                        payload.x(), payload.y(), payload.z())));
+                context.client().execute(() -> {
+                    // 0.39：命中反馈复用同一个 EffectPayload（effectId 前缀 pkmoba:hit/），
+                    // 由 HitFeedback 解析，命中包不再当普通粒子特效处理。
+                    if (HitFeedback.handle(payload)) {
+                        TargetOverlay.captureHit(payload);
+                        return;
+                    }
+                    pkmoba$spawnEffect(payload.effectId(), payload.x(), payload.y(), payload.z());
+                }));
 
         // 批量特效（Q 火流 / W 龙卷 / R 大字）
         ClientPlayNetworking.registerGlobalReceiver(com.pkmoba.network.MultiEffectPayload.TYPE, (payload, context) ->
@@ -163,6 +219,10 @@ public class PkmobaClient implements ClientModInitializer {
                 context.client().execute(() -> FlameJetEffects.spawn(context.client(), payload)));
 
         // 对战道具菜单：服务端授权后下发在线玩家名单，客户端只负责显示与回发意图
+        // H 键房间大厅快照
+        ClientPlayNetworking.registerGlobalReceiver(com.pkmoba.network.RoomListPayload.TYPE,
+                (payload, context) -> com.pkmoba.client.ClientRooms.handle(payload));
+
         ClientPlayNetworking.registerGlobalReceiver(com.pkmoba.network.MenuOpenPayload.TYPE, (payload, context) ->
                 context.client().execute(() -> BattleMenuScreen.handleMenuOpen(payload)));
 
@@ -258,6 +318,9 @@ public class PkmobaClient implements ClientModInitializer {
             ClientState.reset();
             GodView.reset();
             ChallengePopupScreen.reset();
+            // 0.39：断开时清掉震屏/顿帧/斩杀提示并停掉所有循环音（否则残留实例会跨世界播放）
+            HitFeedback.reset();
+            CombatAudio.reset();
         });
 
         LOGGER.info("[pkmoba] init (client) done");

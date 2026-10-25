@@ -48,8 +48,9 @@ public final class ServerGodMode {
         if (active) {
             if (isActive(player)) return;
             net.minecraft.world.phys.Vec3 entryAnchor = player.getEyePosition();
+            // 0.38：本体是挂在受控宝可梦上方的动态锚点，不再要求头顶 12 格有安全空间。
             if (!player.isAlive() || !PlayerLockService.lock(player)) {
-                player.displayClientMessage(Component.literal("上方 12 格没有完整安全空间，无法进入上帝视角。"), false);
+                player.displayClientMessage(Component.literal("当前状态无法进入上帝视角。"), false);
                 sendState(player, false);
                 return;
             }

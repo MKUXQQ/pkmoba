@@ -36,20 +36,24 @@ public final class CharizardSleepSuppressor {
     }
 
     private static void tick(MinecraftServer server) {
-        PokemonEntity entity = CharizardManager.getActive(server);
-        if (entity == null) {
+        // 0.38：一名玩家可以同时有多只受控宝可梦在场，全部都要抑制睡眠
+        // （对局里的参赛实体也走这张表，夜里对局不会突然睡着）。
+        java.util.List<PokemonEntity> entities = CharizardManager.getControlledEntities(server);
+        if (entities.isEmpty()) {
             return;
         }
-        try {
-            // A：清掉睡意。用 try 包住是因为 Brain/记忆系统跨版本可能变，不能让它掀翻 tick。
-            entity.getBrain().eraseMemory(CobblemonMemories.POKEMON_DROWSY);
+        for (PokemonEntity entity : entities) {
+            try {
+                // A：清掉睡意。用 try 包住是因为 Brain/记忆系统跨版本可能变，不能让它掀翻 tick。
+                entity.getBrain().eraseMemory(CobblemonMemories.POKEMON_DROWSY);
 
-            // C：兜底改姿态。只会命中"已经睡着"的那一帧，平时完全不插手。
-            if (entity.getCurrentPoseType() == PoseType.SLEEP) {
-                entity.getEntityData().set(PokemonEntity.getPOSE_TYPE(), PoseType.STAND);
+                // C：兜底改姿态。只会命中"已经睡着"的那一帧，平时完全不插手。
+                if (entity.getCurrentPoseType() == PoseType.SLEEP) {
+                    entity.getEntityData().set(PokemonEntity.getPOSE_TYPE(), PoseType.STAND);
+                }
+            } catch (Throwable t) {
+                PkmobaMod.LOGGER.warn("[pkmoba] 抑制睡眠时出错（已忽略）：{}", t.toString());
             }
-        } catch (Throwable t) {
-            PkmobaMod.LOGGER.warn("[pkmoba] 抑制睡眠时出错（已忽略）：{}", t.toString());
         }
     }
 }

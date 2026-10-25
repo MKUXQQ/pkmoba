@@ -33,6 +33,8 @@ pkmoba-*.jar
 
 # ---------- 会话 / 本地环境 ----------
 .dsh-vision-router/
+项目/pkmoba/.local-maven/
+项目/pkmoba/.tmp_buildcp.py
 /src/
 *.local.json
 *.tmp

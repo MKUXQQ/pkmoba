@@ -20,7 +20,9 @@ import java.util.UUID;
 /**
  * 玩家的宝可梦队伍服务：选择、添加、上场、手动换人、死亡与复活。
  *
- * <p>队伍来源是 {@link PlayerProfile#team}，同一时刻只有一只实体在场（{@link CharizardManager#CONTROLLED}）。
+ * <p>队伍来源是 {@link PlayerProfile#team}；0.38 起一名玩家可以同时有多只受控宝可梦在场
+ * （登记在 {@link CharizardManager#getActiveList}），其中"选中"的那只由
+ * {@link CharizardManager#getControlled} 返回，技能/指令/HUD 都作用在它身上。
  * 0.31 起：开局只有选中的那一只，其他成员必须用 {@code /mo pokemon add} 或添加道具扩充。
  */
 public final class TeamService {
@@ -155,7 +157,8 @@ public final class TeamService {
     }
 
     /** 下发给客户端自己的队伍状态（HUD 左侧头像/圆点/倒计时）。 */
-    public static void sendTeamState(ServerPlayer player) {        if (player == null) return;
+    public static void sendTeamState(ServerPlayer player) {
+        if (player == null) return;
         if (!net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking
                 .canSend(player, TeamStatePayload.TYPE)) {
             return;
@@ -236,9 +239,15 @@ public final class TeamService {
         return true;
     }
 
-    /** 在给定位置放当前上场的那只；已有实体则先移除。 */
+    /**
+     * 在给定位置放当前上场的那只（对局入场用）。
+     *
+     * <p>0.38：入场前先把该玩家自由模式下养着的在场宝可梦全部收回，
+     * 避免它们以"在场受控"身份混进 1v1 对局；对局流程本身不受影响。
+     */
     @Nullable
     public static PokemonEntity spawnActive(ServerPlayer player, Vec3 pos) {
+        CharizardManager.discardAllControlled(player);
         PlayerProfile profile = profile(player.server, player.getUUID());
         String species = profile.activeSpecies();
         if (species == null) {
@@ -264,9 +273,8 @@ public final class TeamService {
     public static PokemonEntity spawnSpecies(ServerPlayer player, String species, Vec3 pos) {
         ResourceLocation id = ResourceLocation.tryParse(species);
         if (id == null || !SpeciesRegistry.contains(id)) return null;
-        // 先把这个玩家名下的旧实体彻底清掉（unregister + discard 一起做），
-        // 否则旧的还留在世界里、新的又生成 → 玩家看到的"无限召唤"。
-        CharizardManager.discardControlled(player);
+        // 0.38：不再"先清掉旧实体"。多只可以同时在场，新召唤的这只追加登记并设为选中，
+        // 之前那只继续留在场上按自己的状态行动（C 键可以再收回来）。
         ServerLevel level = player.serverLevel();
         PokemonEntity entity = CharizardManager.spawnMatchEntity(level, pos, id);
         if (entity == null) {
@@ -274,7 +282,7 @@ public final class TeamService {
             sendTeamState(player);
             return null;
         }
-        CharizardManager.unregisterControlled(player.getUUID());
+        com.pkmoba.combat.RecallBeam.sendOut(level, entity);
         CharizardManager.registerControlled(player.getUUID(), entity);
         CharizardManager.broadcastSync(player.server);
         sendTeamState(player);
@@ -282,17 +290,38 @@ public final class TeamService {
     }
 
     /**
-     * 按 C 键的完整语义（0.35.2）：
+     * 按 C 键的完整语义（0.38）：
      * <ol>
-     *   <li>场上有宝可梦 → 收回（不记阵亡）</li>
+     *   <li>场上有多只宝可梦 → 只在它们之间轮换"选中"，<b>不收回</b>任何一只</li>
+     *   <li>场上只有一只 → 收回它（不记阵亡）</li>
      *   <li>场上没有 → 只把"准备上场"的那只切到下一只可用，<b>不会自动出现</b></li>
      * </ol>
      * 真正把宝可梦放出来由 X 键（{@link #summonAt}）在准星位置完成。
      *
-     * @return 本方法不再直接生成实体，恒返回 null
+     * @return 多只轮换时返回新的选中实体；其余情况返回 null
      */
     @Nullable
     public static PokemonEntity cycle(ServerPlayer player, Vec3 pos) {
+        // 多只同时在场：C 键只在"当前操控的宝可梦"之间切换，不收回任何一只。
+        // getActiveList 内部已剔除死亡实体，这里再兜一层：万一选中指针还指着尸体，先把它清掉。
+        List<PokemonEntity> field = CharizardManager.getActiveList(player);
+        if (field.isEmpty()) {
+            PokemonEntity stale = CharizardManager.getControlled(player);
+            if (stale != null && !stale.isAlive()) {
+                markDead(player, stale);
+                field = CharizardManager.getActiveList(player);
+            }
+        }
+        if (field.size() > 1) {
+            PokemonEntity next = CharizardManager.selectNext(player);
+            if (next != null) {
+                syncActiveSpeciesTo(player, next);
+                sendTeamState(player);
+                player.sendSystemMessage(Component.literal("已切换到 " + display(speciesOf(next))
+                        + "（场上共 " + field.size() + " 只，再按 C 继续切换）"));
+            }
+            return next;
+        }
         if (recall(player)) return null;
         PlayerProfile profile = profile(player.server, player.getUUID());
         if (profile.team.isEmpty()) {
@@ -339,7 +368,33 @@ public final class TeamService {
     @Nullable
     public static String switchTarget(ServerPlayer player) {
         PlayerProfile profile = profile(player.server, player.getUUID());
-        return profile.peekNextUsable();
+        return profile.peekNextUsable(species -> recallLocked(player, species));
+    }
+
+    // ---------------------------------------------------------------- 主动收回锁（方案 §四.2）
+
+    /** 玩家 UUID → (物种 id → 解锁的游戏刻)。主动收回后 3 秒内不能再选同一只。 */
+    private static final java.util.Map<java.util.UUID, java.util.Map<String, Long>> RECALL_LOCK =
+            new java.util.HashMap<>();
+
+    /** 主动收回后上锁；死亡换宠不受限（那是强制流程，不是玩家的选择）。 */
+    public static void lockRecalled(ServerPlayer player, String species) {
+        if (player == null || species == null || species.isEmpty()) return;
+        RECALL_LOCK.computeIfAbsent(player.getUUID(), k -> new java.util.HashMap<>())
+                .put(species, (long) player.server.getTickCount() + 20L * 3);
+    }
+
+    public static boolean recallLocked(ServerPlayer player, String species) {
+        if (player == null || species == null) return false;
+        java.util.Map<String, Long> map = RECALL_LOCK.get(player.getUUID());
+        if (map == null) return false;
+        Long until = map.get(species);
+        if (until == null) return false;
+        if (player.server.getTickCount() >= until) {
+            map.remove(species);
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -402,10 +457,10 @@ public final class TeamService {
             return false;
         }
         String name = SpeciesRegistry.displayName(id);
-        // 删的正好是场上那只：先收回，否则实体会变成没人管的孤儿
-        PokemonEntity current = CharizardManager.getControlled(player);
-        if (current != null && speciesOf(current).equals(species)) {
-            CharizardManager.discardControlled(player);
+        // 删掉的物种正好有一只留在场上：只收回那一只，避免留下没人管的孤儿实体
+        PokemonEntity field = CharizardManager.findControlled(player, id);
+        if (field != null) {
+            CharizardManager.discardControlled(player, field);
         }
         profile.removeSpecies(species);
         ProfileStore.get(player.server).setDirty();
@@ -424,9 +479,7 @@ public final class TeamService {
             player.sendSystemMessage(Component.literal("你没有任何宝可梦可以删除。"));
             return 0;
         }
-        if (CharizardManager.getControlled(player) != null) {
-            CharizardManager.discardControlled(player);
-        }
+        CharizardManager.discardAllControlled(player);
         profile.team.clear();
         profile.fainted.clear();
         profile.activeIndex = 0;
@@ -446,9 +499,14 @@ public final class TeamService {
         PokemonEntity current = CharizardManager.getControlled(player);
         if (current == null) return false;
         String species = speciesOf(current);
+        boolean alive = current.isAlive();
+        if (alive) lockRecalled(player, species);
         PlayerProfile profile = profile(player.server, player.getUUID());
-        if (!current.isAlive()) profile.markFainted(species);
+        if (!alive) profile.markFainted(species);
+        // 0.38：只收回"选中的这一只"；同玩家场上其它宝可梦继续保留、各自行动。
         CharizardManager.discardControlled(player);
+        // 选中已经自动落到剩下的某一只上：把队伍的"上场"同步过去，别让 HUD 还显示刚收回的那只。
+        syncActiveSpeciesTo(player, CharizardManager.getControlled(player));
         ProfileStore.get(player.server).setDirty();
         sendTeamState(player);
         ResourceLocation id = ResourceLocation.tryParse(species);
@@ -481,17 +539,22 @@ public final class TeamService {
         return cycle(player, pos);
     }
 
-    /** X 键召唤：把当前上场的宝可梦放到准星指向的地面点（距玩家不超过 32 格）。 */
+    /**
+     * X 键召唤：把"准备上场的那只"放到准星指向的地面点。
+     *
+     * <p>0.38 起允许不收回场上的其它宝可梦就直接召唤新的：多只同时在场、各自独立行动。
+     * 如果这个物种已经有一只留在场上，则把它挪到目标点并设为选中（不重复生成）。
+     */
     @Nullable
     public static PokemonEntity summonAt(ServerPlayer player, Vec3 target) {
-        if (CharizardManager.getControlled(player) != null) {
-            player.sendSystemMessage(Component.literal("你已经有一只宝可梦在场了，先用 C 键收回后再召唤。"));
-            return null;
-        }
-        double maxDistance = 32.0;
+        // 0.38 用户要求"无论多远都能放置"：不再做玩法距离限制，也不再要求先收回。
+        // 只留 256 格保险上限（不是玩法限制）：再远就落在未加载区块里，宝可梦可能掉进虚空/窒息，
+        // 而且上帝视角的区块覆盖（本体锚点 view-distance ≈160 格）也看不到它。
+        double maxDistance = 256.0;
         Vec3 eye = player.getEyePosition();
         if (eye.distanceTo(target) > maxDistance) {
-            player.sendSystemMessage(Component.literal("太远了：召唤位置不能超过 " + (int) maxDistance + " 格。"));
+            player.sendSystemMessage(Component.literal("太远了：召唤位置不能超过 " + (int) maxDistance
+                    + " 格（保险上限，防止落进未加载区块）。"));
             return null;
         }
         ServerLevel level = player.serverLevel();
@@ -516,8 +579,80 @@ public final class TeamService {
             profile.activeIndex = profile.team.indexOf(species);
             ProfileStore.get(player.server).setDirty();
         }
+        ResourceLocation speciesId = ResourceLocation.tryParse(species);
+        PokemonEntity existing = CharizardManager.findControlled(player, speciesId);
+        if (existing != null && existing.level() != level) {
+            // 那只留在别的维度里，带不过来：先清掉登记再重新生成一只
+            CharizardManager.discardControlled(player, existing);
+            existing = null;
+        }
+        if (existing != null) {
+            // 这个物种已经在场上：挪过去而不是再生成一只，并设为当前操控的那只。
+            existing.getNavigation().stop();
+            existing.setDeltaMovement(Vec3.ZERO);
+            existing.teleportTo(safe.x, safe.y, safe.z);
+            CharizardManager.select(player, existing);
+            // 挪过去的那只成了新的"选中"，队伍的 activeIndex 要跟上（HUD/X 召唤/技能都看它）
+            syncActiveSpeciesTo(player, existing);
+            CharizardManager.broadcastSync(player.server);
+            sendTeamState(player);
+            player.sendSystemMessage(Component.literal("已把 " + display(species) + " 移到该位置。"));
+            com.pkmoba.duel.DuelManager.notifySummoned(player, existing);
+            return existing;
+        }
         PokemonEntity entity = spawnSpecies(player, species, safe);
         if (entity != null) {
+            com.pkmoba.duel.DuelManager.notifySummoned(player, entity);
+        }
+        return entity;
+    }
+
+    /**
+     * 选点召唤入口（{@code /mo summon [宝可梦]} 上膛后右键点地）：按<b>指定物种</b>落点。
+     *
+     * <p>0.38：不再走旧版"单例训练实体"（{@link CharizardManager#spawn}），而是并进多只受控登记：
+     * 该物种已经在场就挪过去并设为选中，否则新生成一只追加登记。
+     *
+     * @return 成功返回实体；物种非法/落点不安全/生成被取消返回 null
+     */
+    @Nullable
+    public static PokemonEntity summonSpeciesAt(ServerPlayer player, ResourceLocation speciesId, Vec3 target) {
+        if (speciesId == null) return null;
+        // 与 X 召唤同一套 256 格保险上限（不是玩法限制）：
+        // 再远会落在未加载区块里，宝可梦可能掉进虚空/窒息，上帝视角的区块覆盖也看不到它。
+        if (player.getEyePosition().distanceTo(target) > 256.0) {
+            player.sendSystemMessage(Component.literal(
+                    "太远了：召唤位置不能超过 256 格（保险上限，防止落进未加载区块）。"));
+            return null;
+        }
+        ServerLevel level = player.serverLevel();
+        Vec3 safe = findGround(level, target);
+        if (safe == null) {
+            player.sendSystemMessage(Component.literal("那里没有安全的地面，请换个位置。"));
+            return null;
+        }
+        PokemonEntity existing = CharizardManager.findControlled(player, speciesId);
+        if (existing != null && existing.level() != level) {
+            // 那只留在别的维度里，带不过来：先清掉登记再重新生成一只
+            CharizardManager.discardControlled(player, existing);
+            existing = null;
+        }
+        if (existing != null) {
+            // 这个物种已经在场上：挪过去而不是再生成一只，并设为当前操控的那只。
+            existing.getNavigation().stop();
+            existing.setDeltaMovement(Vec3.ZERO);
+            existing.teleportTo(safe.x, safe.y, safe.z);
+            CharizardManager.select(player, existing);
+            syncActiveSpeciesTo(player, existing);
+            CharizardManager.broadcastSync(player.server);
+            sendTeamState(player);
+            player.sendSystemMessage(Component.literal("已把 " + display(speciesId.toString()) + " 移到该位置。"));
+            com.pkmoba.duel.DuelManager.notifySummoned(player, existing);
+            return existing;
+        }
+        PokemonEntity entity = spawnSpecies(player, speciesId.toString(), safe);
+        if (entity != null) {
+            syncActiveSpeciesTo(player, entity);
             com.pkmoba.duel.DuelManager.notifySummoned(player, entity);
         }
         return entity;
@@ -553,11 +688,30 @@ public final class TeamService {
         return controlled != null && controlled == entity;
     }
 
-    /** 记录实体阵亡并把它从控制表里摘掉。 */
+    /** 记录实体阵亡并把它从控制表里摘掉（同玩家其它在场宝可梦不受影响）。 */
     public static void markDead(ServerPlayer player, PokemonEntity entity) {
         PlayerProfile profile = profile(player.server, player.getUUID());
-        profile.markFainted(speciesOf(entity));
-        unregisterIfCurrent(player, entity);
+        String deadSpecies = speciesOf(entity);
+        if (profile.fainted.contains(deadSpecies) && !CharizardManager.getActiveList(player).contains(entity)) {
+            // 同一只已经处理过（对局流程与 syncAll 兜底都会调到这里）：直接返回，别重复刷消息/发包。
+            return;
+        }
+        profile.markFainted(deadSpecies);
+        // 0.38：只摘掉倒下的这一只；如果它正好是选中的那只，选中会自动落到剩下的某一只上。
+        CharizardManager.unregisterControlled(player, entity);
+        // 原版宝可梦的召回效果：红光 + 红环 + 召回音效，播完再把实体移除（用户 m04110）。
+        com.pkmoba.combat.RecallBeam.recall((net.minecraft.server.level.ServerLevel) entity.level(), entity);
+        syncActiveSpeciesTo(player, CharizardManager.getControlled(player));
+        // 0.39.4：场上已经没有活着的宝可梦、但队伍里还有能上的，就把"准备上场"的那只挪过去。
+        // 以前这里停在倒下的那一只上：HUD 永远显示 0 血，按 C 也像是"切不动"。
+        if (CharizardManager.getControlled(player) == null && profile.hasUsableLeft()) {
+            String next = profile.nextUsable();
+            if (next != null) {
+                ProfileStore.get(player.server).setDirty();
+                player.sendSystemMessage(Component.literal(
+                        "已切换到 " + display(next) + "（按 X 键在准星位置召唤它上场）"));
+            }
+        }
         ProfileStore.get(player.server).setDirty();
         // 先补一帧 0 血量再发队伍状态，否则实体移除后 HUD 会停在最后一帧的血量
         com.pkmoba.combat.CharizardCombat.sendFaintedState(player,
@@ -577,10 +731,19 @@ public final class TeamService {
         return active != null && profile.fainted.contains(active);
     }
 
-    private static void unregisterIfCurrent(ServerPlayer player, PokemonEntity entity) {
-        PokemonEntity controlled = CharizardManager.getControlled(player);
-        if (controlled == entity) {
-            CharizardManager.unregisterControlled(player.getUUID());
+    /**
+     * 把队伍里的"上场 index"同步到给定实体对应的物种上。
+     *
+     * <p>多只同时在场时，C 轮换/收回/阵亡都会改变"选中的是哪只"，
+     * 队伍数据里的 activeIndex 必须跟着走，否则 HUD、X 召唤、技能会看着旧的那只。
+     */
+    private static void syncActiveSpeciesTo(ServerPlayer player, @Nullable PokemonEntity entity) {
+        if (entity == null) return;
+        PlayerProfile profile = profile(player.server, player.getUUID());
+        int index = profile.team.indexOf(speciesOf(entity));
+        if (index >= 0 && profile.activeIndex != index) {
+            profile.activeIndex = index;
+            ProfileStore.get(player.server).setDirty();
         }
     }
 

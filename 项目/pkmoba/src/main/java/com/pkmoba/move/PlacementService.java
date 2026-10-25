@@ -4,10 +4,10 @@ import com.pkmoba.PkmobaMod;
 import com.pkmoba.charizard.CharizardManager;
 import com.pkmoba.network.PlaceOrderPayload;
 import com.pkmoba.network.PlacementPayload;
+import com.pkmoba.pokemon.TeamService;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.core.BlockPos;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
 
@@ -72,29 +72,34 @@ public final class PlacementService {
         }
         send(player, false);
 
-        ServerLevel level = player.serverLevel();
         Vec3 at = new Vec3(pos.getX() + 0.5, pos.getY() + 1.0, pos.getZ() + 0.5);
-
-        if (CharizardManager.getActive(player.getServer()) != null) {
-            PkmobaMod.LOGGER.info("[pkmoba] 已有受控宝可梦，选点召唤被忽略");
-            return;
-        }
 
         // 兜底：召唤涉及 Cobblemon 的 Kotlin 代码与数据包，任何异常都不能让它掀翻服务端 tick。
         // 之前实测过：Cobblemon 缺失时这里会抛 ClassNotFound，直接把 server thread 打崩。
-        net.minecraft.world.entity.Entity entity;
+        // 方案 §三.3：先投一颗精灵球，落地那一刻才真正生成宝可梦；§三.4 登场 2 秒硬直。
+        // 生成失败要能被看见，所以整段（含 Cobblemon 的 Kotlin 调用）都包在 try 里。
+        final ResourceLocation throwing = speciesId;
         try {
-            entity = CharizardManager.spawn(level, at, player, speciesId);
+            com.pkmoba.pokemon.BallThrow.throwBall(player, at, landed -> {
+                try {
+                    var spawned = TeamService.summonSpeciesAt(player, throwing, landed);
+                    if (spawned == null) {
+                        player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                                "未能生成宝可梦：物种数据未就绪或生成被取消，请检查日志。"));
+                        return;
+                    }
+                    com.pkmoba.pokemon.BallThrow.applyLock(spawned,
+                            com.pkmoba.pokemon.BallThrow.SPAWN_LOCK_TICKS);
+                    PkmobaMod.LOGGER.info("[pkmoba] 选点召唤成功 pos={}", spawned.position());
+                } catch (Throwable t) {
+                    PkmobaMod.LOGGER.error("[pkmoba] 选点召唤异常，已吞掉以免崩服", t);
+                    player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                            "召唤失败：请查看日志中的 [pkmoba] 选点召唤异常。"));
+                }
+            });
         } catch (Throwable t) {
-            PkmobaMod.LOGGER.error("[pkmoba] 选点召唤异常，已吞掉以免崩服", t);
-            player.sendSystemMessage(net.minecraft.network.chat.Component.literal("召唤失败：请查看日志中的 [pkmoba] 选点召唤异常。可重新执行 /mo summon charizard 或 /mo summon blastoise 再试。"));
-            return;
+            PkmobaMod.LOGGER.error("[pkmoba] 投球启动异常", t);
         }
-        if (entity == null) {
-            player.sendSystemMessage(net.minecraft.network.chat.Component.literal("未能生成宝可梦：物种数据未就绪或生成被取消，请检查日志。"));
-            return;
-        }
-        PkmobaMod.LOGGER.info("[pkmoba] 选点召唤成功 pos={}", entity.position());
     }
 
     /** 召唤成功后清理指令目标，避免新实体被旧目标带着跑。 */

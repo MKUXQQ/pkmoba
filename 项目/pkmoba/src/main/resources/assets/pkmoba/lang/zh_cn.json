@@ -10,15 +10,18 @@
   "skill.pkmoba.w": "火焰旋涡",
   "skill.pkmoba.e": "飞翔",
   "skill.pkmoba.r": "大字爆炎",
-  "skill.pkmoba.blastoise.q": "水之刃",
-  "skill.pkmoba.blastoise.w": "冰山坠落",
-  "skill.pkmoba.blastoise.e": "高速旋转",
-  "skill.pkmoba.blastoise.r": "加农水炮",
+  "skill.pkmoba.blastoise.q": "水炮",
+  "skill.pkmoba.blastoise.w": "高速旋转",
+  "skill.pkmoba.blastoise.e": "冲浪术",
+  "skill.pkmoba.blastoise.r": "水炮风暴",
   "item.pkmoba.battle_menu": "PKMOBA 对战菜单",
   "itemGroup.pkmoba": "PKMOBA",
   "item.pkmoba.species_switch": "PKMOBA 获取宝可梦",
   "item.pkmoba.player_marker": "PKMOBA 玩家点位放置器",
+  "item.pkmoba.boundary_marker": "PKMOBA 边界画笔",
   "item.pkmoba.pokemon_marker": "PKMOBA 宝可梦点位放置器",
+  "key.pkmoba.room_lobby": "房间大厅",
   "key.pkmoba.switch_pokemon": "切换下一只宝可梦",
-  "key.pkmoba.summon_pokemon": "召唤宝可梦到准星"
+  "key.pkmoba.summon_pokemon": "召唤宝可梦（正前方 3 格）",
+  "item.pkmoba.switch_marker": "PKMOBA 换宠区放置器"
 }

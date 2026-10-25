@@ -18,9 +18,12 @@ public abstract class PlayerRendererMixin {
     private void pkmoba$hideLocalPlayer(AbstractClientPlayer player, float entityYaw, float partialTick,
                                          PoseStack poseStack, MultiBufferSource buffer, int packedLight,
                                          CallbackInfo ci) {
+        // 0.39.5（用户 m03603）：上帝视角必须看得见自己的本体，不再隐藏本地玩家模型。
+        // 之前这里 cancel 掉渲染，实机表现就是"上帝视角里玩家是隐身的"。
         Minecraft mc = Minecraft.getInstance();
-        if (GodView.isActive() && mc.player == player) {
-            ci.cancel();
+        if (!GodView.isActive() || mc.player != player) {
+            return;
         }
+        // 什么都不做：让原版照常渲染本地玩家。
     }
 }

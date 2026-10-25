@@ -34,6 +34,9 @@ public class PkmobaMod implements ModInitializer {
 
     @Override
     public void onInitialize() {
+        // 召回/放出红光效果（死亡与召唤共用，仿原版宝可梦）。
+        com.pkmoba.combat.RecallBeam.init();
+        com.pkmoba.duel.ArenaBounds.init();
         // C2S
         PayloadTypeRegistry.playC2S().register(GodTogglePayload.TYPE, GodTogglePayload.CODEC);
         PayloadTypeRegistry.playC2S().register(MoveOrderPayload.TYPE, MoveOrderPayload.CODEC);
@@ -46,6 +49,7 @@ public class PkmobaMod implements ModInitializer {
         PayloadTypeRegistry.playC2S().register(com.pkmoba.network.SwitchPokemonPayload.TYPE, com.pkmoba.network.SwitchPokemonPayload.CODEC);
         PayloadTypeRegistry.playC2S().register(com.pkmoba.network.SummonPayload.TYPE, com.pkmoba.network.SummonPayload.CODEC);
         PayloadTypeRegistry.playC2S().register(com.pkmoba.network.ChallengeActionPayload.TYPE, com.pkmoba.network.ChallengeActionPayload.CODEC);
+        PayloadTypeRegistry.playC2S().register(com.pkmoba.network.RoomActionPayload.TYPE, com.pkmoba.network.RoomActionPayload.CODEC);
         // S2C
         PayloadTypeRegistry.playS2C().register(com.pkmoba.network.CameraSettingsPayload.TYPE, com.pkmoba.network.CameraSettingsPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(GodStatePayload.TYPE, GodStatePayload.CODEC);
@@ -69,6 +73,13 @@ public class PkmobaMod implements ModInitializer {
         PayloadTypeRegistry.playS2C().register(com.pkmoba.network.TeamStatePayload.TYPE, com.pkmoba.network.TeamStatePayload.CODEC);
         PayloadTypeRegistry.playS2C().register(com.pkmoba.network.FaintPayload.TYPE, com.pkmoba.network.FaintPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(com.pkmoba.network.MatchResultPayload.TYPE, com.pkmoba.network.MatchResultPayload.CODEC);
+        PayloadTypeRegistry.playS2C().register(com.pkmoba.network.RoomListPayload.TYPE, com.pkmoba.network.RoomListPayload.CODEC);
+        // 0.38：水箭龟 R「喷水」降雨区域（客户端本地模拟雨滴）
+        PayloadTypeRegistry.playS2C().register(com.pkmoba.network.SpoutPayload.TYPE, com.pkmoba.network.SpoutPayload.CODEC);
+        // 0.43：水箭龟 R 水炮风暴（客户端自绘，服务端只广播起止与持续时间）
+        PayloadTypeRegistry.playS2C().register(com.pkmoba.network.StormPayload.TYPE, com.pkmoba.network.StormPayload.CODEC);
+        PayloadTypeRegistry.playS2C().register(com.pkmoba.network.BallFlightPayload.TYPE, com.pkmoba.network.BallFlightPayload.CODEC);
+        PayloadTypeRegistry.playS2C().register(com.pkmoba.network.RecallFxPayload.TYPE, com.pkmoba.network.RecallFxPayload.CODEC);
         // 自定义粒子类型（火焰团）
         com.pkmoba.particle.PkmobaParticles.register();
 
@@ -86,6 +97,8 @@ public class PkmobaMod implements ModInitializer {
         com.pkmoba.item.ModeItems.init();
         com.pkmoba.pokemon.HealingMachineHook.init();
         com.pkmoba.duel.DuelManager.init();
+        com.pkmoba.pokemon.BallThrow.init();
+        com.pkmoba.duel.RoomManager.init();
 
         // 对战菜单点击：服务端重新校验在线/权限/是否已在局内
         net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.registerGlobalReceiver(
@@ -110,15 +123,26 @@ public class PkmobaMod implements ModInitializer {
         // X 键：把宝可梦召唤到准星指向的地面点
         net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.registerGlobalReceiver(
                 com.pkmoba.network.SummonPayload.TYPE, (payload, context) ->
-                        context.server().execute(() ->
-                                com.pkmoba.pokemon.TeamService.summonAt(context.player(),
-                                        new net.minecraft.world.phys.Vec3(payload.x(), payload.y(), payload.z()))));
+                        context.server().execute(() -> {
+                            net.minecraft.server.level.ServerPlayer player = context.player();
+                            net.minecraft.world.phys.Vec3 landing =
+                                    new net.minecraft.world.phys.Vec3(payload.x(), payload.y(), payload.z());
+                            // 方案 §三.3：投球 → 落地才显形；§三.4：登场 2 秒硬直
+                            com.pkmoba.pokemon.BallThrow.throwBall(player, landing,
+                                    at -> com.pkmoba.pokemon.TeamService.summonAt(player, at));
+                        }));
 
         // 挑战弹窗的接受/拒绝：服务端复核 requestId、过期时间、双方状态后才真正开战
         net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.registerGlobalReceiver(
                 com.pkmoba.network.ChallengeActionPayload.TYPE, (payload, context) ->
                         context.server().execute(() ->
                                 com.pkmoba.duel.DuelManager.handleChallengeAction(context.player(), payload)));
+        // H 键房间大厅：所有房间操作（创建/加入/退出/开始）都由服务端复核状态后才执行
+        net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.registerGlobalReceiver(
+                com.pkmoba.network.RoomActionPayload.TYPE, (payload, context) ->
+                        context.server().execute(() ->
+                                com.pkmoba.duel.RoomManager.handle(context.player(), payload)));
+
 
         // 玩家进服时同步一次当前喷火龙，避免客户端 HUD/相机不知道实体 id
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->

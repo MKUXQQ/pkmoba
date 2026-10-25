@@ -10,6 +10,27 @@ import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 /** Client-side presentation metadata and texture rendering for the supported moveset. */
 public final class SkillPresentation {
     public static final int COUNT = 4;
+
+    /**
+     * 技能格统一样式常量（HUD 绘制与鼠标悬停判定共用这一份）。
+     *
+     * <p>0.38.10：四个技能格改为「固定格子 + 居中图标 + 统一外框」——
+     * 格子宽 {@link #CELL_W}、间距 {@link #CELL_GAP}，图标用原生 32×32 像素绘制
+     * （{@link #ICON_SIZE}），不再每格按 30/32 非整数缩放，四格尺寸与位置严格一致。
+     */
+    public static final int CELL_W = 54;
+    public static final int CELL_GAP = 5;
+    public static final int CELL_STEP = CELL_W + CELL_GAP;
+    /** 格子背景的上/下边界（相对面板顶）。 */
+    public static final int CELL_TOP = 12;
+    public static final int CELL_BOTTOM = 78;
+    /** 图标边长：直接用贴图原生 32px，避免逐格非整数缩放造成的"大小/位置不一致"。 */
+    public static final int ICON_SIZE = 32;
+    /** 图标在格子内的水平内缩，使 32px 图标在 54px 格子里水平居中。 */
+    public static final int ICON_INSET = (CELL_W - ICON_SIZE) / 2;
+    /** 图标相对面板顶的纵坐标。 */
+    public static final int ICON_Y = 14;
+
     private static final String[] ICONS = {"flamethrower", "fire_spin", "fly", "fire_blast"};
     private static final String[] BLASTOISE_ICONS = {"blastoise_0", "blastoise_1", "blastoise_2", "blastoise_3"};
 
@@ -65,16 +86,16 @@ public final class SkillPresentation {
      * 技能图标悬停判定。面板在屏幕上按 {@code scale} 整体缩放绘制，所以这里也要换算，
      * 否则缩放后鼠标位置与图标对不上。
      *
-     * <p>面板内部布局：技能格 {@code cellX = 57 + i*59}，图标 {@code iconX = cellX + 12}、
-     * {@code iconY = 16}，尺寸 30。
+     * <p>面板内部布局统一由 {@link #CELL_STEP}、{@link #ICON_INSET}、{@link #ICON_Y}、
+     * {@link #ICON_SIZE} 决定，HUD 绘制和这里共用同一份常量，改布局不会两边对不上。
      */
     public static boolean isSkillIconHovered(Minecraft mc, int index, int panelX, int panelY,
                                              float scale, double cursorX, double cursorY) {
-        int iconLocalX = 57 + index * 59 + 12;
-        int iconLocalY = 16;
+        int iconLocalX = 57 + index * CELL_STEP + ICON_INSET;
+        int iconLocalY = ICON_Y;
         double iconX = panelX + iconLocalX * scale;
         double iconY = panelY + iconLocalY * scale;
-        double size = 30 * scale;
+        double size = ICON_SIZE * scale;
         return cursorX >= iconX && cursorX < iconX + size && cursorY >= iconY && cursorY < iconY + size;
     }
 }

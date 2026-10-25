@@ -36,7 +36,9 @@ public abstract class BlastoiseSpinPoseMixin {
         // Separate parent yaw from child pitch: Ry(spin) * Rx(90), NOT rotating the tilted shell locally.
         body.loadPose(body.getInitialPose());
         body.y += 12.5F;
-        body.yRot = (float) (state.getAnimationSeconds() * Math.PI * 4);
+        // 0.38.4：用户两次要"高速旋转再快一点"。PI*4（2 圈/秒）→ PI*6.5 → PI*10（5 圈/秒）。
+        // 只是视觉转速，不改任何判定；转速再高会让每帧转角超过 180°，视觉上会误判成反方向转。
+        body.yRot = (float) (state.getAnimationSeconds() * Math.PI * 10.0);
         prone.loadPose(prone.getInitialPose());
         prone.xRot = (float) (Math.PI / 2);
         for (String name : new String[]{"torso", "shell"}) {

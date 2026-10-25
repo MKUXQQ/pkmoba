@@ -1,5 +1,6 @@
 package com.pkmoba.lock;
 
+import com.pkmoba.charizard.CharizardManager;
 import com.pkmoba.godmode.ServerGodMode;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
@@ -13,6 +14,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -22,7 +24,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
-/** 保存进入前状态，并在服务端锁住升空后的 XYZ；生命周期由 ServerGodMode 统一退出。 */
+/** 保存进入前状态，并把本体挂到受控宝可梦上方作为相机锚点；生命周期由 ServerGodMode 统一退出。 */
 public final class PlayerLockService {
     private record Lock(ResourceKey<Level> dimension, Vec3 origin, Vec3 hover,
                         float yaw, float pitch, boolean noGravity, boolean invulnerable,
@@ -50,15 +52,21 @@ public final class PlayerLockService {
         PlayerBlockBreakEvents.BEFORE.register((level, player, pos, state, blockEntity) -> !isLocked(player));
     }
 
-    /** 精确在原位上方 12 格检查整个玩家碰撞箱；失败时不修改任何状态。 */
+    /**
+     * 记录进入前状态；本体不再原地抬升到固定点，而是由 {@link #onServerTick} 挂到受控宝可梦上方。
+     *
+     * <p>0.38：用户要求「上帝视角跟随宝可梦，我走多远都行」。服务端把本体当作相机的挂载点
+     * （受控宝可梦 + 12 格高），这样区块发送与实体追踪永远覆盖宝可梦 —— 宝可梦跑到哪，
+     * 镜头就能看到哪；本体在渲染层被 {@code PlayerRendererMixin} 隐藏，玩家看不到搬运过程。
+     * 进场不再要求"头顶 12 格安全空间"（那是固定锚点时代的限制）。
+     */
     public static boolean lock(ServerPlayer player) {
         if (isLocked(player)) return true;
         // 先清理上一次异常结束留下的 NBT；不能把旧 NoGravity=true 再保存为正常状态。
         recoverInactive(player, false);
         Vec3 origin = player.position();
-        Vec3 hover = origin.add(0, 12, 0);
-        if (!safe(player.serverLevel(), player, hover, false)) return false;
-        Lock lock = new Lock(player.level().dimension(), origin, hover, player.getYRot(), player.getXRot(),
+        // hover 只作为"没有受控宝可梦时"的兜底锚点，正常情况每 tick 由宝可梦位置覆盖。
+        Lock lock = new Lock(player.level().dimension(), origin, origin, player.getYRot(), player.getXRot(),
                 player.isNoGravity(), player.isInvulnerable(), player.getAbilities().flying,
                 player.getAbilities().mayfly, player.getAbilities().getFlyingSpeed());
         LOCKS.put(player.getUUID(), lock);
@@ -66,11 +74,11 @@ public final class PlayerLockService {
                 + origin.x + ";" + origin.y + ";" + origin.z + ";"
                 + lock.yaw() + ";" + lock.pitch() + ";" + lock.noGravity() + ";"
                 + lock.invulnerable() + ";" + lock.flying() + ";" + lock.mayfly() + ";" + lock.flyingSpeed());
+        // 悬空 + 无敌：位置每 tick 由宝可梦锚点覆盖，本体不参与碰撞/掉落。
         player.setNoGravity(true);
         player.setInvulnerable(true);
         player.getAbilities().flying = false;
         player.onUpdateAbilities();
-        player.teleportTo(player.serverLevel(), hover.x, hover.y, hover.z, lock.yaw(), lock.pitch());
         stopMotion(player);
         return true;
     }
@@ -140,7 +148,7 @@ public final class PlayerLockService {
                 if (!Double.isFinite(origin.x) || !Double.isFinite(origin.y) || !Double.isFinite(origin.z)
                         || !Float.isFinite(yaw) || !Float.isFinite(pitch) || !Float.isFinite(speed))
                     throw new IllegalArgumentException("non-finite snapshot");
-                return new Lock(dimension, origin, origin.add(0, 12, 0), yaw, pitch,
+                return new Lock(dimension, origin, origin, yaw, pitch,
                         Boolean.parseBoolean(v[6]), Boolean.parseBoolean(v[7]), Boolean.parseBoolean(v[8]),
                         Boolean.parseBoolean(v[9]), speed);
             } catch (RuntimeException error) {
@@ -185,6 +193,43 @@ public final class PlayerLockService {
         return !requireSupport || !level.noCollision(player, box.move(0, -0.1, 0));
     }
 
+    /**
+     * 玩家本体的站位锚点（0.39 修"上帝视角看不到自己 / 像隐身"）。
+     *
+     * <p>旧版把本体挂在受控宝可梦<b>上方 12 格</b>：区块追踪是够的，但玩家本体正好落在
+     * 俯视镜头的头顶/背后，除非把镜头拉到很远否则永远看不到自己——用户看到的就是"隐身"。
+     *
+     * <p>现在改成贴着宝可梦右后方约 1.6 格、与它同高站地面上：
+     * <ul>
+     *   <li>镜头俯视宝可梦时，本体就站在旁边，一眼能看到"我的人"；</li>
+     *   <li>锚点依旧跟着宝可梦走，区块发送与实体追踪的覆盖范围不变；</li>
+     *   <li>按 8 个方向找 <b>真的站得下</b> 的那一格（两格高净空），找不到才退回宝可梦正上方，
+     *       避免本体被塞进石头里窒息。</li>
+     * </ul>
+     */
+    private static Vec3 bodyAnchor(ServerPlayer player, Entity controlled) {
+        Vec3 base = controlled.position();
+        float yaw = controlled.getYRot() * ((float) Math.PI / 180.0F);
+        // 朝向向量（MC：yaw=0 指向 +Z）与它的右手向量。
+        double fx = -Math.sin(yaw), fz = Math.cos(yaw);
+        double rx = fz, rz = -fx;
+        // 优先右后方，其次正后方、左侧、正前……最后退回正上方。
+        // m04660：旧的 1.3~1.7 格太贴，水箭龟/喷火龙模型宽 1.5 格以上，本体被塞进模型里
+        // 看着就是"隐身"。改成 2.2~3.0 格，站在宝可梦斜后方，上帝视角一眼就能看见。
+        double[][] offsets = {
+                {-2.6, 2.2}, {-2.8, 0.0}, {-2.6, -2.2}, {0.0, -2.8},
+                {0.0, 2.8}, {2.6, 2.2}, {2.6, -2.2}, {-1.8, 0.0},
+        };
+        for (double[] off : offsets) {
+            Vec3 candidate = base.add(fx * off[0] + rx * off[1], 0.0, fz * off[0] + rz * off[1]);
+            if (player.serverLevel().noCollision(player, player.getBoundingBox().move(
+                    candidate.x - player.getX(), candidate.y - player.getY(), candidate.z - player.getZ()))) {
+                return candidate;
+            }
+        }
+        return base.add(0, 12, 0);
+    }
+
     public static boolean isLocked(Player player) { return LOCKS.containsKey(player.getUUID()); }
     private static void stopMotion(ServerPlayer player) {
         player.setDeltaMovement(Vec3.ZERO);
@@ -207,7 +252,14 @@ public final class PlayerLockService {
                 continue;
             }
             player.setNoGravity(true);
-            player.setPos(lock.hover().x, lock.hover().y, lock.hover().z);
+            // 0.38：本体是"挂在受控宝可梦上方 12 格"的动态锚点，不再钉死在进场时的固定坐标。
+            // 这样宝可梦/相机走多远，区块发送与实体追踪（view-distance 10 chunks ≈160 格）就跟多远，
+            // 镜头不会看到未加载地形或丢失宝可梦实体。没有受控宝可梦时退回进场锚点。
+            Entity controlled = CharizardManager.getControlled(player);
+            Vec3 anchor = controlled == null || controlled.isRemoved() || controlled.level() != player.level()
+                    ? lock.hover()
+                    : bodyAnchor(player, controlled);
+            player.setPos(anchor.x, anchor.y, anchor.z);
             stopMotion(player);
         }
     }

@@ -1,40 +1,17 @@
 package com.pkmoba.mixin;
 
-import com.pkmoba.client.GodView;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.player.Input;
 import net.minecraft.client.player.KeyboardInput;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * 上帝视角下吃掉键盘移动输入。
+ * 0.38：不再吞掉上帝视角下的键盘移动输入。
  *
- * 为什么在 KeyboardInput.tick 的 HEAD 处 cancel：
- * tick(boolean, float) 每 tick 都会按当前按键重新计算 forwardImpulse / leftImpulse / jumping，
- * 事后清零会被下一 tick 直接覆盖，等于没做。只有在这里清零并取消才能保证这一 tick 输入恒为 0。
- *
- * 这只是客户端手感辅助：真正拦住玩家的是服务端每 tick 回写位置（PlayerLockService）。
+ * <p>旧版在这里 cancel {@code KeyboardInput.tick} 并清零 forwardImpulse 等字段，因为那时本体被
+ * "钉"在升空点，移动没意义、还会让空格误跳。现在本体是挂在受控宝可梦上方的动态锚点
+ * （{@code lock/PlayerLockService}），位置每个服务端 tick 由宝可梦位置覆盖，客户端按键不会把
+ * 玩家带偏；继续吞输入反而让 W/A/S/D 手感像坏了。因此本 mixin 只保留类名
+ * （{@code pkmoba.mixins.json} 里仍登记着它），不再注入任何逻辑。
  */
 @Mixin(KeyboardInput.class)
 public abstract class KeyboardInputMixin {
-    @Inject(method = "tick", at = @At("HEAD"), cancellable = true)
-    private void pkmoba$lockMovementInput(boolean isMoving, float partialTick, CallbackInfo ci) {
-        if (!GodView.isActive()) {
-            return;
-        }
-        // 锁定期间包括 GUI 帧都写零；退出后完全交回原版 tick，不能留下半帧输入。
-        Input self = (Input) (Object) this;
-        self.forwardImpulse = 0.0F;
-        self.leftImpulse = 0.0F;
-        self.up = false;
-        self.down = false;
-        self.left = false;
-        self.right = false;
-        self.jumping = false;
-        self.shiftKeyDown = false;
-        ci.cancel();
-    }
 }

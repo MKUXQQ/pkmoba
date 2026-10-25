@@ -1,21 +1,26 @@
 package com.pkmoba.command;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
-import com.pkmoba.charizard.CharizardManager;
 import com.pkmoba.duel.ArenaStore;
 import com.pkmoba.duel.DuelManager;
+import com.pkmoba.item.ModeItems;
 import com.pkmoba.move.PlacementService;
 import com.pkmoba.pokemon.ProfileStore;
 import com.pkmoba.pokemon.SpeciesRegistry;
 import com.pkmoba.pokemon.TeamService;
+import com.pkmoba.world.HazardService;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,11 +37,6 @@ public final class MoCommand {
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("mo")
-                .then(Commands.literal("summon").executes(MoCommand::summonOwn)
-                        .then(Commands.argument("pokemon", StringArgumentType.word())
-                                .suggests((context, builder) -> SharedSuggestionProvider.suggest(
-                                        shortNames(), builder))
-                                .executes(MoCommand::summonNamed)))
                 .then(Commands.literal("pokemon")
                         .executes(MoCommand::pokemonMenu)
                         .then(Commands.literal("add")
@@ -70,7 +70,9 @@ public final class MoCommand {
                                 .then(Commands.argument("name", StringArgumentType.word())
                                         .executes(MoCommand::arenaCreate)))
                         .then(Commands.literal("delete")
-                                .then(Commands.argument("name", StringArgumentType.word())
+                                // m04660：允许名字里带空格（历史点位组叫「房间组 1」），
+                                // 用 greedyString 把后面的全部当成一个名字，避免被拆成多个参数报错。
+                                .then(Commands.argument("name", StringArgumentType.greedyString())
                                         .suggests((context, builder) -> {
                                             List<String> names = new ArrayList<>();
                                             ServerPlayer player = context.getSource().getPlayer();
@@ -78,7 +80,42 @@ public final class MoCommand {
                                             return SharedSuggestionProvider.suggest(names, builder);
                                         })
                                         .executes(MoCommand::arenaDelete))))
-                .then(duelCommand()));
+                .then(duelCommand())
+                .then(hazardCommand()));
+    }
+
+    /** {@code /mo hazard}：0.38 场地陷阱调试入口（高速旋转 W 会清掉身边的钉子）。 */
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> hazardCommand() {
+        return Commands.literal("hazard")
+                .then(Commands.literal("add")
+                        .executes(context -> hazardAdd(context, 1))
+                        .then(Commands.argument("count", IntegerArgumentType.integer(1, 64))
+                                .executes(context -> hazardAdd(context,
+                                        IntegerArgumentType.getInteger(context, "count")))))
+                .then(Commands.literal("count").executes(MoCommand::hazardCount))
+                .then(Commands.literal("clear").executes(MoCommand::hazardClear));
+    }
+
+    private static int hazardAdd(CommandContext<CommandSourceStack> context, int count) {
+        CommandSourceStack source = context.getSource();
+        Vec3 pos = source.getPosition();
+        HazardService.add(pos, count);
+        source.sendSuccess(() -> Component.literal("已放置 " + count + " 个陷阱（当前共 "
+                + HazardService.count() + " 个）。"), false);
+        return 1;
+    }
+
+    private static int hazardCount(CommandContext<CommandSourceStack> context) {
+        context.getSource().sendSuccess(() -> Component.literal("当前陷阱数："
+                + HazardService.count()), false);
+        return 1;
+    }
+
+    private static int hazardClear(CommandContext<CommandSourceStack> context) {
+        int before = HazardService.count();
+        HazardService.clearAll();
+        context.getSource().sendSuccess(() -> Component.literal("已清空 " + before + " 个陷阱。"), false);
+        return 1;
     }
 
     private static List<String> shortNames() {
@@ -130,6 +167,82 @@ public final class MoCommand {
         return 1;
     }
 
+    /** {@code /mo arena show <名字>}：查看四个点位 / 换宠区 / 边界是否配齐。 */
+    private static int arenaShow(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("这个指令只能由玩家执行。"));
+            return 0;
+        }
+        String name = StringArgumentType.getString(context, "name");
+        ArenaStore.Arena arena = ArenaStore.get(player.server).byName(name);
+        if (arena == null) {
+            source.sendFailure(Component.literal("找不到点位组「" + name + "」。用 /mo arena list 看现有组名。"));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("———— 点位组「" + arena.name + "」————"), false);
+        source.sendSuccess(() -> Component.literal("红方玩家点：" + fmtPoint(arena.redPlayer)), false);
+        source.sendSuccess(() -> Component.literal("蓝方玩家点：" + fmtPoint(arena.bluePlayer)), false);
+        source.sendSuccess(() -> Component.literal("红方宝可梦点：" + fmtPoint(arena.redPokemon)), false);
+        source.sendSuccess(() -> Component.literal("蓝方宝可梦点：" + fmtPoint(arena.bluePokemon)), false);
+        source.sendSuccess(() -> Component.literal("换宠区：红 " + fmtPoint(arena.redSwitch) + " / 蓝 "
+                + fmtPoint(arena.blueSwitch) + "，半径 " + String.format(java.util.Locale.ROOT, "%.1f", arena.switchRadius)), false);
+        source.sendSuccess(() -> Component.literal("边界点数：" + arena.boundary.size()
+                + (arena.hasBoundary() ? "（已生效）" : "（不足 4 点，未生效）")), false);
+        String verdict = arena.complete()
+                ? (arena.hasBoundary() ? "✔ 可开房对战" : "△ 四个点位齐了，但边界不足 4 点")
+                : "✘ 四个点位还没配齐";
+        source.sendSuccess(() -> Component.literal("状态：" + verdict), false);
+        return 1;
+    }
+
+    /** {@code /mo arena marker <player|pokemon|boundary>}：直接发一个点位放置器。 */
+    private static int arenaGiveMarker(CommandContext<CommandSourceStack> context, int kind) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("这个指令只能由玩家执行。"));
+            return 0;
+        }
+        net.minecraft.world.item.Item item = switch (kind) {
+            case 0 -> ModeItems.PLAYER_MARKER;
+            case 1 -> ModeItems.POKEMON_MARKER;
+            default -> ModeItems.BOUNDARY_MARKER;
+        };
+        if (!player.getInventory().add(new ItemStack(item))) {
+            player.drop(new ItemStack(item), false);
+        }
+        String label = switch (kind) {
+            case 0 -> "玩家点位放置器";
+            case 1 -> "宝可梦点位放置器";
+            default -> "边界画笔";
+        };
+        source.sendSuccess(() -> Component.literal("已发放：" + label), false);
+        return 1;
+    }
+
+    /** {@code /mo arena items}：一次发齐四个布点工具（道具是直观的做法，指令只是省事）。 */
+    private static int arenaGivePlacers(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("这个指令只能由玩家执行。"));
+            return 0;
+        }
+        for (net.minecraft.world.item.Item item : new net.minecraft.world.item.Item[]{
+                ModeItems.PLAYER_MARKER,
+                ModeItems.BOUNDARY_MARKER, ModeItems.SWITCH_MARKER}) {
+            if (!player.getInventory().add(new ItemStack(item))) {
+                player.drop(new ItemStack(item), false);
+            }
+        }
+        source.sendSuccess(() -> Component.literal(
+                "已发放 4 个布点工具：玩家点 / 宝可梦点 / 边界画笔 / 换宠区放置器。"
+                        + "都用右键方块记点，蹲下 = 红方，站立 = 蓝方。"), false);
+        return 1;
+    }
+
     private static int arenaList(CommandContext<CommandSourceStack> context) {
         ServerPlayer player = context.getSource().getPlayer();
         if (player == null) {
@@ -152,6 +265,11 @@ public final class MoCommand {
             return 0;
         }
         String name = StringArgumentType.getString(context, "name");
+        return saveDraftArena(player, name);
+    }
+
+    /** 把当前草稿保存成点位组（`create` 与 `create_auto` 共用）。 */
+    private static int saveDraftArena(ServerPlayer player, String name) {
         ArenaStore store = ArenaStore.get(player.server);
         var draft = ArenaStore.draft(player.getUUID());
         if (!draft.complete()) {
@@ -164,11 +282,127 @@ public final class MoCommand {
         arena.bluePlayer = draft.bluePlayer;
         arena.redPokemon = draft.redPokemon;
         arena.bluePokemon = draft.bluePokemon;
+        arena.redSwitch = draft.redSwitch;
+        arena.blueSwitch = draft.blueSwitch;
+        arena.switchRadius = draft.switchRadius;
+        arena.boundary.addAll(draft.boundary);
         arena.dimension = draft.dimension;
         store.put(arena);
         ArenaStore.clearDraft(player.getUUID());
-        player.sendSystemMessage(Component.literal("场地「" + name + "」已保存。开打：/mo duel <玩家> " + name));
+        player.sendSystemMessage(Component.literal("点位组「" + name + "」已保存（边界 "
+                + arena.boundary.size() + " 点，换宠区" + (arena.hasSwitchZone() ? "已配" : "未配")
+                + "）。按 H 打开房间大厅建房。"));
         return 1;
+    }
+
+    /** 名字下拉：列出已有点位组。 */
+    private static java.util.concurrent.CompletableFuture<com.mojang.brigadier.suggestion.Suggestions>
+    suggestArenas(CommandContext<CommandSourceStack> context,
+                  com.mojang.brigadier.suggestion.SuggestionsBuilder builder) {
+        ServerPlayer player = context.getSource().getPlayer();
+        if (player != null) {
+            builder.suggest("all");
+            for (String name : ArenaStore.get(player.server).names()) {
+                builder.suggest(name);
+            }
+        }
+        return builder.buildFuture();
+    }
+
+    /** {@code /mo arena create_auto}：名字自动取「房间组 N」。 */
+    private static int arenaCreateAuto(CommandContext<CommandSourceStack> context) {
+        ServerPlayer player = context.getSource().getPlayer();
+        if (player == null) {
+            context.getSource().sendFailure(Component.literal("这个指令只能由玩家执行。"));
+            return 0;
+        }
+        return saveDraftArena(player, ArenaStore.get(player.server).nextGroupName());
+    }
+
+    private static int arenaSetSwitch(CommandContext<CommandSourceStack> context, boolean red) {
+        ServerPlayer player = context.getSource().getPlayer();
+        if (player == null) return 0;
+        String name = StringArgumentType.getString(context, "name");
+        ArenaStore.Arena arena = resolveArena(player, name);
+        if (arena == null) return 0;
+        Vec3 here = player.position();
+        if (red) {
+            arena.redSwitch = here;
+        } else {
+            arena.blueSwitch = here;
+        }
+        ArenaStore.get(player.server).put(arena);
+        player.sendSystemMessage(Component.literal("点位组「" + arena.name + "」"
+                + (red ? "红" : "蓝") + "方换宠区中心已设为当前位置（半径 "
+                + String.format("%.1f", arena.switchRadius) + " 格，用 /mo arena radius 调整）。"));
+        return 1;
+    }
+
+    private static int arenaSetRadius(CommandContext<CommandSourceStack> context) {
+        ServerPlayer player = context.getSource().getPlayer();
+        if (player == null) return 0;
+        String name = StringArgumentType.getString(context, "name");
+        double value = DoubleArgumentType.getDouble(context, "value");
+        ArenaStore.Arena arena = resolveArena(player, name);
+        if (arena == null) return 0;
+        arena.switchRadius = value;
+        ArenaStore.get(player.server).put(arena);
+        player.sendSystemMessage(Component.literal("点位组「" + arena.name + "」换宠区半径改为 "
+                + String.format("%.1f", value) + " 格。"));
+        return 1;
+    }
+
+    /** {@code /mo arena boundary <名字> add|undo|clear|list}：站着点一下就把当前位置加进边界多边形。 */
+    private static int arenaBoundary(CommandContext<CommandSourceStack> context, int action) {
+        ServerPlayer player = context.getSource().getPlayer();
+        if (player == null) return 0;
+        String name = StringArgumentType.getString(context, "name");
+        ArenaStore.Arena arena = resolveArena(player, name);
+        if (arena == null) return 0;
+        if (action == 0) {
+            arena.boundary.add(player.position());
+            ArenaStore.get(player.server).put(arena);
+            player.sendSystemMessage(Component.literal("已加入边界第 " + arena.boundary.size()
+                    + " 个点。至少 3 个点后生效，用 /mo arena boundary " + arena.name + " list 查看。"));
+        } else if (action == 1) {
+            if (arena.boundary.isEmpty()) {
+                player.sendSystemMessage(Component.literal("边界还是空的。"));
+                return 0;
+            }
+            Vec3 removed = arena.boundary.remove(arena.boundary.size() - 1);
+            ArenaStore.get(player.server).put(arena);
+            player.sendSystemMessage(Component.literal("已撤销最后一个边界点（"
+                    + fmtPoint(removed) + "），剩余 " + arena.boundary.size() + " 个。"));
+        } else if (action == 2) {
+            arena.boundary.clear();
+            ArenaStore.get(player.server).put(arena);
+            player.sendSystemMessage(Component.literal("点位组「" + arena.name + "」边界已清空，不再限制范围。"));
+        } else {
+            if (!arena.hasBoundary()) {
+                player.sendSystemMessage(Component.literal("点位组「" + arena.name + "」还没有有效边界（需要 ≥3 点）。"));
+                return 0;
+            }
+            StringBuilder sb = new StringBuilder("边界点：");
+            for (int i = 0; i < arena.boundary.size(); i++) {
+                sb.append(i + 1).append('=').append(fmtPoint(arena.boundary.get(i))).append(' ');
+            }
+            player.sendSystemMessage(Component.literal(sb.toString()));
+        }
+        return 1;
+    }
+
+    private static String fmtPoint(Vec3 p) {
+        return String.format("(%.1f, %.1f, %.1f)", p.x, p.y, p.z);
+    }
+
+    private static ArenaStore.Arena resolveArena(ServerPlayer player, String name) {
+        ArenaStore store = ArenaStore.get(player.server);
+        ArenaStore.Arena arena = store.byName(name);
+        if (arena == null) {
+            player.sendSystemMessage(Component.literal("找不到点位组：" + name
+                    + "（已有：" + String.join("、", store.names()) + "）"));
+        }
+        return arena;
     }
 
     private static int arenaDelete(CommandContext<CommandSourceStack> context) {
@@ -179,7 +413,9 @@ public final class MoCommand {
         }
         String name = StringArgumentType.getString(context, "name");
         if (ArenaStore.get(player.server).remove(name)) {
-            player.sendSystemMessage(Component.literal("场地「" + name + "」已删除。"));
+            // m05326：删组 = 连这一组的房间一起删掉，里面所有点位（边界/点位/换宠区）都没了。
+            com.pkmoba.duel.RoomManager.deleteByArena(name);
+            player.sendSystemMessage(Component.literal("点位组「" + name + "」及其房间、边界、全部点位已删除。"));
             return 1;
         }
         player.sendSystemMessage(Component.literal("找不到场地：" + name));
@@ -283,10 +519,6 @@ public final class MoCommand {
         ServerPlayer player = source.getPlayer();
         if (player == null) {
             source.sendFailure(Component.literal("这个指令只能由玩家执行（需要鼠标选点）。"));
-            return 0;
-        }
-        if (CharizardManager.getControlled(player) != null) {
-            source.sendFailure(Component.literal("你已经有一只宝可梦在场了，先按 C 收回再重新选点。"));
             return 0;
         }
         PlacementService.arm(player, speciesId);

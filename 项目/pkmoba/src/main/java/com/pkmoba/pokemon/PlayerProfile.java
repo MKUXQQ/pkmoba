@@ -52,12 +52,22 @@ public final class PlayerProfile {
      * @return 下一只可上场宝可梦的物种 id；没有其他可用成员时返回 null
      */
     public String peekNextUsable() {
+        return peekNextUsable(species -> false);
+    }
+
+    /**
+     * 同 {@link #peekNextUsable()}，但跳过 {@code skip} 判为 true 的物种。
+     *
+     * <p>方案 §四.2：主动收回某只后 3 秒内不能再把它选回来，所以"下一只"的计算
+     * 必须能把刚收回的那只排除掉，否则按 C 会原地反复切同一只。
+     */
+    public String peekNextUsable(java.util.function.Predicate<String> skip) {
         int size = team.size();
         if (size <= 1) return null;
         for (int step = 1; step < size; step++) {
             int index = (activeIndex + step) % size;
             String id = team.get(index);
-            if (!fainted.contains(id)) return id;
+            if (!fainted.contains(id) && !skip.test(id)) return id;
         }
         return null;
     }

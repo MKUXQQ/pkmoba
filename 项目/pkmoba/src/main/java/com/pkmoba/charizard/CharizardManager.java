@@ -8,6 +8,8 @@ import com.pkmoba.PkmobaMod;
 import com.pkmoba.network.CharizardSyncPayload;
 import kotlin.Unit;
 import kotlin.jvm.functions.Function1;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
@@ -17,10 +19,23 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 
 import javax.annotation.Nullable;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
- * 受控宝可梦的唯一管理者（保留历史类名）：全局只允许存在一只受控实体。
+ * 受控宝可梦的管理者（保留历史类名）。
+ *
+ * <p>0.38 起一名玩家可以同时拥有<b>多只</b>在场受控宝可梦（{@link #getActiveList}），
+ * 但同一时刻只有一只处于"选中"状态（{@link #getControlled}）：
+ * <ul>
+ *   <li>技能、普攻指令、移动指令、上帝视角跟随都作用在<b>选中</b>的那只上；</li>
+ *   <li>场上其它实体各自保留自己的寻路/攻击状态（那些状态本来就按实体 UUID 存），
+ *       互不覆盖，也不会因为召唤新的一只而被收回；</li>
+ *   <li>C 键收回/切换只作用于选中的那只；多只在场时再次 C 会轮换选中。</li>
+ * </ul>
  *
  * <p>关键决策（都踩过坑）：
  * <ul>
@@ -30,6 +45,9 @@ import java.util.UUID;
  *   <li><b>不关 AI</b>：用户要求走原生寻路，而 {@code isNoAi=true} 会让 navigation 停止 tick，
  *       连绕障都不会有。改用"保留 AI + 每 tick 覆盖 navigation + 清空攻击目标"。</li>
  *   <li><b>鲁棒性</b>：{@code setPersistenceRequired()} 挡自然 despawn；保留正常受伤与死亡。</li>
+ *   <li><b>旧版单实体训练场保留</b>：{@link #spawn} / {@link #getActive} 仍是"唯一训练实体"，
+ *       只为兼容 {@code move/PlacementService} 的选点召唤；新的多实体流程走
+ *       {@link #spawnMatchEntity} + 每玩家列表。</li>
  * </ul>
  */
 public final class CharizardManager {
@@ -50,67 +68,270 @@ public final class CharizardManager {
     @Nullable
     private static UUID activeOwnerId;
 
-    // Match entities are separate from the legacy training singleton.
-    private static final java.util.Map<UUID, PokemonEntity> CONTROLLED = new java.util.HashMap<>();
+    /**
+     * 每名玩家当前在场的受控宝可梦（按召唤顺序）。
+     *
+     * <p>用 {@link LinkedHashMap} 保证遍历顺序稳定；列表里只存实体引用，
+     * 死亡/被移除的实体在 {@link #prune(UUID)} 里清理。
+     */
+    private static final Map<UUID, List<PokemonEntity>> OWNED = new LinkedHashMap<>();
+    /** 每名玩家当前"选中"（HUD/技能/上帝视角跟随）的那只受控实体。 */
+    private static final Map<UUID, UUID> SELECTED = new LinkedHashMap<>();
 
+    static {
+        // 离线清理：玩家退出时收回其所有在场宝可梦，避免实体永远留在世界里没人管。
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            discardAllControlled(handler.player);
+            // 房间系统：玩家掉线时释放他占的房位，避免空房间永远挂着。
+            com.pkmoba.duel.RoomManager.onQuit(handler.player);
+        });
+        // 服务器停止时清空静态登记，避免换世界/重启后引用到旧实体。
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+            OWNED.clear();
+            SELECTED.clear();
+            reset();
+        });
+    }
+
+    /**
+     * 该玩家当前"选中"的那只受控宝可梦；没有则退回旧版单实体（训练场）兼容路径。
+     *
+     * <p>语义保持不变：所有旧调用点拿到的都是"玩家正在操控的那一只"，
+     * 多只同时在场时由 {@link #select} / {@link #selectNext} 决定是谁。
+     */
     @Nullable
     public static PokemonEntity getControlled(ServerPlayer player) {
-        PokemonEntity entity = CONTROLLED.get(player.getUUID());
-        if (entity != null) return entity.isAlive() && !entity.isRemoved() ? entity : null;
+        if (player == null) return null;
+        PokemonEntity selected = selectedOf(player.getUUID());
+        if (selected != null) return selected;
         return player.getUUID().equals(activeOwnerId) ? getActive(player.serverLevel().getServer()) : null;
+    }
+
+    /** 语义同 {@link #getControlled}：当前选中的那只。 */
+    @Nullable
+    public static PokemonEntity getSelected(ServerPlayer player) {
+        return getControlled(player);
+    }
+
+    /** 该玩家场上所有受控实体（按召唤顺序，已剔除死亡/被移除的）。 */
+    public static List<PokemonEntity> getActiveList(ServerPlayer player) {
+        return player == null ? List.of() : prune(player.getUUID());
+    }
+
+    /** {@link #getActiveList} 的别名，方便调用点按"activeList"命名。 */
+    public static List<PokemonEntity> activeList(ServerPlayer player) {
+        return getActiveList(player);
+    }
+
+    /** 该玩家场上指定物种的那只（活着才返回）；用于"重复召唤同一只 → 挪位置而不是再生成"。 */
+    @Nullable
+    public static PokemonEntity findControlled(ServerPlayer player, @Nullable ResourceLocation speciesId) {
+        if (player == null || speciesId == null) return null;
+        for (PokemonEntity entity : getActiveList(player)) {
+            if (speciesId.equals(entity.getPokemon().getSpecies().getResourceIdentifier())) return entity;
+        }
+        return null;
+    }
+
+    /** 把"选中"切到指定实体（必须已经登记在该玩家名下且活着）。 */
+    public static boolean select(ServerPlayer player, PokemonEntity entity) {
+        if (player == null || entity == null) return false;
+        if (!getActiveList(player).contains(entity)) return false;
+        SELECTED.put(player.getUUID(), entity.getUUID());
+        broadcastSync(player.server);
+        return true;
+    }
+
+    /**
+     * 多只在场时按召唤顺序轮换"选中"（C 键切换用，不收回任何实体）。
+     *
+     * @return 新的选中实体；场上没有实体时返回 null
+     */
+    @Nullable
+    public static PokemonEntity selectNext(ServerPlayer player) {
+        List<PokemonEntity> list = getActiveList(player);
+        if (list.isEmpty()) return null;
+        PokemonEntity current = selectedOf(player.getUUID());
+        int index = current == null ? -1 : list.indexOf(current);
+        PokemonEntity next = list.get((index + 1) % list.size());
+        SELECTED.put(player.getUUID(), next.getUUID());
+        broadcastSync(player.server);
+        return next;
     }
 
     @Nullable
     public static UUID getControlledOwner(PokemonEntity entity) {
-        for (var entry : CONTROLLED.entrySet()) {
-            if (entry.getValue() == entity) return entry.getKey();
+        if (entity == null) return null;
+        UUID targetId = entity.getUUID();
+        // 旧版单实体优先（训练场那条路径不进 OWNED 表）
+        if (targetId.equals(activeEntityId)) return activeOwnerId;
+        for (UUID owner : new ArrayList<>(OWNED.keySet())) {
+            for (PokemonEntity owned : prune(owner)) {
+                if (owned.getUUID().equals(targetId)) return owner;
+            }
         }
-        return entity != null && entity.getUUID().equals(activeEntityId) ? activeOwnerId : null;
+        return null;
     }
 
-    public static java.util.List<PokemonEntity> getControlledEntities(MinecraftServer server) {
-        java.util.List<PokemonEntity> result = new java.util.ArrayList<>();
+    /** 服务器上所有在场受控实体（所有玩家 + 旧版训练实体），战斗/寻路 tick 遍历用。 */
+    public static List<PokemonEntity> getControlledEntities(MinecraftServer server) {
+        List<PokemonEntity> result = new ArrayList<>();
         PokemonEntity training = getActive(server);
         if (training != null) result.add(training);
-        for (PokemonEntity entity : CONTROLLED.values()) {
-            if (entity.level().getServer() == server && entity.isAlive() && !entity.isRemoved()
-                    && !result.contains(entity)) result.add(entity);
+        for (UUID owner : new ArrayList<>(OWNED.keySet())) {
+            for (PokemonEntity entity : prune(owner)) {
+                if (entity.level().getServer() == server && !result.contains(entity)) result.add(entity);
+            }
         }
         return result;
     }
 
+    /**
+     * 登记一只受控实体并把它设为"选中"。
+     *
+     * <p>0.38 起不再"每个玩家只能有一只"：同玩家的多只并存，按登记顺序排列。
+     */
     public static void registerControlled(UUID owner, PokemonEntity entity) {
-        if (CONTROLLED.containsKey(owner)) throw new IllegalStateException("Owner already controls a match entity");
-        CONTROLLED.put(owner, entity);
+        if (owner == null || entity == null) return;
+        List<PokemonEntity> list = OWNED.computeIfAbsent(owner, id -> new ArrayList<>());
+        list.removeIf(e -> e == null || e.isRemoved() || !e.isAlive());
+        boolean exists = false;
+        for (PokemonEntity owned : list) {
+            if (owned.getUUID().equals(entity.getUUID())) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) list.add(entity);
+        SELECTED.put(owner, entity.getUUID());
     }
 
+    /** 清空该玩家的全部受控登记（对局结束用；实体由调用方负责 discard）。 */
     public static void unregisterControlled(UUID owner) {
-        CONTROLLED.remove(owner);
+        if (owner == null) return;
+        OWNED.remove(owner);
+        SELECTED.remove(owner);
+    }
+
+    /** 只摘掉某一只受控登记（死亡/单独删除用；同玩家其它在场实体不受影响）。 */
+    public static void unregisterControlled(ServerPlayer player, PokemonEntity entity) {
+        if (player == null || entity == null) return;
+        UUID ownerId = player.getUUID();
+        List<PokemonEntity> list = OWNED.get(ownerId);
+        if (list == null) return;
+        list.removeIf(e -> e == null || e.getUUID().equals(entity.getUUID()));
+        if (list.isEmpty()) {
+            OWNED.remove(ownerId);
+            SELECTED.remove(ownerId);
+        } else if (entity.getUUID().equals(SELECTED.get(ownerId))) {
+            // 选中的被摘掉了：交给 prune 重新选一只（默认最近召唤的）
+            SELECTED.remove(ownerId);
+        }
     }
 
     /**
-     * 收回该玩家当前的受控宝可梦：从控制表摘掉并移除实体（<b>不</b>记为阵亡）。
+     * 收回该玩家<b>当前选中</b>的那只（不记为阵亡）。
      *
-     * <p>统一从这里走，避免"只 unregister 不 discard"导致旧实体还留在世界里，
-     * 再召唤时又生成一只 —— 那就是玩家反馈的"无限召唤"。
+     * <p>0.38 起只收选中那一只；同玩家其它在场实体继续保留、各自独立行动。
+     * 收回后选中会落到剩下的某一只上（没有则空）。
+     *
+     * @return 被收回的实体；场上没有返回 null
      */
-    public static void discardControlled(ServerPlayer player) {
-        PokemonEntity entity = CONTROLLED.remove(player.getUUID());
-        if (entity == null && player.getUUID().equals(activeOwnerId)) {
-            entity = getActive(player.server);
-            if (entity != null) {
+    @Nullable
+    public static PokemonEntity discardControlled(ServerPlayer player) {
+        if (player == null) return null;
+        PokemonEntity selected = getControlled(player);
+        if (selected == null) return null;
+        discardControlled(player, selected);
+        return selected;
+    }
+
+    /** 收回该玩家场上的指定一只（不记为阵亡）。 */
+    public static void discardControlled(ServerPlayer player, PokemonEntity entity) {
+        if (player == null || entity == null) return;
+        unregisterControlled(player, entity);
+        if (!entity.isRemoved()) entity.discard();
+        broadcastSync(player.server);
+    }
+
+    /**
+     * 收回该玩家<b>所有</b>在场宝可梦（删除全部 / 离线 / 对局入场清场用）。
+     *
+     * <p>旧版训练场单实体（{@link #spawn} 生成的）在 owner 匹配时一并清掉。
+     */
+    public static void discardAllControlled(ServerPlayer player) {
+        if (player == null) return;
+        List<PokemonEntity> list = new ArrayList<>(prune(player.getUUID()));
+        OWNED.remove(player.getUUID());
+        SELECTED.remove(player.getUUID());
+        boolean changed = false;
+        for (PokemonEntity entity : list) {
+            if (!entity.isRemoved()) {
                 entity.discard();
-                reset();
+                changed = true;
             }
         }
-        if (entity != null) {
-            if (!entity.isRemoved()) entity.discard();
-            broadcastSync(player.server);
+        if (player.getUUID().equals(activeOwnerId)) {
+            PokemonEntity training = getActive(player.server);
+            if (training != null && !training.isRemoved()) {
+                training.discard();
+                changed = true;
+            }
+            reset();
         }
+        if (changed) broadcastSync(player.server);
     }
 
     public static boolean isMatchEntity(PokemonEntity entity) {
-        return CONTROLLED.containsValue(entity);
+        if (entity == null) return false;
+        for (List<PokemonEntity> list : OWNED.values()) {
+            for (PokemonEntity owned : list) {
+                if (owned == entity || owned.getUUID().equals(entity.getUUID())) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 清理某玩家的列表：剔除死亡/被移除的实体，并在选中失效时重新选一只。
+     *
+     * @return 清理后的列表（可能为空但不会是 null）
+     */
+    private static List<PokemonEntity> prune(UUID ownerId) {
+        List<PokemonEntity> list = OWNED.get(ownerId);
+        if (list == null) return List.of();
+        list.removeIf(e -> e == null || e.isRemoved() || !e.isAlive());
+        if (list.isEmpty()) {
+            OWNED.remove(ownerId);
+            SELECTED.remove(ownerId);
+            return List.of();
+        }
+        UUID selectedId = SELECTED.get(ownerId);
+        boolean found = false;
+        if (selectedId != null) {
+            for (PokemonEntity entity : list) {
+                if (entity.getUUID().equals(selectedId)) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        // 选中的死了/被移除了：默认落到"最近召唤的那只"，保证玩家永远在操作一只存在的宝可梦。
+        if (!found) SELECTED.put(ownerId, list.get(list.size() - 1).getUUID());
+        return list;
+    }
+
+    @Nullable
+    private static PokemonEntity selectedOf(UUID ownerId) {
+        List<PokemonEntity> list = prune(ownerId);
+        if (list.isEmpty()) return null;
+        UUID selectedId = SELECTED.get(ownerId);
+        if (selectedId != null) {
+            for (PokemonEntity entity : list) {
+                if (entity.getUUID().equals(selectedId)) return entity;
+            }
+        }
+        return list.get(list.size() - 1);
     }
 
     private CharizardManager() {
@@ -164,7 +385,8 @@ public final class CharizardManager {
         activeEntityId = entity.getUUID();
         activeDimension = level.dimension().location();
         activeOwnerId = owner == null ? null : owner.getUUID();
-        // 召唤即设定圆形场地：圆心 = 召唤者位置，半径默认 48 格（可用 /mo arena 改）
+        // 召唤即记录圆形场地（圆心 = 召唤者位置，半径默认 48 格，可用 /mo arena 改）。
+        // 0.38：这只作为 HUD/对局信息 —— CharizardCombat.arenaEnforced 默认 false，不会拉回宝可梦。
         com.pkmoba.combat.CharizardCombat.setArena(
                 owner == null ? pos : owner.position(),
                 com.pkmoba.combat.CharizardCombat.MAX_DISTANCE_FROM_PLAYER);
@@ -219,13 +441,21 @@ public final class CharizardManager {
         return activeOwnerId;
     }
 
-    /** 把所有玩家客户端的"当前喷火龙"同步成最新状态。 */
+    /** 把所有玩家客户端的"当前喷火龙"同步成最新状态（每名玩家发自己选中的那只）。 */
     public static void broadcastSync(MinecraftServer server) {
         PokemonEntity entity = getActive(server);
         int id = entity == null ? -1 : entity.getId();
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             PokemonEntity personal = getControlled(player);
-            int personalId = personal != null ? personal.getId() : CONTROLLED.containsKey(player.getUUID()) ? -1 : id;
+            int personalId;
+            if (personal != null) {
+                personalId = personal.getId();
+            } else if (OWNED.containsKey(player.getUUID())) {
+                // 有受控记录但都失效了：明确告诉客户端"现在没有"，别让它继续跟旧实体
+                personalId = -1;
+            } else {
+                personalId = id;
+            }
             if (net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.canSend(player, CharizardSyncPayload.TYPE)) {
                 net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player, new CharizardSyncPayload(personalId));
             }

@@ -1,5 +1,6 @@
 package com.pkmoba.client;
 
+import com.cobblemon.mod.common.client.render.models.blockbench.PosableState;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 import com.cobblemon.mod.common.entity.PoseType;
 import com.cobblemon.mod.common.entity.pokemon.PokemonBehaviourFlag;
@@ -11,18 +12,32 @@ import net.minecraft.world.phys.Vec3;
 /**
  * 客户端走路动画兜底（用户选 A1-A：客户端按实际速度自己切 walk/idle）。
  *
- * <p>为什么需要这一层：Cobblemon 判断是否在走路用的是
- * {@code isPokemonWalking = walkDist - walkDistO > 0.005F}（PokemonEntity.kt:654），
- * 而 walkDist 由实体自身移动推进。我们是服务端驱动 + 客户端插值，客户端这个增量经常为 0，
- * 于是它一直播待机姿势 —— 表现就是"滑行"。
+ * <p>为什么需要这一层：服务端 {@code MoveOrderService.straightWalk} 用
+ * {@code entity.move(MoverType.SELF, new Vec3(dx, 0, dz))} 直接推位置，且只在
+ * {@code END_SERVER_TICK}（所有实体 tick 之后）执行。Cobblemon 的走路判定在
+ * {@code PokemonEntity.tick()} 里用 {@code walkDist - walkDistO > 0.005F} 算，
+ * 而 walkDistO 在基类 tick 开头就被快照成 walkDist —— 我们推位置时这个比较早就跑完了，
+ * 差值恒为 0，于是服务端 {@code isPokemonWalking} 永远 false、MOVING/POSE_TYPE 永远不切 WALK。
  *
- * <p>这里每 tick 检查实体的实际位移：动了就把 isPokemonWalking 置真。
- * 时机很关键——必须在本 tick 的实体 tick **之后**（END_CLIENT_TICK）设置，
- * 因为 Cobblemon 每 tick 会先把该值重算为 false，渲染发生在 tick 之后。
+ * <p>更隐蔽的是第二个坑：{@code entity.move} 末尾是
+ * {@code setOnGroundWithMovement(verticalCollisionBelow, movement)}，而
+ * {@code verticalCollisionBelow} 要求 {@code movement.y < 0}。我们的 motion.y 恒为 0，
+ * 所以每移动一 tick 服务端都把 onGround 清成 false（站着不动时反而保留 true）。
+ * 这会让客户端 molang {@code q.in_air} 为真，Cobblemon 的 "walking"/"running" 姿势条件
+ * {@code !q.in_air} 不成立，姿势会退化成 "jump"（ride_jump 静止动画）—— 腿依旧不动。
+ *
+ * <p>所以这里每 tick 检查实体的实际位移：动了就补
+ * {@code setOnGround(true)} + MOVING + POSE_TYPE(WALK)，并把动画状态机切到走路姿势。
+ * 时机必须是本 tick 的实体 tick **之后**（END_CLIENT_TICK），渲染发生在 tick 之后。
  */
 public final class WalkAnimator {
     /** 位移平方阈值：约 0.02 格，足以区分"站着"与"在走"，又能滤掉同步抖动。 */
     private static final double MOVE_EPSILON_SQR = 4.0E-4;
+    /**
+     * 走路状态保持的 tick 数。位置包不是每 tick 都有，单 tick 没位移就立刻回待机会让腿一抽一停；
+     * 5 tick（250ms）既能吃掉同步空档，又能在真正停下时及时回待机。
+     */
+    private static final int WALK_HOLD_TICKS = 5;
 
     private static Vec3 lastPos;
     private static java.util.UUID lastEntityId;
@@ -30,10 +45,21 @@ public final class WalkAnimator {
     private static boolean wasBlastoiseShellCurl;
     private static PokemonEntity shellEntity;
     private static PoseType lastSkillPose;
+    /** 上一次接管的站立/走路姿势；0.38 起需要自己写 POSE_TYPE，只在姿势变化时重播动画。 */
+    private static PoseType lastWalkPose;
+    /** 剩余多少 tick 仍算"在走"（见 {@link #WALK_HOLD_TICKS}）。 */
+    private static int walkHoldTicks;
     /** 一旦出错就永久停用，避免每 tick 刷异常。 */
     private static boolean disabled = false;
+    /** 首次切入 WALK / 回 STAND 各打印一次，便于下一次实测直接从 latest.log 判断接管是否生效。 */
+    private static boolean loggedWalkOnce;
+    private static boolean loggedIdleOnce;
 
     private WalkAnimator() {
+    }
+
+    private static org.slf4j.Logger log() {
+        return org.slf4j.LoggerFactory.getLogger("pkmoba");
     }
 
     public static void init() {
@@ -57,17 +83,13 @@ public final class WalkAnimator {
     private static void pkmoba$tickInner(Minecraft mc) {
         int id = ClientState.getCharizardId();
         if (id < 0 || mc.level == null) {
-            lastPos = null;
-            lastEntityId = null;
-            wasSkillFlying = false;
+            reset();
             clearShellAnimation();
             return;
         }
         Entity entity = mc.level.getEntity(id);
         if (!(entity instanceof PokemonEntity pokemonEntity)) {
-            lastPos = null;
-            lastEntityId = null;
-            wasSkillFlying = false;
+            reset();
             clearShellAnimation();
             return;
         }
@@ -81,8 +103,7 @@ public final class WalkAnimator {
 
         Vec3 pos = pokemonEntity.position();
         if (!pokemonEntity.getUUID().equals(lastEntityId)) {
-            lastPos = null;
-            wasSkillFlying = false;
+            reset();
             lastEntityId = pokemonEntity.getUUID();
         }
         boolean skillFlying = ClientState.getChannel() == 3
@@ -94,7 +115,11 @@ public final class WalkAnimator {
         if (skillFlying || wasSkillFlying) {
             boolean translating = skillFlying && moved;
             PoseType pose = skillFlying ? (translating ? PoseType.FLY : PoseType.HOVER)
-                    : (moved && pokemonEntity.onGround() ? PoseType.WALK : PoseType.STAND);
+                    : (moved ? PoseType.WALK : PoseType.STAND);
+            if (!skillFlying && moved) {
+                // 落回地面的这一帧同样要修 onGround，理由见下方地面分支注释。
+                pokemonEntity.setOnGround(true);
+            }
             pokemonEntity.setBehaviourFlag(PokemonBehaviourFlag.FLYING, skillFlying);
             pokemonEntity.setPokemonFlying(translating);
             pokemonEntity.setPokemonWalking(!skillFlying && moved);
@@ -106,14 +131,81 @@ public final class WalkAnimator {
                 if (!wasSkillFlying || pose != lastSkillPose) state.setPoseToFirstSuitable(pose);
             }
             lastSkillPose = pose;
+            // 从飞行姿态落回地面时这里已经播过一次 WALK/STAND，同步记录，避免下一 tick 重复重置。
+            if (!skillFlying) lastWalkPose = pose;
         } else {
             boolean flying = pokemonEntity.getBehaviourFlag(PokemonBehaviourFlag.FLYING)
                     || pokemonEntity.getCurrentPoseType() == PoseType.FLY
                     || pokemonEntity.getCurrentPoseType() == PoseType.HOVER;
-            pokemonEntity.setPokemonWalking(!flying && moved);
+            if (flying) {
+                pokemonEntity.setPokemonWalking(false);
+                lastWalkPose = null;
+                walkHoldTicks = 0;
+            } else if (!shellCurl) {
+                // 0.38 起移动改成服务端 entity.move() 直接推位置，走路判定全断，这里自己在客户端补。
+                //
+                // 真正的坑不是 MOVING/POSE_TYPE 写不进去（飞行分支用的就是同一套写法且实测有效），
+                // 而是 onGround：MoveOrderService.straightWalk 用
+                // entity.move(MoverType.SELF, new Vec3(dx, 0, dz)) 推位移（竖直分量恒为 0），
+                // 原版 Entity.move 末尾是 setOnGroundWithMovement(verticalCollisionBelow, movement)，
+                // 而 verticalCollisionBelow = (竖直碰撞 && movement.y < 0) —— dy 恒 0 所以每移动一 tick
+                // onGround 都被清成 false（站着不动时没有 move() 调用，onGround 反而是 true）。
+                // 由此两个后果：
+                //   1) 旧代码 `moved && onGround()` 永远不进 WALK，姿势卡在 STAND = 用户看到的"滑行"；
+                //   2) 就算强切 WALK，molang q.in_air 为真会让 "walking"/"running" 姿势的 condition
+                //      （!q.in_air ...）不成立，getFirstSuitablePose(WALK) 退到 "jump" 姿势（ride_jump
+                //      静止动画），腿还是不动。所以移动时必须把 onGround 拉回 true。
+                walkHoldTicks = moved ? WALK_HOLD_TICKS : Math.max(0, walkHoldTicks - 1);
+                boolean walking = walkHoldTicks > 0;
+                // 强写 onGround 之前的原值，仅用于首次接管的诊断日志。
+                boolean onGroundBefore = pokemonEntity.onGround();
+                // 停下后的 1 tick 也要保持 onGround，避免切回 STAND 时被 q.in_air 顶到 jump 姿势。
+                if (walking || lastWalkPose == PoseType.WALK) {
+                    pokemonEntity.setOnGround(true);
+                }
+                // 只在当前是地面姿势时接管，避免覆盖睡眠/受击/下场等他人姿势。
+                // NONE 一并接受：Cobblemon 的 "standing" 姿势同时声明了 STAND/NONE，有时初始值为 NONE。
+                PoseType current = pokemonEntity.getCurrentPoseType();
+                if (current == PoseType.STAND || current == PoseType.WALK || current == PoseType.NONE) {
+                    PoseType pose = walking ? PoseType.WALK : PoseType.STAND;
+                    pokemonEntity.setPokemonWalking(walking);
+                    pokemonEntity.getEntityData().set(PokemonEntity.getMOVING(), walking);
+                    pokemonEntity.getEntityData().set(PokemonEntity.getPOSE_TYPE(), pose);
+                    // 姿势真的变了才重播，否则每 tick 重置会把走路的循环动画卡在第一帧。
+                    PosableState state = pokemonEntity.getDelegate() instanceof PosableState s ? s : null;
+                    if (state != null && pose != lastWalkPose) {
+                        state.setPoseToFirstSuitable(pose);
+                    }
+                    if (pose == PoseType.WALK && !loggedWalkOnce) {
+                        loggedWalkOnce = true;
+                        log().info("[pkmoba] walk-anim 接管 WALK（moved={}, onGround(修前)={}, 原POSE_TYPE={}, 接管后姿势={}）",
+                                moved, onGroundBefore, current,
+                                state == null ? "?" : state.getCurrentPose());
+                    } else if (pose == PoseType.STAND && loggedWalkOnce && !loggedIdleOnce) {
+                        loggedIdleOnce = true;
+                        log().info("[pkmoba] walk-anim 回退 STAND（moved={}, 接管后姿势={}）",
+                                moved, state == null ? "?" : state.getCurrentPose());
+                    }
+                    lastWalkPose = pose;
+                }
+            } else {
+                // 蜷缩（高速旋转）由 ShellAnimator / 服务端 render-tail 姿态负责，这里完全让位；
+                // 清空记录，退出蜷缩后再重新播一次站立/走路。
+                lastWalkPose = null;
+                walkHoldTicks = 0;
+            }
         }
         wasSkillFlying = skillFlying;
         lastPos = pos;
+    }
+
+    /** 目标宝可梦丢失/切换时清空所有逐实体状态。 */
+    private static void reset() {
+        lastPos = null;
+        lastEntityId = null;
+        wasSkillFlying = false;
+        lastWalkPose = null;
+        walkHoldTicks = 0;
     }
 
     private static void clearShellAnimation() {

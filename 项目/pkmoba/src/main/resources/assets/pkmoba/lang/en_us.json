@@ -10,15 +10,17 @@
   "skill.pkmoba.w": "Fire Spin",
   "skill.pkmoba.e": "Fly",
   "skill.pkmoba.r": "Fire Blast",
-  "skill.pkmoba.blastoise.q": "Water Blade",
-  "skill.pkmoba.blastoise.w": "Iceberg Drop",
-  "skill.pkmoba.blastoise.e": "Rapid Spin",
-  "skill.pkmoba.blastoise.r": "Hydro Pump",
+  "skill.pkmoba.blastoise.q": "Hydro Cannon",
+  "skill.pkmoba.blastoise.w": "Rapid Spin",
+  "skill.pkmoba.blastoise.e": "Surf",
+  "skill.pkmoba.blastoise.r": "Hydro Storm",
   "item.pkmoba.battle_menu": "PKMOBA Battle Menu",
   "itemGroup.pkmoba": "PKMOBA",
   "item.pkmoba.species_switch": "PKMOBA Pokemon Acquire",
   "item.pkmoba.player_marker": "PKMOBA Player Marker",
+  "item.pkmoba.boundary_marker": "PKMOBA Boundary Brush",
   "item.pkmoba.pokemon_marker": "PKMOBA Pokemon Marker",
+  "key.pkmoba.room_lobby": "Room Lobby",
   "key.pkmoba.switch_pokemon": "Switch to next Pokemon",
-  "key.pkmoba.summon_pokemon": "Summon Pokemon at crosshair"
+  "key.pkmoba.summon_pokemon": "Summon Pokemon 3 blocks ahead"
 }

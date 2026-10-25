@@ -1,7 +1,9 @@
 package com.pkmoba.client;
 
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.minecraft.Util;
 import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
@@ -15,8 +17,15 @@ public final class SkillHud {
     private static final int TEAM_W = 52;
     private static final int CONTENT_X = 57;
     private static final int MARGIN = 8;
-    /** 整体缩放：用户反馈面板偏大，整体缩到 86%。 */
-    private static final float SCALE = 0.86F;    private static final int DRAW_W = Math.round(PANEL_W * SCALE);
+    /**
+     * 整体缩放：用户反馈面板偏大，缩到 85%。
+     *
+     * <p>注意：这是非整数的 pose 缩放，面板内的文字必须用 {@link #drawCenteredText} 这类
+     * <b>无阴影</b>方式绘制 —— 带阴影的 {@code drawCenteredString} 会把 1px 阴影一起缩放到
+     * 0.85px 再重采样，字形和阴影糊成一团双影（用户反馈的"血量数字重影叠字"）。
+     */
+    private static final float SCALE = 0.85F;
+    private static final int DRAW_W = Math.round(PANEL_W * SCALE);
     private static final int DRAW_H = Math.round(PANEL_H * SCALE);
     /** "下一只"预览铭牌的高度。 */
     private static final int NEXT_H = 22;
@@ -29,10 +38,86 @@ public final class SkillHud {
     private static final int WATER_TEXT = 0xFF173D55;
     private static final int WATER_MUTED = 0xFF6E8B9A;
 
+    // ---- 0.38.10 技能栏统一化：按下反馈、冷却读秒、施法灰化 ----
+
+    /** 按下反馈动画时长（ms）：按下瞬间缩到 {@link #PRESS_SCALE}，之后回弹到 1.0。 */
+    private static final long PRESS_ANIM_MS = 140L;
+    /** 按下瞬间的缩放比例（一次按键只播一次）。 */
+    /** 0.39.5（用户 m03603）："W 技能不能有缩放" —— 按下不再缩图标，保持 1.0。 */
+    private static final float PRESS_SCALE = 1.0F;
+    /** 四个技能键的翻译键，与 {@link SkillKeys} 里注册的 KeyMapping 一一对应。 */
+    private static final String[] KEY_NAMES = {
+            "key.pkmoba.skill_q", "key.pkmoba.skill_w", "key.pkmoba.skill_e", "key.pkmoba.skill_r"
+    };
+    /** 反查到的按键绑定（惰性）；查不到时该槽不做按下反馈，不影响施法。 */
+    private static final KeyMapping[] KEY_BINDINGS = new KeyMapping[SkillPresentation.COUNT];
+    /** 上一帧按键是否按下，用来取"按下沿"，保证一次按键只播一次动画。 */
+    private static final boolean[] KEY_WAS_DOWN = new boolean[SkillPresentation.COUNT];
+    /** 按下动画起始时间（ms），0 表示当前没有动画。 */
+    private static final long[] PRESS_START_MS = new long[SkillPresentation.COUNT];
+    /** 上一帧引导 channel，用于把 0→N 的施法开始兜底当作一次按下反馈。 */
+    private static int lastFeedbackChannel;
+    /** 反馈状态对应的物种/实体；切换宝可梦时所有一次性状态归零。 */
+    private static String feedbackSpecies = "";
+    private static int feedbackEntityId = -1;
+    /**
+     * 冷却剩余秒数文案预生成（tick→"x.x"）。
+     *
+     * <p>最长冷却 140t，这里取 0..200，避免每帧、每格再做一次 {@code String.format} 分配。
+     */
+    private static final String[] REMAIN_TEXT = new String[201];
+    /** 技能名/图标按物种缓存，避免每帧重建 4 个 Component/ResourceLocation。 */
+    private static String cachedSpecies = "";
+    private static String[] cachedSkillNames;
+    private static ResourceLocation[] cachedIcons;
+    /** 按键提示文字缓存（绑定键值变化时自动刷新，支持游戏内改键）。 */
+    private static final String[] BINDING_LABELS = new String[SkillPresentation.COUNT];
+    private static final int[] BINDING_KEY_VALUES = new int[SkillPresentation.COUNT];
+
+    static {
+        for (int i = 0; i < REMAIN_TEXT.length; i++) {
+            REMAIN_TEXT[i] = String.format(java.util.Locale.ROOT, "%.1f", i / 20.0F);
+        }
+    }
+
     private SkillHud() { }
 
     public static void init() {
         HudRenderCallback.EVENT.register(SkillHud::render);
+    }
+
+    /** 四个技能图标最近一帧的屏幕左上角（GUI 缩放坐标），-1 表示还没画过。 */
+    private static final int[] LAST_ICON_X = {-1, -1, -1, -1};
+    private static final int[] LAST_ICON_Y = {-1, -1, -1, -1};
+
+    /**
+     * 鼠标正悬停在哪个技能图标上（0..3），没有则 -1。
+     *
+     * <p>用于"悬停技能图标 → 世界内画出该技能的极限范围"（用户要求把普攻白圈和技能指示统一）。
+     */
+    public static int hoveredSlot() {
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.screen != null || mc.player == null || mc.getWindow() == null) {
+            return -1;
+        }
+        double scale = mc.getWindow().getGuiScale();
+        if (scale <= 0.0) {
+            return -1;
+        }
+        int mouseX = (int) (mc.mouseHandler.xpos() / scale);
+        int mouseY = (int) (mc.mouseHandler.ypos() / scale);
+        int size = SkillPresentation.ICON_SIZE;
+        for (int i = 0; i < 4; i++) {
+            int iconX = LAST_ICON_X[i];
+            int iconY = LAST_ICON_Y[i];
+            if (iconX < 0 || iconY < 0) {
+                continue;
+            }
+            if (mouseX >= iconX && mouseX < iconX + size && mouseY >= iconY && mouseY < iconY + size) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     public static boolean isMouseOver() {
@@ -79,6 +164,8 @@ public final class SkillHud {
         int sh = mc.getWindow().getGuiScaledHeight();
         if (GodView.isActive() && CameraSettings.isPreviewVisible()) drawPreview(ctx, sw, sh);
         boolean ownPanel = isVisible(mc);
+        // 按下反馈 / 切换归零每帧维护一次；面板不显示时只更新按键状态，避免关掉面板后误触发
+        updateFeedbackState(mc, ownPanel, ownPanel ? hudSpecies(mc) : "");
         // 自己宝可梦倒下后，自己的技能面板不画，但对手血条仍要显示（对局还没结束）
         if (!ownPanel) {
             if (GodView.isActive() && ClientState.isOpponentActive()) {
@@ -129,10 +216,8 @@ public final class SkillHud {
         if (name == null || name.isEmpty()) name = next;
 
         String tag = "下一只";
-        java.util.List<String> team = ClientState.getTeam();
-        int index = team.indexOf(next);
-        String order = index >= 0 ? (index + 1) + "/" + team.size() : "";
-        int textW = mc.font.width(name) + mc.font.width(tag) + mc.font.width(order) + 62;
+        // 0.39.2：用户要求删掉"2/2"这种队伍序号，只保留物种名 + "下一只"。
+        int textW = mc.font.width(name) + mc.font.width(tag) + 62;
         int w = Math.max(128, Math.min(210, textW));
         int h = NEXT_H;
         int x = panelX + (DRAW_W - w) / 2;
@@ -164,11 +249,8 @@ public final class SkillHud {
 
         int textY = plateY + (h - 8) / 2;
         ctx.drawString(mc.font, name, px + ps + 5, textY, TEXT, false);
-        int tagX = x + w - 4 - mc.font.width(tag) - (order.isEmpty() ? 0 : mc.font.width(order) + 4);
+        int tagX = x + w - 4 - mc.font.width(tag);
         ctx.drawString(mc.font, tag, tagX, textY, MUTED, false);
-        if (!order.isEmpty()) {
-            ctx.drawString(mc.font, order, x + w - 4 - mc.font.width(order), textY, MUTED, false);
-        }
     }
 
     /**
@@ -296,48 +378,105 @@ public final class SkillHud {
 
         drawTeamModule(ctx, mc, x, y, speciesId, borderColor, textColor, mutedColor, water);
 
+        // 0.38.3：切宠宽限期（ClientState 300ms）内沿用上一帧数值并淡出，宽限期结束仍无数据
+        // 才画"同步中"；不再"立刻清零 → 下一包回填"，避免切宠时 UI 一闪一闪。
         float maxHp = Math.max(1.0F, ClientState.getMaxHp());
         float hp = Math.max(0.0F, Math.min(1.0F, ClientState.getHp() / maxHp));
+        float valueAlpha = ClientState.getCombatValueAlpha();
+        String hpText;
+        if (ClientState.isAwaitingSync() || ClientState.getMaxHp() <= 0.0F) {
+            hpText = "同步中";
+        } else {
+            hpText = (int) Math.ceil(ClientState.getHp()) + "/" + (int) ClientState.getMaxHp();
+        }
         int barLeft = x + CONTENT_X;
-        int barRight = x + PANEL_W - 9;
+        int contentRight = x + PANEL_W - 9;
+        // 血量数字右对齐放在血条右侧，不再压在血条上（旧版数字画在 y+4、血条占 y+7..y+12，
+        // 字形下半截压在填充色上，看起来像叠了一层字）。
+        int hpTextX = contentRight - mc.font.width(hpText);
+        int barRight = Math.max(barLeft + 20, hpTextX - 5);
         ctx.fill(barLeft, y + 7, barRight, y + 12, water ? 0xFF87A8B5 : 0xFFB5A88F);
         ctx.fill(barLeft, y + 7, barLeft + (int) ((barRight - barLeft) * hp), y + 12,
-                hp < 0.3F ? 0xFFC94F3D : 0xFF6E9A52);
-        String hpText = (int) Math.ceil(ClientState.getHp()) + "/" + (int) maxHp;
-        ctx.drawCenteredString(mc.font, hpText, (barLeft + barRight) / 2, y + 4, textColor);
+                withAlpha(hp < 0.3F ? 0xFFC94F3D : 0xFF6E9A52, valueAlpha));
+        ctx.drawString(mc.font, hpText, hpTextX, y + 4, withAlpha(textColor, valueAlpha), false);
 
-        int[] cooldowns = {ClientState.getCdQ(), ClientState.getCdW(), ClientState.getCdE(), ClientState.getCdR()};
+        // 0.38.3：引导条不再写死 channel 号，改用 SkillKeys 的物种感知映射（与瞄准预览同一份）。
+        // channel 4/6 有服务端下发的 charge（大字爆炎/加农水炮/喷水前摇），其余引导只画满条提示。
+        int channel = ClientState.getChannel();
+        int guidedSlot = SkillKeys.slotForChannel(speciesId, channel);
+        boolean chargeBar = channel == 4 || channel == 6;
+        float charge = Math.max(0.0F, Math.min(1.0F, ClientState.getCharge()));
+        boolean casting = channel != 0;
+        long now = Util.getMillis();
         for (int i = 0; i < SkillPresentation.COUNT; i++) {
-            int cellX = barLeft + i * 59;
-            int iconX = cellX + 12;
-            int iconY = y + 16;
-            int cost = com.pkmoba.combat.Skill.cost(pokemon, i);
-            boolean affordable = summoned && ClientState.getPoints() >= cost;
-            ctx.fill(cellX, y + 15, cellX + 54, y + 78, water ? 0x334A829B : 0x33765A3C);
-            ctx.fill(cellX + 1, y + 16, cellX + 53, y + 17, 0x55FFFFFF);
-            ResourceLocation icon = SkillPresentation.icon(speciesId, i);
-            drawIcon(ctx, icon, iconX, iconY, 30, affordable ? 1.0F : 0.48F);
+            int cellX = barLeft + i * SkillPresentation.CELL_STEP;
+            int iconX = cellX + SkillPresentation.ICON_INSET;
+            int iconY = y + SkillPresentation.ICON_Y;
+            int iconSize = SkillPresentation.ICON_SIZE;
+            // 0.39.4：把这一帧四个图标的屏幕矩形记下来，鼠标悬停时用来画该技能的范围指示
+            LAST_ICON_X[i] = iconX;
+            LAST_ICON_Y[i] = iconY;
+            // 0.38 起耗点按物种不同（水箭龟 4/2/3/4），用物种 id 读取，未召唤也能显示正确。
+            int cost = com.pkmoba.combat.Skill.cost(speciesId, i);
+            // 切宠宽限期内沿用上一帧的豆数，先别把图标压暗（否则就是一次"闪一下"）。
+            boolean affordable = (summoned || ClientState.isCombatGraceActive())
+                    && ClientState.getPoints() >= cost;
+            int cooldown = cooldownAt(i);
+            boolean inCast = casting && guidedSlot == i;
 
-            if (cooldowns[i] > 0) {
-                int mask = Math.max(1, Math.min(30, (int) (30 * cooldowns[i] / 40.0F)));
-                ctx.fill(iconX, iconY + 30 - mask, iconX + 30, iconY + 30, water ? 0xAA174666 : 0xAA34291E);
-                String remaining = String.format(java.util.Locale.ROOT, "%.1f", cooldowns[i] / 20.0F);
-                ctx.drawCenteredString(mc.font, remaining, iconX + 15, iconY + 10, 0xFFFFFFFF);
+            // 格子底 + 统一外框：四格同宽同高，图标固定 32px 原生像素居中，位置由
+            // SkillPresentation 的布局常量统一决定，四格不会再出现大小/位置不一致。
+            ctx.fill(cellX, y + SkillPresentation.CELL_TOP, cellX + SkillPresentation.CELL_W,
+                    y + SkillPresentation.CELL_BOTTOM, water ? 0x334A829B : 0x33765A3C);
+            ctx.fill(cellX + 1, y + SkillPresentation.CELL_TOP + 1,
+                    cellX + SkillPresentation.CELL_W - 1, y + SkillPresentation.CELL_TOP + 2, 0x55FFFFFF);
+            ctx.fill(iconX - 1, iconY - 1, iconX + iconSize + 1, iconY + iconSize + 1, borderColor);
+            ctx.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xFF1B1F22);
+            drawIcon(ctx, skillIcon(speciesId, i), iconX, iconY, iconSize,
+                    (affordable || inCast) ? 1.0F : 0.48F, pressScale(i));
+
+            if (inCast) {
+                // 施法/前摇/引导：整张图标压成灰色（灰色盖住图标本身），不再写"施法中"文字。
+                ctx.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xB46F7A82);
+            } else if (cooldown > 0) {
+                // 冷却遮罩：分母与服务端同一张表（Skill.cooldownTicks），自下而上退去。
+                int full = Math.max(1, com.pkmoba.combat.Skill.cooldownTicks(speciesId, i));
+                int mask = Math.max(1, Math.min(iconSize, (int) (iconSize * cooldown / (float) full)));
+                ctx.fill(iconX, iconY + iconSize - mask, iconX + iconSize, iconY + iconSize,
+                        water ? 0x99174666 : 0x9934291E);
+                // 剩余秒数自带深色底：压在遮罩上仍然清晰，0.1s 精度（<1s 显示 0.x），不裁切。
+                String remaining = remainText(cooldown);
+                int chipW = mc.font.width(remaining) + 4;
+                int chipX = iconX + (iconSize - chipW) / 2;
+                int chipY = iconY + iconSize - 12;
+                ctx.fill(chipX, chipY, chipX + chipW, chipY + 10, 0xC0000000);
+                drawCenteredText(ctx, mc, remaining, iconX + iconSize / 2, chipY + 1, 0xFFFFFFFF);
             } else if (!affordable) {
-                ctx.fill(iconX, iconY, iconX + 30, iconY + 30, 0x66000000);
+                ctx.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0x66000000);
+            }
+
+            // 引导进度条：只画在映射到的槽位（喷火龙飞翔等无槽位 channel 不会误点亮）。
+            // chargeBar（加农水炮/喷水/大字爆炎）按服务端 charge 填；其余引导没有进度数据，
+            // 用整条脉冲表示"引导进行中"，绝不画成冷却倒数。
+            if (guidedSlot == i) {
+                int barTop = iconY + iconSize - 3;
+                ctx.fill(iconX + 1, barTop, iconX + iconSize - 1, barTop + 2, 0x66000000);
+                if (chargeBar) {
+                    int fillRight = iconX + 1 + (int) ((iconSize - 2) * charge);
+                    ctx.fill(iconX + 1, barTop, fillRight, barTop + 2,
+                            water ? 0xFF62C8E2 : 0xFFFFC35A);
+                } else {
+                    float pulse = 0.5F + 0.5F * (float) Math.sin(now / 160.0);
+                    ctx.fill(iconX + 1, barTop, iconX + iconSize - 1, barTop + 2,
+                            withAlpha(water ? 0xFF62C8E2 : 0xFFFFC35A, 0.55F + 0.35F * pulse));
+                }
             }
 
             ctx.fill(cellX + 14, y + 48, cellX + 40, y + 60, borderColor);
-            ctx.drawCenteredString(mc.font, SkillKeys.bindingLabel(i), cellX + 27, y + 49, water ? 0xFFE4F5F8 : 0xFFFFF3D4);
-            String skillName = Component.translatable(
-                    com.pkmoba.combat.Skill.translationKey(speciesId, i)).getString();
-            ctx.drawCenteredString(mc.font, skillName, cellX + 27, y + 64, affordable ? textColor : mutedColor);
-            if (i == 2 && ClientState.getChannel() == 3) {
-                ctx.fill(iconX + 1, iconY + 27, iconX + 29, iconY + 30, water ? 0xFF62C8E2 : 0xFF80AE5A);
-            }
-            if (i == 3 && ClientState.getChannel() == 4) {
-                ctx.fill(iconX + 1, iconY + 27, iconX + 1 + (int) (28 * Math.max(0, Math.min(1, ClientState.getCharge()))), iconY + 30, water ? 0xFF65CBE5 : 0xFFFFC35A);
-            }
+            drawCenteredText(ctx, mc, bindingLabel(i), cellX + 27, y + 49,
+                    water ? 0xFFE4F5F8 : 0xFFFFF3D4);
+            drawCenteredText(ctx, mc, skillName(speciesId, i), cellX + 27, y + 64,
+                    affordable ? textColor : mutedColor);
         }
 
         int points = Math.max(0, Math.min(10, (int) ClientState.getPoints()));
@@ -346,7 +485,7 @@ public final class SkillHud {
         int beadWidth = 9;
         int beadGroupWidth = 10 * beadStep - (beadStep - beadWidth);
         int resourceWidth = beadGroupWidth + 5 + mc.font.width(pointsLabel);
-        int resourceX = barLeft + ((barRight - barLeft) - resourceWidth) / 2;
+        int resourceX = barLeft + ((contentRight - barLeft) - resourceWidth) / 2;
         int beadY = y + 84;
         int beadOutline = water ? 0xFF173D55 : 0xFF7B5426;
         int beadFill = water ? 0xFF56B8D8 : 0xFFE0AD45;
@@ -470,7 +609,7 @@ public final class SkillHud {
             hint = summoned ? "C 收回" : "C 换";
             hintColor = mutedColor;
         }
-        ctx.drawCenteredString(mc.font, hint, x + 25, y + 70, hintColor);
+        drawCenteredText(ctx, mc, hint, x + 25, y + 70, hintColor);
     }
 
     /** 宝可梦头像是 64×64 的网络抓取图，单独走一套缩放，别和 32×32 技能图标混用。 */
@@ -485,6 +624,150 @@ public final class SkillHud {
         graphics.setColor(1.0F, 1.0F, 1.0F, 1.0F);
     }
 
+    /** 把颜色按系数变淡（RGB 不动、只压 alpha），用于切宠宽限期的旧数值淡出。 */
+    private static int withAlpha(int color, float alpha) {
+        int a = Math.max(0, Math.min(255, Math.round(((color >>> 24) & 0xFF) * alpha)));
+        return (a << 24) | (color & 0xFFFFFF);
+    }
+
+    // ---- 0.38.10 技能栏统一化：按下反馈 / 冷却文案 / 物种缓存 ----
+
+    /** 取槽位冷却（tick）；用 switch 代替每帧 new int[4]。 */
+    private static int cooldownAt(int index) {
+        return switch (index) {
+            case 0 -> ClientState.getCdQ();
+            case 1 -> ClientState.getCdW();
+            case 2 -> ClientState.getCdE();
+            default -> ClientState.getCdR();
+        };
+    }
+
+    /** 冷却剩余秒数文案（0.1s 精度，<1s 显示 0.x）；预生成表外的超长冷却再兜底格式化。 */
+    private static String remainText(int ticks) {
+        if (ticks > 0 && ticks < REMAIN_TEXT.length) return REMAIN_TEXT[ticks];
+        return String.format(java.util.Locale.ROOT, "%.1f", ticks / 20.0F);
+    }
+
+    /**
+     * 物种变化时重建图标与技能名缓存。
+     *
+     * <p>技能名走 {@code Component.translatable(...).getString()}、图标走
+     * {@code ResourceLocation.fromNamespaceAndPath}，每帧四格各建一次太浪费；
+     * 只有物种变化（含切宠/未召唤→已召唤）时才重建。
+     */
+    private static void ensureSpeciesCache(String speciesId) {
+        if (speciesId.equals(cachedSpecies) && cachedSkillNames != null && cachedIcons != null) return;
+        cachedSpecies = speciesId;
+        cachedSkillNames = new String[SkillPresentation.COUNT];
+        cachedIcons = new ResourceLocation[SkillPresentation.COUNT];
+        for (int i = 0; i < SkillPresentation.COUNT; i++) {
+            cachedSkillNames[i] = Component.translatable(
+                    com.pkmoba.combat.Skill.translationKey(speciesId, i)).getString();
+            cachedIcons[i] = SkillPresentation.icon(speciesId, i);
+        }
+    }
+
+    private static ResourceLocation skillIcon(String speciesId, int index) {
+        ensureSpeciesCache(speciesId);
+        return cachedIcons[index];
+    }
+
+    private static String skillName(String speciesId, int index) {
+        ensureSpeciesCache(speciesId);
+        return cachedSkillNames[index];
+    }
+
+    /**
+     * 按键提示文字（Q/W/E/R 或玩家改键后的名字）。
+     *
+     * <p>每帧 {@code getTranslatedKeyMessage().getString()} 会新建 Component/String，
+     * 这里按"绑定键值"缓存，玩家改键后自动刷新，平时零分配。
+     */
+    private static String bindingLabel(int index) {
+        KeyMapping key = keyBinding(index);
+        if (key == null) return SkillKeys.bindingLabel(index);
+        int value = net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper
+                .getBoundKeyOf(key).getValue();
+        if (BINDING_LABELS[index] == null || BINDING_KEY_VALUES[index] != value) {
+            BINDING_LABELS[index] = key.getTranslatedKeyMessage().getString();
+            BINDING_KEY_VALUES[index] = value;
+        }
+        return BINDING_LABELS[index];
+    }
+
+    /**
+     * 反查四个技能键的 {@link KeyMapping}。
+     *
+     * <p>{@link SkillKeys} 里的 KeyMapping 是私有字段，HUD 不能直接拿；Fabric 会把模组按键
+     * 追加进 {@code mc.options.keyMappings}，这里按翻译键反查一次并缓存。
+     */
+    private static KeyMapping keyBinding(int index) {
+        KeyMapping cached = KEY_BINDINGS[index];
+        if (cached != null) return cached;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.options == null) return null;
+        String name = KEY_NAMES[index];
+        for (KeyMapping mapping : mc.options.keyMappings) {
+            if (name.equals(mapping.getName())) {
+                KEY_BINDINGS[index] = mapping;
+                return mapping;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 每帧维护按下反馈状态（一次按键只播一次动画）。
+     *
+     * <p>按下沿检测用 KeyMapping 的 {@code isDown()} 自己做，不动 {@link SkillKeys} 的
+     * {@code consumeClick()}；另外把 channel 从 0 跳到某个槽位也当作一次按下（玩家改键、
+     * 反查失败时的兜底）。切换宝可梦/召唤/死亡时实体 id 或物种会变，一次性状态立刻归零。
+     */
+    private static void updateFeedbackState(Minecraft mc, boolean listening, String speciesId) {
+        int entityId = ClientState.getCharizardId();
+        if (!speciesId.equals(feedbackSpecies) || entityId != feedbackEntityId) {
+            java.util.Arrays.fill(PRESS_START_MS, 0L);
+            java.util.Arrays.fill(KEY_WAS_DOWN, false);
+            lastFeedbackChannel = 0;
+            feedbackSpecies = speciesId;
+            feedbackEntityId = entityId;
+        }
+        long now = Util.getMillis();
+        boolean canPress = listening && mc.screen == null;
+        for (int i = 0; i < SkillPresentation.COUNT; i++) {
+            KeyMapping key = keyBinding(i);
+            if (key == null) {
+                KEY_WAS_DOWN[i] = false;
+                continue;
+            }
+            boolean down = key.isDown();
+            if (canPress && down && !KEY_WAS_DOWN[i]) {
+                PRESS_START_MS[i] = now;
+            }
+            KEY_WAS_DOWN[i] = down;
+        }
+        int channel = ClientState.getChannel();
+        int slot = channel == 0 ? -1 : SkillKeys.slotForChannel(speciesId, channel);
+        if (canPress && lastFeedbackChannel == 0 && channel != 0 && slot >= 0) {
+            PRESS_START_MS[slot] = now;
+        }
+        lastFeedbackChannel = channel;
+    }
+
+    /** 按下反馈缩放：0.94 → 1.0 缓出回弹；动画结束后清位，不残留。 */
+    private static float pressScale(int index) {
+        long start = PRESS_START_MS[index];
+        if (start == 0L) return 1.0F;
+        long elapsed = Util.getMillis() - start;
+        if (elapsed >= PRESS_ANIM_MS) {
+            PRESS_START_MS[index] = 0L;
+            return 1.0F;
+        }
+        float t = elapsed / (float) PRESS_ANIM_MS;
+        float back = (1.0F - t) * (1.0F - t);
+        return 1.0F - (1.0F - PRESS_SCALE) * back;
+    }
+
     private static void drawIcon(GuiGraphics graphics, ResourceLocation texture, int x, int y, int size, float alpha) {
         graphics.setColor(1.0F, 1.0F, 1.0F, alpha);
         graphics.pose().pushPose();
@@ -495,6 +778,25 @@ public final class SkillHud {
         graphics.setColor(1.0F, 1.0F, 1.0F, 1.0F);
     }
 
+    /**
+     * 带按下反馈的图标绘制：以图标中心缩放，外框与格子保持不动（"按下去的是图标本身"）。
+     */
+    private static void drawIcon(GuiGraphics graphics, ResourceLocation texture, int x, int y, int size,
+                                 float alpha, float press) {
+        if (press >= 0.999F) {
+            drawIcon(graphics, texture, x, y, size, alpha);
+            return;
+        }
+        float centerX = x + size / 2.0F;
+        float centerY = y + size / 2.0F;
+        graphics.pose().pushPose();
+        graphics.pose().translate(centerX, centerY, 0);
+        graphics.pose().scale(press, press, 1);
+        graphics.pose().translate(-centerX, -centerY, 0);
+        drawIcon(graphics, texture, x, y, size, alpha);
+        graphics.pose().popPose();
+    }
+
     private static void drawHoveredTooltip(GuiGraphics ctx, Minecraft mc, int x, int y) {
         double[] cursor = GodView.cursorNdc(mc);
         double mouseX = (cursor[0] + 1) * mc.getWindow().getGuiScaledWidth() / 2.0;
@@ -503,14 +805,25 @@ public final class SkillHud {
             if (SkillPresentation.isSkillIconHovered(mc, i, x, y, SCALE, mouseX, mouseY)) {
                 String speciesId = hudSpecies(mc);
                 if (speciesId.isEmpty()) return;
-                String skillName = Component.translatable(
-                        com.pkmoba.combat.Skill.translationKey(speciesId, i)).getString();
-                int cost = com.pkmoba.combat.Skill.byIndex(i).cost;
+                String skillName = skillName(speciesId, i);
+                int cost = com.pkmoba.combat.Skill.cost(speciesId, i);
                 ctx.renderTooltip(mc.font, Component.literal(skillName + " · 消耗 " + cost + " 豆"),
                         (int) mouseX, (int) mouseY);
                 return;
             }
         }
+    }
+
+    /**
+     * 面板内的无阴影居中文字。
+     *
+     * <p>为什么不用 {@code GuiGraphics#drawCenteredString}：它默认带阴影，阴影在设计坐标里
+     * 偏移 1px；面板整体套了 0.85 的非整数 pose 缩放后，阴影只偏 0.85 屏幕像素，和字形一起
+     * 被最近邻采样，糊成"两行字重叠"的双影（用户反馈的血量数字重影）。面板内所有文字统一走
+     * 这里，保持清晰。
+     */
+    private static void drawCenteredText(GuiGraphics ctx, Minecraft mc, String text, int centerX, int y, int color) {
+        ctx.drawString(mc.font, text, centerX - mc.font.width(text) / 2, y, color, false);
     }
 
     private static void drawPreview(GuiGraphics ctx, int width, int height) {

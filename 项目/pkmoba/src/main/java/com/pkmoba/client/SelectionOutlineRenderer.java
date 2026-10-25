@@ -35,11 +35,12 @@ public final class SelectionOutlineRenderer {
         pose.pushPose();
         pose.translate(-camera.x, -camera.y, -camera.z);
         VertexConsumer lines = context.consumers().getBuffer(RenderType.lines());
-        var target = Targeting.pick(mc);
-        if (target != null && GodView.isActive()) {
-            boolean covered = Targeting.covered(mc, target);
-            LevelRenderer.renderLineBox(pose, lines, target.getBoundingBox().inflate(0.01),
-                    covered ? 1.0F : 0.5F, covered ? 0.15F : 0.5F, covered ? 0.15F : 0.5F, 1.0F);
+        // 0.39.2：用户明确要"删掉瞄准的白框、只保留地下那个"。
+        // 实体包围盒（白色/红色方框）在上帝视角里既挡视线又和技能特效打架，直接不画；
+        // 方块高亮只在"召唤选点"时才有意义（告诉玩家宝可梦会站在哪一格），其他时候也全部取消。
+        if (!ClientState.isPlacementArmed()) {
+            pose.popPose();
+            return;
         }
         BlockHitResult hit = AimRay.pick(mc);
         if (hit != null && hit.getType() == HitResult.Type.BLOCK) {

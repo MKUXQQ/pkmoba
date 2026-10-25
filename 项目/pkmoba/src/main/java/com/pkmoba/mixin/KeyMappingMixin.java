@@ -23,6 +23,15 @@ public abstract class KeyMappingMixin {
     @Shadow
     private int clickCount;
 
+    /**
+     * 把一次物理按键点击广播给所有绑定同一按键的 KeyMapping（原版只喂给 MAP 里的"最后一个"）。
+     *
+     * <p><b>0.38.3 排查结论：</b>这里本身一次事件只 +1，没有重复计数。真正导致"长按技能
+     * 执行一下又取消"的是原版 {@code KeyboardHandler.keyPress}：GLFW 自动重复（action=2）时
+     * 它同样会走 {@code KeyMapping.set(key,true)} + {@code KeyMapping.click(key)}，
+     * 于是按住期间 click 队列不断累积。修法放在消费端（{@code SkillKeys} 改成按下边沿触发），
+     * 本类保持"一次事件一次广播"的语义不动。
+     */
     @Inject(method = "click(Lcom/mojang/blaze3d/platform/InputConstants$Key;)V",
             at = @At("HEAD"), cancellable = true, require = 1)
     private static void pkmoba$broadcastClick(InputConstants.Key input, CallbackInfo ci) {

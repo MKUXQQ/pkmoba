@@ -81,16 +81,67 @@ public final class CharizardCombat {
     /** R 边缘最低伤害（线性衰减）。 */
     private static final float R_DAMAGE_EDGE = 22.0F;
 
-    private static final double Q_RANGE = 10.0;
+    private static final double Q_RANGE = 11.0;
     private static final double Q_HALF_ANGLE = 20.0;
+    /**
+     * 引导类技能转向速度：0.38.1 起引导中也只做小幅修正（模型主权在 {@link AimTracker} 的
+     * 6°/tick），这里保留常量给"模型被强制定向"的场合使用。
+     */
     private static final float Q_TURN_PER_TICK = 30.0F;
+    /**
+     * Q 前摇：先播动作、再出火。用户反馈"怎么不是动画先出、特效才上"，
+     * 所以引导开始后先空转 {@code Q_WINDUP_TICKS}（0.55 秒，嘴部只冒预热火星），
+     * 之后才发 JetPayload 播火焰、并开始结算伤害。
+     *
+     * <p>0.38.3：10 → 11，与客户端 {@code CharizardSkillAnimator.Q_WINDUP_TICKS}
+     * （自制动画 q_windup 的时长 0.55s）严格对齐 —— 模型"嘴前伸到位"的那一刻，
+     * 服务端同一 tick 开始出火，不会出现"模型还没前倾火已经喷出来"。
+     */
+    private static final int Q_WINDUP_TICKS = 11;
     /** Q 火焰从嘴部喷出：眼睛锚点沿朝向前移的距离。 */
     private static final double MOUTH_FORWARD = 0.55;
+    /**
+     * Q 火焰出火点再往前推的距离：用户要求"火焰再往前一点"，让火柱明显离开身体。
+     *
+     * <p>0.38.2：0.95 → 1.5。0.38.3：1.5 → 1.0。抓火龙 Q 现在有自己的施法动画
+     * （q_windup 前伸 + q_sustain 保持），头部骨骼本身已经前探约半格；出火点再推 1.5 格
+     * 会和嘴之间露出一段空隙，看起来像"火悬在脸前面"。留 1.0 格正好接在动画的嘴尖上。
+     */
+    private static final double Q_JET_FORWARD = 0.15;
     /** Q 火焰从嘴部喷出：相对眼睛锚点下移的距离。 */
     private static final double MOUTH_DROP = 0.22;
+    /**
+     * Q 引导总时长 = 前摇 11 tick + 引导喷吐 20 tick（自制动画 q_sustain 正好 1.0s）。
+     *
+     * <p>0.38.4：原来写死 60 tick（3 秒），而动画只有 1.55 秒 —— 动画播完后服务端还在
+     * 持续发 JetPayload，用户看到的就是"动画结束了还在喷火"。现在服务端节奏与动画严格同长。
+     */
+    private static final int Q_CHANNEL_TICKS = Q_WINDUP_TICKS + 20;
+    /**
+     * Q 喷吐期间每多少 tick 结算一次伤害。
+     *
+     * <p>0.38.4：12 → 4。同样 20 tick 的喷吐窗口里，原来只够结算 2 跳（总伤害从 30 掉到 12），
+     * 改成 4 tick 一跳正好 5 跳 × 6 = 30，与调整前总伤害一致，平衡不变。
+     */
+    private static final int Q_DAMAGE_INTERVAL = 4;
 
-    private static final double W_RADIUS = 4.0;
-    private static final double W_CAST_RANGE = 8.0;
+    /**
+     * W 火焰旋涡前摇：先蓄力、再落区。用户 m01881："火焰漩涡怎么都没有前摇特效的立马施法了"。
+     *
+     * <p>12 tick（0.6 秒）：客户端 TornadoEffects 在这段时间播"聚集"特效，第 12 tick 才发
+     * {@code TornadoPayload} 播"成形"爆发，与服务端落区/首段伤害同 tick。
+     */
+    private static final int W_WINDUP_TICKS = 12;
+
+    /**
+     * W 火焰旋涡半径。用户 m01030 要求"范围改大"，m01881 又反馈"太大了小一点点"。
+     *
+     * <p>4.0 → 7.0（0.38.2）→ 4.5（0.38.4）：直径 9 格，仍明显大于 Q 的锥形覆盖，
+     * 但不会再"站在圈里几乎无处可逃"。
+     */
+    private static final double W_RADIUS = 4.5;
+    /** W 释放距离：半径变大后同步放宽，否则原地放会喷不到人。 */
+    private static final double W_CAST_RANGE = 12.0;
     private static final int W_DURATION_TICKS = 100;
 
     private static final double E_SPEED_PER_TICK = 0.6; // 12格/秒
@@ -107,6 +158,17 @@ public final class CharizardCombat {
 
     private static final double R_SPEED_PER_TICK = 0.6;
     private static final double R_MAX_DISTANCE = 20.0;
+    /**
+     * 弹道<b>碰撞</b>半径（0.39.3）。
+     *
+     * <p>之前飞行中的命中判定直接复用了爆炸半径 {@link #R_RADIUS_START}（3 格），
+     * 于是"离得近的敌人"在火球刚出生的第一 tick 就被判定命中 —— 玩家的观感就是
+     * "大字爆在原地炸开"。碰撞用一个小的固定值（0.9 格，接近字面本身的厚度），
+     * 爆炸伤害半径仍然从 3 收到 1，两者解耦。
+     */
+    private static final double PROJECTILE_HIT_RADIUS = 0.9;
+    /** 起飞后至少飞这么远才允许命中/撞墙爆，避免出膛瞬间被身边的东西"吸"爆。 */
+    private static final double PROJECTILE_MIN_TRAVEL = 1.2;
     private static final double R_RADIUS_START = 3.0;
     private static final double R_RADIUS_END = 1.0;
     private static final int R_CHARGE_TICKS = 20;
@@ -118,6 +180,24 @@ public final class CharizardCombat {
     private static Vec3 arenaCenter = Vec3.ZERO;
     private static boolean arenaSet = false;
     private static double arenaRadius = MAX_DISTANCE_FROM_PLAYER;
+
+    /**
+     * 场地是否"强制执行"（位置钳制）。0.38 起默认关闭。
+     *
+     * <p>用户要求"宝可梦无论多远都能放、上帝视角可以走多远都行"，所以自由/训练模式下
+     * 场地只作为信息存在（圆心/半径照常上报 HUD），但不再把实体拉回圈内：
+     * {@link #enforceRangeLimit}、{@link #clampToArena}、{@link #distanceToBorder} 全部放行。
+     * 只有 1v1 竞技场真正需要边界时才调用 {@link #setArenaEnforced(boolean)} 打开。
+     */
+    private static boolean arenaEnforced = false;
+
+    public static boolean isArenaEnforced() {
+        return arenaEnforced;
+    }
+
+    public static void setArenaEnforced(boolean enforced) {
+        arenaEnforced = enforced;
+    }
 
     /** 每个受控实体一份战斗状态。 */
     private static final Map<UUID, State> STATES = new HashMap<>();
@@ -149,9 +229,39 @@ public final class CharizardCombat {
         return arenaRadius;
     }
 
-    /** 把任意点截断到场地内（移动指令用）。 */
+    /** 把任意点截断到场地内（移动指令用）。自由模式下直接放行。 */
+    /**
+     * 实体版本的边界截断：先按旧的圆形竞技场截断，再按房间点位组的多边形边界往里推。
+     *
+     * <p>多边形边界不是凸的也能用：以"多边形质心"为目标点，沿直线每次缩 0.35 格，
+     * 直到落点多边形内部为止（找不到就退回质心），保证宝可梦永远不会跑出地图。
+     */
+    public static Vec3 clampToArena(net.minecraft.world.entity.Entity entity, Vec3 pos) {
+        Vec3 inner = clampToArena(pos);
+        var arena = com.pkmoba.duel.DuelManager.arenaForEntity(entity);
+        if (arena == null || !arena.hasBoundary() || arena.insideBoundary(inner)) {
+            return inner;
+        }
+        double cx = 0, cz = 0;
+        for (Vec3 p : arena.boundary) {
+            cx += p.x;
+            cz += p.z;
+        }
+        cx /= arena.boundary.size();
+        cz /= arena.boundary.size();
+        Vec3 centroid = new Vec3(cx, inner.y, cz);
+        Vec3 candidate = inner;
+        for (int step = 0; step < 120; step++) {
+            candidate = candidate.lerp(centroid, 0.08);
+            if (arena.insideBoundary(candidate)) {
+                return candidate;
+            }
+        }
+        return centroid;
+    }
+
     public static Vec3 clampToArena(Vec3 pos) {
-        if (!arenaSet) {
+        if (!arenaSet || !arenaEnforced) {
             return pos;
         }
         double dx = pos.x - arenaCenter.x;
@@ -165,14 +275,120 @@ public final class CharizardCombat {
         return new Vec3(arenaCenter.x + dx * k, pos.y, arenaCenter.z + dz * k);
     }
 
-    /** 供 UI：距离场地边界的距离（负数表示已出界）。 */
+    /** 供 UI：距离场地边界的距离（负数表示已出界）。自由模式下恒为 999（等于"无限大"）。 */
     public static float distanceToBorder(PokemonEntity entity) {
-        if (!arenaSet || entity == null) {
+        if (!arenaSet || !arenaEnforced || entity == null) {
             return 999.0F;
         }
         double dx = entity.getX() - arenaCenter.x;
         double dz = entity.getZ() - arenaCenter.z;
         return (float) (arenaRadius - Math.sqrt(dx * dx + dz * dz));
+    }
+
+    /**
+     * 模型当前正前方（水平单位向量）。
+     *
+     * <p>这是"技能跟随模型"的唯一方向来源：所有技能的射线、扇形、弹道都用它，
+     * 而不是用鼠标命中的世界点。鼠标只负责把模型转向（aimDirection → 逐步转身），
+     * 因此模型转到哪、火焰就扫到哪，视觉上火焰是长在嘴上的，不是钉在光标上的。
+     */
+    public static Vec3 modelForward(PokemonEntity entity) {
+        if (entity == null) {
+            return new Vec3(0, 0, 1);
+        }
+        double yaw = Math.toRadians(entity.getYRot());
+        Vec3 f = new Vec3(-Math.sin(yaw), 0, Math.cos(yaw));
+        return f.lengthSqr() < 1.0E-8 ? new Vec3(0, 0, 1) : f.normalize();
+    }
+
+    /**
+     * 技能方向 = 鼠标瞄准方向（0.38 用户要求"技能就直接看我鼠标点击的方向"）。
+     *
+     * <p>与 {@link #modelForward} 的区别：这是**期望**方向，取自 {@code channelAim}/施法瞄准点；
+     * {@code modelForward} 是模型**当前**朝向。技能射线用前者（跟手、零延迟），
+     * 模型用 {@link FacingService} 限速追向同一个方向（看起来像"转身开火"）。
+     * 两者都从宝可梦自身位置出发，原点仍是嘴部 —— 所以既跟手又不像钉在光标上的射线。
+     */
+    public static Vec3 aimDirection(PokemonEntity entity, Vec3 aim) {
+        if (entity == null || aim == null) {
+            return new Vec3(0, 0, 1);
+        }
+        Vec3 flat = new Vec3(aim.x - entity.getX(), 0, aim.z - entity.getZ());
+        if (flat.lengthSqr() < 1.0E-6) {
+            return modelForward(entity);
+        }
+        return flat.normalize();
+    }
+
+    /**
+     * 嘴巴（喷口）位置：脚底 + 真实嘴高 + 沿给定方向前移一小段。
+     *
+     * <p>0.38.4：不再用 {@code getEyePosition()} 起算。眼睛高度是碰撞箱算出来的
+     * （喷火龙约 2.2 格），而 Cobblemon 模型里 {@code locator_mouth} 在 2.859 格、
+     * 水箭龟在 2.563 格，用眼睛当嘴就会看到"火焰从胸口/下巴下面飘出来"。
+     * 现在统一走 {@link MouthAnchor}（从 geo 文件量出来的偏移），客户端能拿到
+     * 活体骨骼定位器时再以活体为准（见 {@code client.MouthLocator}）。
+     *
+     * @param forward       期望朝向（水平），传 null 则用模型当前朝向
+     * @param forwardOffset 额外前推距离（格）
+     * @param drop          相对嘴部的额外下落（格），负值等于抬高
+     */
+    /**
+     * 嘴部"聚火"粒子（0.39.3）：喷火龙 Q/W 前摇与 R 蓄力共用。
+     *
+     * <p>实现要点：用 {@code count = 0} 的 {@code sendParticles} 把 xd/yd/zd 当作<b>速度</b>，
+     * 于是可以精确地让每颗火星从外围朝嘴心收拢 —— 这正是"吸气聚能"的观感。
+     * 只发原版粒子，不新增资源；数量随 {@code progress} 增加，喷出的前一拍最亮。
+     *
+     * @param progress 0..1 蓄力进度
+     * @param big      true 用于 R 大招（更大量、更大范围）
+     */
+    private static void chargeMouthFx(ServerLevel level, Vec3 mouth, double progress, boolean big) {
+        java.util.Random random = new java.util.Random();
+        int converge = (big ? 6 : 3) + (int) Math.round(progress * (big ? 8 : 5));
+        double radius = (big ? 1.9 : 1.15) * (1.0 - 0.65 * progress);
+        for (int i = 0; i < converge; i++) {
+            double angle = random.nextDouble() * Math.PI * 2.0;
+            double height = (random.nextDouble() - 0.5) * (big ? 1.6 : 0.9);
+            double x = mouth.x + Math.cos(angle) * radius;
+            double y = mouth.y + height;
+            double z = mouth.z + Math.sin(angle) * radius;
+            Vec3 toMouth = mouth.subtract(new Vec3(x, y, z)).normalize().scale(0.55);
+            level.sendParticles(i % 3 == 0 ? ParticleTypes.SOUL_FIRE_FLAME : ParticleTypes.FLAME,
+                    x, y, z, 0, toMouth.x, toMouth.y, toMouth.z, 0.12);
+        }
+        // 嘴心越来越亮的火核
+        int core = 1 + (int) Math.round(progress * (big ? 4 : 2));
+        level.sendParticles(ParticleTypes.SMALL_FLAME,
+                mouth.x, mouth.y, mouth.z, core, 0.05 + 0.12 * progress, 0.05 + 0.12 * progress,
+                0.05 + 0.12 * progress, 0.01);
+        // 蓄满前两拍补一圈火星，作为"要喷了"的预告
+        if (progress > 0.7) {
+            level.sendParticles(ParticleTypes.LAVA, mouth.x, mouth.y, mouth.z,
+                    big ? 4 : 2, 0.22, 0.18, 0.22, 0.0);
+        }
+    }
+
+    public static Vec3 mouthPosition(PokemonEntity entity, Vec3 forward, double forwardOffset, double drop) {
+        if (entity == null) {
+            return Vec3.ZERO;
+        }
+        Vec3 dir = forward != null && forward.lengthSqr() > 1.0E-8
+                ? new Vec3(forward.x, 0.0, forward.z).normalize()
+                : MouthAnchor.forward(entity.getYRot());
+        MouthAnchor.Offset offset = MouthAnchor.offsetOf(entity);
+        return entity.position()
+                .add(dir.scale(offset.forward() + forwardOffset))
+                .add(0.0, offset.up() - drop, 0.0);
+    }
+
+    /**
+     * 嘴/炮口世界坐标（默认前移 0.55、下移 0.22）。
+     *
+     * <p>技能出源头统一绑模型：方向可以是鼠标方向（跟手），但原点永远是这张嘴/这根炮管。
+     */
+    public static Vec3 muzzle(PokemonEntity entity) {
+        return mouthPosition(entity, modelForward(entity), MOUTH_FORWARD, MOUTH_DROP);
     }
 
     private CharizardCombat() {
@@ -188,11 +404,20 @@ public final class CharizardCombat {
                 context.server().execute(() -> {
                     PokemonEntity entity = CharizardManager.getControlled(context.player());
                     Vec3 aim = new Vec3(payload.x(), payload.y(), payload.z());
-                    if (canControl(context.player(), entity, aim) && CharizardManager.isBlastoise(entity)) {
-                        BlastoiseCombat.updateAim(entity, aim);
-                    } else if (canControl(context.player(), entity, aim)) {
+                    if (!canControl(context.player(), entity, aim)) {
+                        return;
+                    }
+                    // 无论是否在引导，都记下最新瞄准点：模型要"时时刻刻"朝鼠标慢慢转。
+                    AimTracker.set(entity, aim);
+                    // 0.39.5（用户 m03653）：施法期间不再用鼠标覆盖方向 ——"朝第一次释放技能的位置"。
+                    // 引导中只让模型慢慢转向已经记下的 channelAim，避免水炮/喷火被鼠标甩得乱晃。
+                    if (CharizardManager.isBlastoise(entity)) {
+                        if (!BlastoiseCombat.blocksMovement(entity)) {
+                            BlastoiseCombat.updateAim(entity, aim);
+                        }
+                    } else {
                         State st = s(entity);
-                        if (st.channel == 1 || st.channel == 4 || st.dashTicks > 0) {
+                        if (st.channel == 0 && st.dashTicks == 0) {
                             st.channelAim = aim;
                         }
                     }
@@ -248,7 +473,9 @@ public final class CharizardCombat {
                 && player.getUUID().equals(CharizardManager.getControlledOwner(entity))
                 && player.level().dimension().equals(entity.level().dimension())
                 && Double.isFinite(aim.x) && Double.isFinite(aim.y) && Double.isFinite(aim.z)
-                && entity.distanceToSqr(aim) <= 128.0 * 128.0;
+                && entity.distanceToSqr(aim) <= 512.0 * 512.0
+                // 方案 §三.4：宝可梦刚登场（投球落地）的 2 秒里禁止移动/攻击/放技能
+                && !com.pkmoba.pokemon.BallThrow.locked(entity);
     }
 
     /**
@@ -298,10 +525,42 @@ public final class CharizardCombat {
         });
 
         for (PokemonEntity entity : CharizardManager.getControlledEntities(server)) {
+            enforceArena(entity);
             tickEntity(server, entity);
+            // 常驻朝向：低速转向鼠标瞄准点（引导中会被 CHANNEL 优先级压过）。
+            AimTracker.track(entity);
         }
         tickArenaRing(server);
         syncAll(server);
+    }
+
+    /**
+     * 硬边界：宝可梦无论如何都不能离开点位组的边界。
+     *
+     * <p>移动寻路、技能位移（冲浪冲刺 / 高速旋转）都会改坐标，单靠
+     * {@code MoveOrderService} 里的"贴边停"漏得掉，所以在每 tick 统一收口：
+     * 一旦发现实体已经在边界外，直接放回最近的边界内点，并把速度反向衰减，
+     * 模拟"撞到方块一样弹回"，而不是继续往里挤。
+     */
+    public static boolean enforceArena(PokemonEntity entity) {
+        if (entity == null || entity.isRemoved()) {
+            return false;
+        }
+        var arena = com.pkmoba.duel.DuelManager.arenaForEntity(entity);
+        if (arena == null || !arena.hasBoundary()) {
+            return false;
+        }
+        Vec3 pos = entity.position();
+        if (arena.insideBoundary(pos)) {
+            return false;
+        }
+        Vec3 back = clampToArena((net.minecraft.world.entity.Entity) entity, pos);
+        entity.setPos(back.x, back.y, back.z);
+        Vec3 v = entity.getDeltaMovement();
+        entity.setDeltaMovement(v.x * -0.25, Math.max(0.0, v.y), v.z * -0.25);
+        entity.getNavigation().stop();
+        entity.hurtMarked = true;
+        return true;
     }
 
     private static PokemonEntity byId(MinecraftServer server, UUID id) {
@@ -332,6 +591,9 @@ public final class CharizardCombat {
         }
         // 旧版本召唤出来的实体可能还带着无敌，这里统一解除
         entity.setInvulnerable(false);
+        // 把设计上限写进 Cobblemon 的 Pokemon 对象：让实体属性、Pokemon.getMaxHealth()、
+        // 宝可梦界面（P 键）三处显示同一个血量上限（用户 m01030："显示的是300实际就90"）。
+        PokemonHp.apply(entity, maxHp);
         State st = s(entity);
         st.hp = entity.getHealth();
 
@@ -361,9 +623,12 @@ public final class CharizardCombat {
      * <p>上一版在超距时调用了 {@code MoveOrderService.clear()}，导致玩家已经站在圈外时
      * 每点一次地指令就被立刻清掉，表现为"完全操作不了"。现在改成只把位置拉回边界内侧，
      * 指令照常接受，玩家随时能把它叫回来。
+     *
+     * <p>0.38：自由/训练模式 {@link #arenaEnforced} 默认关闭 —— 这里直接放行，宝可梦可以走到
+     * 任意远（用户要求"无论多远都能走"）。只有对局需要边界时才会打开这个开关。
      */
     private static void enforceRangeLimit(PokemonEntity entity, State st) {
-        if (!arenaSet) {
+        if (!arenaSet || !arenaEnforced) {
             return;
         }
         Vec3 p = entity.position();
@@ -391,48 +656,81 @@ public final class CharizardCombat {
         st.channelTicks++;
 
         if (st.channel == 1) {
-            turnToward(entity, st.channelAim, Q_TURN_PER_TICK);
-
-            // Q：服务端统一原点/方向/墙截断长度；客户端嘴部仅作短接驳。
-            sendJet(level, entity, st.channelAim);
-            // 每 12 tick 一跳伤害（5 跳）；命中帧才放爆点，保证"看到的就是打到的"
-            if (st.channelTicks == 1 || st.channelTicks % 12 == 0) {
-                coneDamage(level, entity, st.channelAim, Q_TICK_DAMAGE);
+            // 0.38.1：火焰方向 = 模型当前正前方。模型由 AimTracker 以 6°/tick 低速追光标，
+            // 所以火焰是"跟着模型慢慢扫"，不再被光标拽着瞬移。
+            Vec3 dir = modelForward(entity);
+            int jetTicks = st.channelTicks - Q_WINDUP_TICKS;
+            if (jetTicks < 0) {
+                // 前摇：动作已经在施法瞬间起手（客户端 q_windup），这里补<b>看得见的聚火</b>，
+                // 不出火、不结算伤害 —— 用户要求"动画先出、特效后上"。
+                //
+                // 0.39.3（用户："喷射火焰怎么没有蓄力的动画"）：原来每 2 tick 只在嘴边丢 2 颗
+                // SMALL_FLAME，肉眼几乎看不出在蓄力。现在改成"向嘴心收拢的火球 + 随蓄力变大的核心
+                // + 螺旋火星"，11 tick 内能明显读出"吸气—聚火—喷出"的节奏。
+                Vec3 mouth = mouthPosition(entity, dir, Q_JET_FORWARD, MOUTH_DROP);
+                double p = Math.min(1.0, st.channelTicks / (double) Math.max(1, Q_WINDUP_TICKS));
+                chargeMouthFx(level, mouth, p, false);
+            } else {
+                // Q：服务端统一原点(嘴部)/方向/墙截断长度；客户端嘴部仅作短接驳。
+                sendJet(level, entity, dir);
+                // 喷吐窗口 20 tick，每 4 tick 一跳伤害（5 跳 × 6 = 30，与调整前一致）
+                if (jetTicks % Q_DAMAGE_INTERVAL == 0) {
+                    coneDamage(level, entity, dir, Q_TICK_DAMAGE);
+                }
             }
-            if (st.channelTicks >= 60) {
+            if (st.channelTicks >= Q_CHANNEL_TICKS) {
                 st.channel = 0;
-                st.cdQ = CD_TICKS;
+                st.cdQ = Skill.cooldownTicks(false, 0);
+            }
+        } else if (st.channel == 2) {
+            // W 火焰旋涡前摇：只蓄力、不出区。方向跟手，落点是"模型到光标的地面距离"（限射程）。
+            Vec3 dir = aimDirection(entity, st.channelAim);
+            Vec3 mouth = mouthPosition(entity, dir, Q_JET_FORWARD, MOUTH_DROP);
+            chargeMouthFx(level, mouth, Math.min(1.0, st.channelTicks / (double) Math.max(1, W_WINDUP_TICKS)), false);
+            if (st.channelTicks >= W_WINDUP_TICKS) {
+                // 前摇结束：落区 + 播成形特效 + 开始冷却（冷却从"技能真正出手"算起）
+                st.channel = 0;
+                double dist = Math.min(new Vec3(st.channelAim.x - entity.getX(), 0,
+                        st.channelAim.z - entity.getZ()).length(), W_CAST_RANGE);
+                Vec3 center = entity.position().add(dir.scale(dist));
+                FacingService.snap(entity, FacingService.Priority.CHANNEL, dir);
+                st.zones.add(new Zone(level.dimension(), center, W_DURATION_TICKS));
+                sendTornado(level, entity, center);
+                sound(level, center, "cobblemon:move.flamethrower.actor");
+                playAnim(entity, "special");
+                st.cdW = Skill.cooldownTicks(false, 1);
             }
         } else if (st.channel == 4) {
-            turnToward(entity, st.channelAim, Q_TURN_PER_TICK);
-            particleBurst(level, entity.position().add(0, 1.2, 0), ParticleTypes.FLAME, 4);
+            // 火球蓄力：模型跟着瞄准点转，出手方向也取"嘴→瞄准点"。
+            // 旧版蓄力期间完全不转身，模型可能还朝着上一次的方向（甚至背对目标），
+            // 出手时火球会朝背后飞、立刻撞地 —— 用户看到的就是"大字爆在原地炸开"。
+            Vec3 dir = aimDirection(entity, st.channelAim);
+            FacingService.request(entity, FacingService.Priority.CHANNEL, dir, 0.0F);
+            chargeMouthFx(level, mouthPosition(entity, dir, MOUTH_FORWARD, MOUTH_DROP),
+                    Math.min(1.0, st.channelTicks / (double) Math.max(1, R_CHARGE_TICKS)), true);
             if (st.channelTicks >= R_CHARGE_TICKS) {
                 st.channel = 0;
-                st.cdR = CD_TICKS;
-                launchProjectile(entity, st);
+                st.cdR = Skill.cooldownTicks(false, 3);
+                launchProjectile(entity, st, dir);
             }
         }
     }
 
+    /**
+     * 把模型转向瞄准点（限速）。
+     *
+     * <p>0.38 起不再直接写 {@code setYRot/setYHeadRot/setYBodyRot/hurtMarked}：
+     * 那些直写就是"模型头乱晃"的来源（多处系统同 tick 抢写同一个角度）。
+     * 现在统一走 {@link FacingService}，由它做单写者仲裁 + 限速 + 节流同步。
+     */
     private static void turnToward(PokemonEntity entity, Vec3 target, float maxDeg) {
-        double dx = target.x - entity.getX();
-        double dz = target.z - entity.getZ();
-        if (dx * dx + dz * dz < 1.0E-4) {
-            return;
-        }
-        float desired = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
-        float current = entity.getYRot();
-        float delta = Mth.clamp(Mth.wrapDegrees(desired - current), -maxDeg, maxDeg);
-        float next = current + delta;
-        entity.setYRot(next);
-        entity.setYHeadRot(next);
-        entity.setYBodyRot(next);
-        entity.hurtMarked = true;
+        FacingService.request(entity, FacingService.Priority.CHANNEL,
+                aimDirection(entity, target), maxDeg);
     }
 
     /** Q uses the exact same finite server ray for visuals and damage. */
-    private static void sendJet(ServerLevel level, PokemonEntity entity, Vec3 aim) {
-        JetRay ray = jetRay(level, entity, aim);
+    private static void sendJet(ServerLevel level, PokemonEntity entity, Vec3 forward) {
+        JetRay ray = jetRay(level, entity, forward);
         com.pkmoba.network.JetPayload payload = new com.pkmoba.network.JetPayload(entity.getId(),
                 ray.origin.x, ray.origin.y, ray.origin.z, ray.dir.x, ray.dir.y, ray.dir.z, ray.length);
         for (ServerPlayer p : level.players()) {
@@ -474,8 +772,25 @@ public final class CharizardCombat {
     }
 
     private static void sendTornado(ServerLevel level, PokemonEntity entity, Vec3 center) {
+        sendTornadoRadius(level, entity, center, W_RADIUS);
+    }
+
+    /**
+     * 前摇预告：把落点先告诉客户端，让它在 channel==2 期间就画"聚集"特效。
+     *
+     * <p>约定：<b>radius 为负</b>表示这只是落点预告（duration 传 0），不是真旋涡；
+     * 客户端收到负半径时只记落点、不放旋涡、不结算任何东西。真旋涡仍走
+     * {@link #sendTornado}（半径为正）。
+     */
+    private static void sendTornadoPreview(ServerLevel level, PokemonEntity entity, Vec3 center) {
+        sendTornadoRadius(level, entity, center, -W_RADIUS);
+    }
+
+    private static void sendTornadoRadius(ServerLevel level, PokemonEntity entity, Vec3 center,
+            double radius) {
+        int duration = radius < 0 ? 0 : W_DURATION_TICKS;
         TornadoPayload payload = new TornadoPayload(entity.getId(), center.x, center.y, center.z,
-                W_RADIUS, W_DURATION_TICKS);
+                radius, duration);
         for (ServerPlayer player : level.players()) {
             if (player.distanceToSqr(center) <= 128 * 128
                     && ServerPlayNetworking.canSend(player, TornadoPayload.TYPE)) {
@@ -589,7 +904,8 @@ public final class CharizardCombat {
         }
     }
 
-    private static double groundBelow(ServerLevel level, PokemonEntity entity, Vec3 pos) {
+    /** 脚下最近的可站立面高度；无地面时返回 NaN。MoveOrderService 的直线行走也用它抬台阶。 */
+    public static double groundBelow(ServerLevel level, PokemonEntity entity, Vec3 pos) {
         BlockHitResult hit = level.clip(new ClipContext(pos.add(0, 0.5, 0), pos.add(0, -4, 0),
                 ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
         return hit.getType() == HitResult.Type.BLOCK ? hit.getLocation().y : Double.NaN;
@@ -613,27 +929,57 @@ public final class CharizardCombat {
         entity.fallDistance = 0;
         entity.hurtMarked = true;
         entity.getNavigation().stop();
-        st.cdE = CD_TICKS;
+        st.cdE = Skill.cooldownTicks(false, 2);
     }
 
     // ------------------------------------------------------------ R 弹道
 
-    private static void launchProjectile(PokemonEntity entity, State st) {
-        Vec3 origin = entity.getEyePosition();
-        Vec3 dir = st.channelAim.subtract(origin);
-        Vec3 flat = new Vec3(dir.x, dir.y * 0.25, dir.z);
-        if (flat.lengthSqr() < 1.0E-4) {
-            flat = new Vec3(0, 0, 1);
+    private static void launchProjectile(PokemonEntity entity, State st, Vec3 dir) {
+        // 0.39.2（用户 m03117）："大字爆直接往锁敌的方向飞，但不要锁定"。
+        // 出手方向 = 出手瞬间"从嘴到瞄准点"的水平方向；飞行过程中<b>完全直飞</b>不追踪，
+        // 目标跑开就打空——这就是"锁方向不锁人"。之前用 modelForward，
+        // 模型还没转到位时火球会朝旧朝向飞（甚至朝后打到身边的地面），用户看到的就是"原地炸开"。
+        ServerLevel level = (ServerLevel) entity.level();
+        Vec3 launchDir = dir;
+        if (st.channelAim != null && Double.isFinite(st.channelAim.x)) {
+            Vec3 toAim = st.channelAim.subtract(entity.position());
+            Vec3 flat = new Vec3(toAim.x, 0.0, toAim.z);
+            if (flat.lengthSqr() > 1.0E-4) {
+                launchDir = flat.normalize();
+            }
         }
-        st.rDir = flat.normalize();
-        st.rPos = origin.add(st.rDir.scale(1.0));
+        st.rDir = launchDir;
+
+        // 出火点贴嘴，但要保证"第一帧不会立刻撞墙"——否则火球刚生成就在脚下炸开。
+        // 依次尝试：嘴里 -> 抬高 0.4/0.8 -> 沿方向前移 1.2 格，取第一个前方 1.6 格无阻挡的点。
+        Vec3 start = mouthPosition(entity, launchDir, MOUTH_FORWARD, MOUTH_DROP);
+        Vec3[] candidates = {
+                start,
+                start.add(0.0, 0.4, 0.0),
+                start.add(0.0, 0.8, 0.0),
+                start.add(launchDir.x * 1.2, 0.0, launchDir.z * 1.2),
+                start.add(launchDir.x * 1.2, 0.5, launchDir.z * 1.2),
+        };
+        for (Vec3 candidate : candidates) {
+            Vec3 probe = candidate.add(launchDir.scale(1.6));
+            BlockHitResult blocked = level.clip(new ClipContext(candidate, probe, ClipContext.Block.COLLIDER,
+                    ClipContext.Fluid.NONE, entity));
+            if (blocked.getType() != HitResult.Type.BLOCK) {
+                start = candidate;
+                break;
+            }
+        }
+        // 出手瞬间把模型掰到发射方向：否则客户端看到"身体朝左、火球朝右"，
+        // 加上转身动画就会像"从原地炸出去"。
+        FacingService.snap(entity, FacingService.Priority.CHANNEL, launchDir);
+        st.rPos = start;
         st.rTravelled = 0;
         st.rTick = 0;
         st.rFlying = true;
 
-        ServerLevel level = (ServerLevel) entity.level();
         sound(level, st.rPos, "cobblemon:move.fireblast.actor");
-        playAnim(entity, "special");
+        // 0.38.3：不再播 Cobblemon 的 special —— 出手动作由客户端 CharizardSkillAnimator
+        // 的 r_blast 负责，否则会出现用户说的“喷了之后还播放一个”（special 的收势段）。
     }
 
     private static void tickProjectile(PokemonEntity entity, State st) {
@@ -646,6 +992,20 @@ public final class CharizardCombat {
         BlockHitResult wall = level.clip(new ClipContext(st.rPos, next, ClipContext.Block.COLLIDER,
                 ClipContext.Fluid.NONE, entity));
         if (wall.getType() == HitResult.Type.BLOCK) {
+            // 出膛就被地形挡住（绝大多数是脚下斜坡/台阶）：先抬高一点再继续飞，
+            // 而不是立刻在嘴边炸开。只给一次机会，第二次真撞上才爆。
+            if (st.rTravelled < PROJECTILE_MIN_TRAVEL && !st.rNudged) {
+                st.rNudged = true;
+                st.rPos = st.rPos.add(0.0, 0.9, 0.0);
+                Vec3 ahead = st.rPos.add(st.rDir.scale(R_SPEED_PER_TICK * 2.0));
+                BlockHitResult retry = level.clip(new ClipContext(st.rPos, ahead,
+                        ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
+                if (retry.getType() != HitResult.Type.BLOCK) {
+                    st.rPos = ahead;
+                    st.rTravelled += R_SPEED_PER_TICK * 2.0;
+                    return;
+                }
+            }
             st.rPos = wall.getLocation().subtract(st.rDir.scale(0.02));
             double radius = R_RADIUS_START - (R_RADIUS_START - R_RADIUS_END)
                     * Math.min(1.0, st.rTravelled / R_MAX_DISTANCE);
@@ -662,16 +1022,19 @@ public final class CharizardCombat {
 
         // 弹道本体：客户端用贴图渲染这个"大"字（朝向固定，不会边飞边转）
         // 字面冒火和拖尾都由客户端根据字形几何生成（服务端不知道镜头朝向）
-        sendGlyph(level, true, st.rPos, 3.5, st.rDir);
+        sendGlyph(level, true, st.rPos, 2.5, st.rDir);
 
         // 命中判定：用"包围盒 + 半径"而不是到脚点的距离。
         // 到脚点的距离会把身高算进去（弹道在 1.5 格高处，半径缩到 1 格时永远打不中）。
         boolean hit = false;
-        for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class,
-                new AABB(st.rPos, st.rPos).inflate(radius + 1.0), e -> validTarget(e, entity))) {
-            if (target.getBoundingBox().inflate(radius).contains(st.rPos)) {
-                hit = true;
-                break;
+        if (st.rTravelled >= PROJECTILE_MIN_TRAVEL) {
+            for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class,
+                    new AABB(st.rPos, st.rPos).inflate(PROJECTILE_HIT_RADIUS + 1.5),
+                    e -> validTarget(e, entity))) {
+                if (target.getBoundingBox().inflate(PROJECTILE_HIT_RADIUS).contains(st.rPos)) {
+                    hit = true;
+                    break;
+                }
             }
         }
 
@@ -721,11 +1084,10 @@ public final class CharizardCombat {
         // 上一发飞翔的落地攻击还没到点：拒绝再次起飞，避免同一次技能被重复结算
 
         if (st.channel != 0) {
-            if ((skill == Skill.Q && st.channel == 1) || (skill == Skill.R && st.channel == 4)) {
-                st.channel = 0;
-                if (skill == Skill.Q) st.cdQ = CD_TICKS;
-                else st.cdR = CD_TICKS;
-            }
+            // 0.38.4：引导中再按同一个技能不再"取消并立刻进冷却"。
+            // 原来这一分支会把 st.channel 清零并写 cdQ/cdR，而客户端长按产生的重复
+            // SkillCastPayload 正好每次都命中它 —— 用户看到的就是"长按会执行然后取消"。
+            // 现在引导中收到任何施法请求都直接忽略，引导自然走完后才进冷却。
             return;
         }
 
@@ -751,28 +1113,31 @@ public final class CharizardCombat {
                 st.channel = 1;
                 st.channelTicks = 0;
                 st.channelAim = aim;
+                // 0.38.1：不再 snap 转身 —— 模型由 AimTracker 以 6°/tick 慢慢转向光标，
+                // 火焰方向取模型当前朝向，所以是"转身慢慢喷过去"，不是瞬间甩头。
                 sound(level, entity.position(), "cobblemon:move.flamethrower.actor");
-                playAnim(entity, "special");
+                // 0.38.3：动作交给客户端 CharizardSkillAnimator（q_windup -> q_sustain），
+                // 服务端只控制节奏（Q_WINDUP_TICKS 后出火），所以不再播 Cobblemon 的 special。
             }
             case W -> {
-                Vec3 origin = entity.position();
-                Vec3 delta = aim.subtract(origin);
-                if (delta.length() > W_CAST_RANGE) {
-                    aim = origin.add(delta.normalize().scale(W_CAST_RANGE));
-                }
-                st.zones.add(new Zone(level.dimension(), aim, W_DURATION_TICKS));
-                sendTornado(level, entity, aim);
-                sound(level, aim, "cobblemon:move.flamethrower.actor");
-                playAnim(entity, "special");
-                st.cdW = CD_TICKS;
+                // 0.38.4：先进入前摇（channel 2）。落区、成形特效、冷却全部等前摇走完
+                // 在 tickChannel 里触发 —— 用户要求"有前摇、有形成特效"，不能按下就落地。
+                Vec3 dir = aimDirection(entity, aim);
+                double dist = Math.min(new Vec3(aim.x - entity.getX(), 0,
+                        aim.z - entity.getZ()).length(), W_CAST_RANGE);
+                Vec3 center = entity.position().add(dir.scale(dist));
+                st.channel = 2;
+                st.channelTicks = 0;
+                st.channelAim = aim;
+                // 先把落点告诉客户端（负半径 = 预告），前摇期间它在那里画"聚集"
+                sendTornadoPreview(level, entity, center);
+                sound(level, entity.position(), "cobblemon:move.flamethrower.actor");
             }
             case E -> {
-                Vec3 d = aim.subtract(entity.position());
-                Vec3 flat = new Vec3(d.x, 0, d.z);
-                if (flat.lengthSqr() < 1.0E-4) {
-                    flat = new Vec3(0, 0, 1);
-                }
-                st.dashDir = flat.normalize();
+                // 冲刺方向 = 鼠标方向（不再等模型转身）。
+                Vec3 dir = aimDirection(entity, aim);
+                FacingService.snap(entity, FacingService.Priority.CHANNEL, dir);
+                st.dashDir = dir;
                 st.dashTicks = 70;
                 st.dashAge = 0;
                 st.dashLandingTicks = 0;
@@ -781,7 +1146,6 @@ public final class CharizardCombat {
                 st.dashEntity = entity;
                 st.dashTravelled = 0;
                 st.channelAim = aim;
-                turnToward(entity, aim, 180);
                 com.pkmoba.move.MoveOrderService.clear(entity);
                 entity.getNavigation().stop();
                 st.dashHit.clear();
@@ -792,8 +1156,13 @@ public final class CharizardCombat {
                 st.channel = 4;
                 st.channelTicks = 0;
                 st.channelAim = aim;
+                // 0.39：定身型大招起手清掉排队中的地面指令，避免"蓄力结束朝旧点位自己走"。
+                com.pkmoba.move.MoveOrderService.clear(entity);
+                entity.getNavigation().stop();
+                // 0.38.1：不 snap。蓄力期间模型慢慢转向光标，出手弹道沿"出手瞬间的模型朝向"。
                 sound(level, entity.position(), "cobblemon:move.fireblast.actor");
-                playAnim(entity, "special");
+                // 0.38.3：蓄力/出手动作由客户端 CharizardSkillAnimator（r_charge -> r_blast）负责，
+                // 这里不再播 special，避免"喷完又播一个动作"。
             }
         }
     }
@@ -802,13 +1171,21 @@ public final class CharizardCombat {
 
     private record JetRay(Vec3 origin, Vec3 dir, double length) { }
 
-    private static JetRay jetRay(ServerLevel level, PokemonEntity entity, Vec3 aim) {
-        Vec3 eye = entity.getEyePosition();
-        Vec3 flat = new Vec3(aim.x - eye.x, 0, aim.z - eye.z);
-        Vec3 dir = flat.lengthSqr() > 1.0E-8 ? flat.normalize()
-                : Vec3.directionFromRotation(0, entity.getYRot());
+    /**
+     * 喷射射线：原点=嘴巴，方向=模型当前正前方。
+     *
+     * <p>旧签名接的是"鼠标瞄准点"，方向由 eye→光标算出来，所以喷火龙还没转身，
+     * 火焰就已经指向光标了，看起来像"火焰跟着鼠标跑"。改成接模型正前方后，
+     * 火焰严格长在嘴上、随模型转身扫动。
+     */
+    private static JetRay jetRay(ServerLevel level, PokemonEntity entity, Vec3 forward) {
+        Vec3 dir = forward.lengthSqr() > 1.0E-8 ? forward.normalize() : Vec3.directionFromRotation(0, entity.getYRot());
+        if (dir.y != 0) {
+            dir = new Vec3(dir.x, 0, dir.z).normalize();
+        }
         // 从嘴部出火：眼睛原点前移一小段并略微下移，避免火焰从头顶/眼睛冒出。
-        Vec3 origin = eye.add(dir.scale(MOUTH_FORWARD)).add(0, -MOUTH_DROP, 0);
+        // 0.38.3：前移量回到 1.0 格（配合自制施法动画的前伸幅度，火柱根部正好贴住嘴）。
+        Vec3 origin = mouthPosition(entity, dir, Q_JET_FORWARD, MOUTH_DROP);
         Vec3 end = origin.add(dir.scale(Q_RANGE));
         HitResult hit = level.clip(new ClipContext(origin, end,
                 ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
@@ -817,8 +1194,8 @@ public final class CharizardCombat {
         return new JetRay(origin, dir, length);
     }
 
-    private static void coneDamage(ServerLevel level, PokemonEntity entity, Vec3 aim, float amount) {
-        JetRay ray = jetRay(level, entity, aim);
+    private static void coneDamage(ServerLevel level, PokemonEntity entity, Vec3 forward, float amount) {
+        JetRay ray = jetRay(level, entity, forward);
         for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class,
                 new AABB(ray.origin, ray.origin).inflate(ray.length), e -> validTarget(e, entity))) {
             Vec3 contact = FlameJetGeometry.contact(target.getBoundingBox(), ray.origin, ray.dir, ray.length);
@@ -848,6 +1225,9 @@ public final class CharizardCombat {
     private static void explode(ServerLevel level, PokemonEntity entity, Vec3 center, double radius) {
         vfx(level, "lava", ringPoints(center, radius));
         flameVfx(level, "glyph", Vec3.ZERO, Vec3.ZERO, ringPoints(center, radius * 0.7), "big");
+        // 0.39：补"火柱 / 冲击波 / 地面裂纹"三件套，解决用户反馈的"大招特效太单薄，像普通技能"。
+        // 全部用原版粒子，不新增资源；数量按半径缩放，远处也不至于刷屏。
+        eruption(level, center, radius);
         sound(level, center, "cobblemon:move.fireblast.target");
         for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class,
                 new AABB(center, center).inflate(radius), e -> validTarget(e, entity))) {
@@ -858,8 +1238,57 @@ public final class CharizardCombat {
             double d = Math.min(radius, Math.sqrt(target.distanceToSqr(center)));
             double t = radius <= 0 ? 0 : d / radius;
             float amount = (float) (R_DAMAGE_CENTER - (R_DAMAGE_CENTER - R_DAMAGE_EDGE) * t);
-            hurt(level, entity, target, amount);
+            // 0.39：R 大字爆是终极大招，命中反馈按 ULTIMATE 走（最强顿帧/震屏/推镜）。
+            hurt(level, entity, target, amount,
+                    EffectPayload.Element.FIRE, EffectPayload.Power.ULTIMATE);
         }
+    }
+
+    /**
+     * R 大字爆炸开时的"火柱喷泉 + 冲击波 + 地面裂纹"（0.39）。
+     *
+     * <p>为什么要单独做：大字弹道本身是一个发光字面，命中瞬间只有一圈 lava 粒子，
+     * 看起来和普通技能差不多。这里在命中点补三层表现：
+     * <ol>
+     *   <li><b>冲击波</b>：EXPLOSION_EMITTER + 两圈向外扩散的 CLOUD，负责"轰"的一下；</li>
+     *   <li><b>火柱</b>：6 根从地面往上窜的 FLAME/SOUL_FIRE_FLAME 柱，负责体积感；</li>
+     *   <li><b>地面裂纹</b>：贴地的一圈 LAVA + CAMPFIRE_COSY_SMOKE，负责"地面被烧开"。</li>
+     * </ol>
+     * 全部按半径缩放，半径越小粒子越少，避免把小范围爆炸画成大场面。
+     */
+    private static void eruption(ServerLevel level, Vec3 center, double radius) {
+        int pillars = Math.max(3, Math.min(8, (int) Math.round(radius * 1.6)));
+        level.sendParticles(net.minecraft.core.particles.ParticleTypes.EXPLOSION_EMITTER,
+                center.x, center.y + 0.4, center.z, 1, 0.0, 0.0, 0.0, 0.0);
+        level.sendParticles(net.minecraft.core.particles.ParticleTypes.CLOUD,
+                center.x, center.y + 0.3, center.z, 14 + pillars * 3, radius * 0.45, 0.25, radius * 0.45, 0.06);
+        for (int i = 0; i < pillars; i++) {
+            double angle = Math.PI * 2.0 * i / pillars + 0.35;
+            double distance = radius * (0.35 + 0.55 * ((i % 3) / 2.0));
+            Vec3 base = center.add(Math.cos(angle) * distance, 0.05, Math.sin(angle) * distance);
+            // 每根火柱：自下而上 3 段，越往上越细、扩散越小。
+            for (int step = 0; step < 3; step++) {
+                double height = 0.35 + step * 0.75;
+                double spread = 0.32 - step * 0.09;
+                level.sendParticles(net.minecraft.core.particles.ParticleTypes.FLAME,
+                        base.x, base.y + height, base.z, 6 - step * 2, spread, 0.12, spread, 0.02);
+                if (step == 0) {
+                    level.sendParticles(net.minecraft.core.particles.ParticleTypes.SOUL_FIRE_FLAME,
+                            base.x, base.y + 0.15, base.z, 3, spread * 0.5, 0.05, spread * 0.5, 0.01);
+                }
+            }
+        }
+        // 地面裂纹：贴地一圈熔岩 + 慢速浓烟，形成"地还在烧"的残留。
+        int cracks = Math.max(8, pillars * 3);
+        for (int i = 0; i < cracks; i++) {
+            double angle = Math.PI * 2.0 * i / cracks;
+            double distance = radius * (0.55 + 0.35 * ((i % 2 == 0) ? 0.35 : 0.8));
+            Vec3 p = center.add(Math.cos(angle) * distance, 0.06, Math.sin(angle) * distance);
+            level.sendParticles(net.minecraft.core.particles.ParticleTypes.LAVA,
+                    p.x, p.y, p.z, 1, 0.02, 0.02, 0.02, 0.0);
+        }
+        level.sendParticles(net.minecraft.core.particles.ParticleTypes.CAMPFIRE_COSY_SMOKE,
+                center.x, center.y + 0.6, center.z, 10, radius * 0.4, 0.3, radius * 0.4, 0.015);
     }
 
     private static void ringParticles(ServerLevel level, Vec3 center, double radius, String effectId) {
@@ -878,6 +1307,18 @@ public final class CharizardCombat {
     private static void hurt(ServerLevel level, PokemonEntity source, LivingEntity target, float amount) {
         if (source == null) return;
         CombatDamage.apply(level, source, target, amount);
+    }
+
+    /**
+     * 带命中反馈语义的伤害入口（元素/强度由调用方指定）。
+     *
+     * <p>{@link CombatDamage} 只在 {@code hurt} 真正被接受后才给客户端发一次命中事件，
+     * 所以这里只是把"这一下是什么元素、多重"告诉它，不影响任何伤害数值/判定。
+     */
+    private static void hurt(ServerLevel level, PokemonEntity source, LivingEntity target, float amount,
+                             EffectPayload.Element element, EffectPayload.Power power) {
+        if (source == null) return;
+        CombatDamage.apply(level, source, target, amount, element, power);
     }
 
     /** 批量发自定义火焰团粒子（一次网络包带多个点）。 */
@@ -1006,14 +1447,21 @@ public final class CharizardCombat {
     /** 每个玩家只收到自己那只宝可梦的 HUD 状态。 */
     private static void syncAll(MinecraftServer server) {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            if (!ServerGodMode.isActive(player)) continue;
+            // 0.38.2：不再要求"上帝视角激活"才下发状态。
+            // 之前这里 `if (!ServerGodMode.isActive(player)) continue;` 导致非上帝视角玩家
+            // 客户端 channel 恒为 0，而冲浪/旋风等"纯 channel 驱动、没有 payload 兜底"的特效
+            // 全靠这个通道，于是完全看不到特效。只要有受控宝可梦就下发即可。
             PokemonEntity entity = CharizardManager.getControlled(player);
+            // 0.39.4：自由模式（不在对局里）宝可梦也会被打死/摔死，但以前只有对局流程会调 markDead，
+            // 于是野外死掉的那只既没记阵亡、也没自动切到下一只 —— 玩家看到的就是
+            // "血条停在最后一帧、按 C 也切不动"。这里补上同样的收尾（markDead 内部只生效一次）。
+            if (entity != null && !entity.isAlive()) {
+                com.pkmoba.pokemon.TeamService.markDead(player, entity);
+                entity = CharizardManager.getControlled(player);
+            }
             if (entity == null) {
-                // 0.35：实体已移除（阵亡后清场）时，若这只确实阵亡就明确下发 0 血，
-                // 否则 HUD 会停在最后一帧的旧血量（例如 13/100）。
-                if (com.pkmoba.pokemon.TeamService.isActiveFainted(player)) {
-                    sendFaintedState(player);
-                }
+                // 0.39.4：这里以前每 tick 都补一帧 0 血，结果按 C 选中下一只后血条又被压回 0，
+                // 看起来就是"HUD 不同步"。阵亡帧已由 markDead 按真实上限精确补过，不再重复下发。
                 continue;
             }
             if (CharizardManager.isBlastoise(entity)) {
@@ -1076,6 +1524,8 @@ public final class CharizardCombat {
 
 
         boolean rFlying;
+        /** 出膛后被地形挡过一次、已抬高过的标记（只救一次，防止一直往上飘）。 */
+        boolean rNudged;
         Vec3 rPos = Vec3.ZERO;
         Vec3 rDir = Vec3.ZERO;
         double rTravelled;
@@ -1106,6 +1556,7 @@ public final class CharizardCombat {
             channel = 0;
             channelTicks = 0;
             rFlying = false;
+            rNudged = false;
         }
     }
 }

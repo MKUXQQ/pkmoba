@@ -30,6 +30,9 @@ public final class SwitchFx {
     public static void onPress() {
         pressAt = System.currentTimeMillis();
         entranceAt = pressAt;
+        // 0.38.3：按下 C 就先把本地战斗数据清成"同步中"，不等服务器收回/换人的往返，
+        // 否则这段网络延迟里 HUD 还会继续显示上一只的血量和冷却。
+        ClientState.clearCombatState();
     }
 
     /** 队伍状态变化（换人成功、删除、阵亡等）时调用。 */

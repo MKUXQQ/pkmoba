@@ -4,7 +4,9 @@
   "compatibilityLevel": "JAVA_21",
   "minVersion": "0.8",
   "refmap": "pkmoba-refmap.json",
-  "mixins": [],
+  "mixins": [
+    "PokemonMaxHealthMixin"
+  ],
   "client": [
     "CameraMixin",
     "MouseHandlerMixin",
@@ -13,7 +15,8 @@
     "HudMixin",
     "StarterOverlayMixin",
     "PlayerRendererMixin",
-    "BlastoiseSpinPoseMixin"
+    "BlastoiseSpinPoseMixin",
+    "PokemonNameHiderMixin"
   ],
   "injectors": {
     "defaultRequire": 0

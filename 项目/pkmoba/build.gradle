@@ -7,7 +7,7 @@ plugins {
     id 'maven-publish'
 }
 
-version = '0.37.0'
+version = '0.45.2'
 group = 'com.pkmoba'
 
 base {
@@ -15,6 +15,14 @@ base {
 }
 
 repositories {
+    // 本地兜底仓库：Cobblemon 制品有 150 MB，从 artefacts.cobblemon.com 拉取经常
+    // 在十几 MB 处被掐断（Premature end of Content-Length delimited message body），
+    // 一旦失败就得整包重下。把 jar + 官方 pom 放到这里后，构建不再依赖网络。
+    // 目录不入版本库；缺失时 Gradle 会自动回落到下面的官方库。
+    maven {
+        name = 'LocalFallback'
+        url = uri("${rootDir}/.local-maven")
+    }
     // Cobblemon 官方制品库（发布配置里写死的地址，1.8.2 就在上面）
     maven { name = 'Cobblemon'; url = 'https://artefacts.cobblemon.com/releases' }
     mavenCentral()
