@@ -289,7 +289,7 @@ public final class VenusaurCombat {
 
         void tick(ServerLevel level) {
             for (int i = 0; i < 4; i++) if (cooldowns[i] > 0) cooldowns[i]--;
-            if (++age % 80 == 0) points = Math.min(10, points + 1.0F);
+            if (++age % 20 == 0) points = Math.min(10, points + 1.0F);
             long now = level.getGameTime();
             if (channel != 0) {
                 // Every cast tracks the latest mouse aim; idle movement keeps its own facing.

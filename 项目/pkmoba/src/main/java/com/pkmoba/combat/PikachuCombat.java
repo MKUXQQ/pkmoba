@@ -189,7 +189,7 @@ public final class PikachuCombat {
         for (int i = 0; i < current.cooldowns.length; i++) {
             if (current.cooldowns[i] > 0) current.cooldowns[i]--;
         }
-        if (++current.regenTicks >= 80) {
+        if (++current.regenTicks >= 20) {
             current.regenTicks = 0;
             current.points = Math.min(10.0F, current.points + 1.0F);
         }

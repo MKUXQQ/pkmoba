@@ -6,9 +6,14 @@
 [![License](https://img.shields.io/badge/license-All%20Rights%20Reserved-lightgrey)](LICENSE)
 
 > Minecraft **1.21.1** · Fabric · **Cobblemon 1.8.2** 附属模组
-> 当前源码版本：**0.48.3**（喷火龙 / 水箭龟 / 妙蛙花 / 皮卡丘 · 房间对战与人机挑战）
+> 当前源码版本：**0.48.4**（喷火龙 / 水箭龟 / 妙蛙花 / 皮卡丘 · 房间对战与人机挑战）
 >
-> **下载**：[已发布版本](https://github.com/MKUXQQ/pkmoba/releases/latest)。源码版本可能领先于 Release；0.48.3 可按下文自行构建。
+> **下载**：[已发布版本](https://github.com/MKUXQQ/pkmoba/releases/latest)。源码版本可能领先于 Release；0.48.4 可按下文自行构建。
+
+## 0.48.4 更新
+
+- 妙蛙花与皮卡丘技能豆恢复由每 4 秒 1 豆提高至每 1 秒 1 豆（20 tick），恢复速度为原来的 4 倍。
+- 技能消耗与 10 豆上限保持不变，保留 0.48.3 的大字爆炎弹道修复。
 
 ## 0.48.3 更新
 
