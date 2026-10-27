@@ -9,197 +9,186 @@ import net.minecraft.network.chat.Component;
 
 import java.util.List;
 
-/**
- * H 键房间大厅（0.41.8 重写）。
- *
- * <p>用户 m05076：<br>
- * ①「H 键是不是不在同一个图层，我需要换到同一个图层，并且关闭我也需要同画风」——
- * 旧版面板自绘米色底，按钮却是原版灰色 {@code Button}，看着像两层。现在<b>全部自绘</b>：
- * 面板、行、关闭按钮同一块调色板、同一个边框，界面里不再有一个原版控件。<br>
- * ②「H 键的红蓝删除，就显示房间多少，然后玩家的头像，然后点击加入」——
- * 每行只画：房间序号 + 房主头像 + 房主名 + 人数，点整行即加入。<br>
- * ③「然后进到一个新的UI，显示对方宝可梦和我方宝可梦，然后还有退出房间」——
- * 进房后由 {@link RoomDetailScreen} 承接。
- */
+/** Native Minecraft room browser. All joins wait for the authoritative server snapshot. */
 public final class RoomLobbyScreen extends Screen {
-    private static final int PANEL_W_MAX = 340;
-    private static final int PANEL_H = 236;
-    private static final int PAD = 10;
-    private static final int ROW_H = 26;
-    private static final int MAX_ROWS = 6;
-    private static final int HEAD = 18;
-
-    private static final int PANEL = 0xFFF3E7CE;
-    private static final int BORDER = 0xFF3B2B1E;
-    private static final int INNER = 0xFFE7D7B8;
-    private static final int TEXT = 0xFF3A2A1C;
-    private static final int MUTED = 0xFF8A7256;
-    private static final int GOLD = 0xFFD8402F;
-    private static final int ROW_BG = 0xFFEADCC0;
-    private static final int ROW_HOVER = 0xFFF7EDD8;
-    private static final int ROW_MINE = 0xFFF6E0B8;
-    private static final int BTN = 0xFFD8402F;
-    private static final int BTN_HOVER = 0xFFE85A48;
-
+    private static final int PANEL = PixelUi.CREAM;
+    private static final int BORDER = PixelUi.INK;
+    private static final int TEXT = PixelUi.TEXT;
+    private static final int MUTED = PixelUi.MUTED;
+    private static final int ACCENT = PixelUi.GREEN;
+    private static final int GAP = 10;
     private List<RoomListPayload.RoomView> rooms = List.of();
     private int myRoomId;
+    private int savedArenas;
     private boolean loaded;
     private int scroll;
-    private boolean hoverClose;
+    private int pendingRoom;
+    private int waitTicks;
 
     public RoomLobbyScreen() {
-        super(Component.literal("房间大厅"));
+        super(Component.literal("对战大厅"));
         RoomListPayload snapshot = ClientRooms.latest();
-        if (snapshot != null) {
-            apply(snapshot);
-        }
+        if (snapshot != null) apply(snapshot);
     }
 
     private void apply(RoomListPayload payload) {
-        this.rooms = payload.rooms();
-        this.myRoomId = payload.myRoomId();
-        this.loaded = true;
-        this.scroll = Math.max(0, Math.min(maxScroll(), scroll));
+        rooms = payload.rooms();
+        myRoomId = payload.myRoomId();
+        savedArenas = payload.arenas().size();
+        loaded = true;
+        scroll = Math.max(0, Math.min(maxScroll(), scroll));
     }
 
     void update(RoomListPayload payload) {
         apply(payload);
-    }
-
-    private int panelWidth() {
-        return Math.min(PANEL_W_MAX, width - 16);
-    }
-
-    private int left() {
-        return (width - panelWidth()) / 2;
-    }
-
-    private int top() {
-        return (height - PANEL_H) / 2;
-    }
-
-    private int listX() {
-        return left() + PAD;
-    }
-
-    private int listY() {
-        return top() + 46;
-    }
-
-    private int listW() {
-        return panelWidth() - PAD * 2;
-    }
-
-    private int maxScroll() {
-        return Math.max(0, rooms.size() - MAX_ROWS);
-    }
-
-    private int closeX() {
-        return left() + (panelWidth() - 88) / 2;
-    }
-
-    private int closeY() {
-        return top() + PANEL_H - 30;
+        if (pendingRoom != 0 && myRoomId == pendingRoom && minecraft != null) {
+            for (RoomListPayload.RoomView room : rooms) {
+                if (room.id() == myRoomId) {
+                    minecraft.setScreen(new RoomDetailScreen(room));
+                    return;
+                }
+            }
+        }
+        pendingRoom = 0;
     }
 
     @Override
+    public void tick() {
+        waitTicks++;
+        if (pendingRoom != 0 && waitTicks > 100) pendingRoom = 0;
+    }
+
+    private int panelWidth() { return Math.max(220, Math.min(680, width - 24)); }
+    private int panelHeight() { return Math.max(180, Math.min(430, height - 20)); }
+    private int left() { return (width - panelWidth()) / 2; }
+    private int top() { return (height - panelHeight()) / 2; }
+    private int columns() { return panelWidth() >= 540 ? 2 : 1; }
+    private int cardHeight() { return 112; }
+    private int visibleRows() { return Math.max(1, (panelHeight() - 104 + GAP) / (cardHeight() + GAP)); }
+    private int capacity() { return columns() * visibleRows(); }
+    private int maxScroll() { return Math.max(0, (rooms.size() + columns() - 1) / columns() - visibleRows()); }
+    private int cardWidth() { return (panelWidth() - 24 - GAP * (columns() - 1)) / columns(); }
+    private int listY() { return top() + 62; }
+    private int footerY() { return top() + panelHeight() - 30; }
+
+    @Override
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-        // 不调 renderBackground：1.21 会把世界模糊掉（用户反复反馈"界面一片糊"），用纯暗底。
-        g.fill(0, 0, width, height, 0xC0101014);
-        int x = left();
-        int y = top();
-        int w = panelWidth();
-
-        g.fill(x, y, x + w, y + PANEL_H, PANEL);
-        border(g, x, y, w, PANEL_H, BORDER);
-        g.fill(x + 4, y + 4, x + w - 4, y + 22, INNER);
-        g.drawString(font, "房间大厅", x + PAD, y + 9, GOLD, false);
-        drawBall(g, x + w - PAD - 8, y + 9, 7);
-        String sub = rooms.isEmpty()
-                ? (loaded ? "" : "读取中…")
-                : "共 " + rooms.size() + " 个 · 点击加入";
-        g.drawString(font, sub, x + PAD + 52, y + 9, MUTED, false);
-
-        int lx = listX();
-        int ly = listY();
-        int lw = listW();
-        int listH = ROW_H * MAX_ROWS;
-        g.fill(lx, ly, lx + lw, ly + listH, INNER);
-        border(g, lx, ly, lw, listH, BORDER);
-        for (int row = 0; row < MAX_ROWS; row++) {
-            int index = scroll + row;
-            if (index >= rooms.size()) {
-                break;
+        g.fill(0, 0, width, height, 0xB0252A20);
+        int x = left(), y = top(), w = panelWidth(), h = panelHeight();
+        PixelUi.panel(g, x, y, w, h, PANEL);
+        PixelUi.frame(g, x + 8, y + 8, w - 16, 42, PixelUi.PAPER, BORDER);
+        PixelUi.ball(g, x + 14, y + 14, 2);
+        g.drawString(font, "对战大厅", x + 46, y + 14, TEXT, false);
+        String count = rooms.size() + " 个场地房间";
+        if (w >= 350) g.drawString(font, count, x + w - 14 - font.width(count), y + 15, ACCENT, false);
+        g.drawString(font, PixelUi.fit(font, "加入房间后，可召唤人机单挑", w - 66), x + 46, y + 31, MUTED, false);
+        if (rooms.isEmpty()) {
+            int ey = listY() + 10;
+            String heading = !loaded ? (waitTicks > 100 ? "未收到房间数据" : "正在同步房间…")
+                    : savedArenas > 0 ? "场地已保存，尚未就绪" : "还没有可加入的场地";
+            g.drawCenteredString(font, heading, width / 2, ey, TEXT);
+            if (loaded) {
+                g.drawCenteredString(font, "先用画笔围好 4 点边界", width / 2, ey + 18, MUTED);
+                g.drawCenteredString(font, fit("再放红蓝玩家点，房间自动出现", w - 28), width / 2, ey + 32, MUTED);
+            } else if (waitTicks > 100) {
+                g.drawCenteredString(font, "检查服务端模组连接，然后点击刷新", width / 2, ey + 20, MUTED);
             }
-            RoomListPayload.RoomView room = rooms.get(index);
-            int ry = ly + row * ROW_H;
-            boolean hovered = mouseX >= lx + 1 && mouseX < lx + lw - 1 && mouseY >= ry && mouseY < ry + ROW_H;
-            boolean mine = room.id() == myRoomId;
-            g.fill(lx + 2, ry + 1, lx + lw - 2, ry + ROW_H - 1,
-                    mine ? ROW_MINE : (hovered ? ROW_HOVER : ROW_BG));
-            if (mine) {
-                g.fill(lx + 2, ry + 2, lx + 4, ry + ROW_H - 2, GOLD);
-            }
-            g.drawString(font, "房间 " + room.id(), lx + 9, ry + 9, GOLD, false);
-            int headX = lx + 62;
-            int headY = ry + (ROW_H - HEAD) / 2;
-            drawHead(g, room.host(), headX, headY, HEAD);
-            g.drawString(font, room.host(), headX + HEAD + 6, ry + 5, TEXT, false);
-            g.drawString(font, memberText(room), headX + HEAD + 6, ry + 15, MUTED, false);
-            String state = switch (room.state()) {
-                case 2 -> "倒计时";
-                case 3 -> "对战中";
-                case 4 -> "已结束";
-                default -> room.canJoin() || mine ? "可加入" : "已满";
-            };
-            g.drawString(font, state, lx + lw - 9 - font.width(state), ry + 9,
-                    room.state() == 3 ? GOLD : MUTED, false);
         }
-        if (rooms.size() > MAX_ROWS) {
-            String hint = (scroll + 1) + "-" + Math.min(rooms.size(), scroll + MAX_ROWS) + " / " + rooms.size();
-            g.drawString(font, hint, lx + lw - font.width(hint) - 6, ly - 11, MUTED, false);
+        scroll = Math.max(0, Math.min(maxScroll(), scroll));
+        for (int slot = 0; slot < capacity(); slot++) {
+            int index = scroll * columns() + slot;
+            if (index >= rooms.size()) break;
+            int cx = x + 12 + (slot % columns()) * (cardWidth() + GAP);
+            int cy = listY() + (slot / columns()) * (cardHeight() + GAP);
+            drawCard(g, rooms.get(index), cx, cy, cardWidth(), cardHeight(), mouseX, mouseY);
         }
-
-        hoverClose = mouseX >= closeX() && mouseX < closeX() + 88
-                && mouseY >= closeY() && mouseY < closeY() + 20;
-        button(g, closeX(), closeY(), 88, 20, "关闭", hoverClose);
+        if (maxScroll() > 0) {
+            String page = "滚轮浏览 " + (scroll + 1) + "/" + (maxScroll() + 1);
+            g.drawString(font, page, x + 14, footerY() + 7, MUTED, false);
+        }
+        button(g, x + w - 152, footerY(), 64, 20, "刷新", hit(mouseX, mouseY, x + w - 152, footerY(), 64, 20));
+        button(g, x + w - 78, footerY(), 64, 20, "关闭", hit(mouseX, mouseY, x + w - 78, footerY(), 64, 20));
     }
 
-    private String memberText(RoomListPayload.RoomView room) {
-        int count = 0;
-        if (!room.red().isEmpty()) {
-            count++;
+    private void drawCard(GuiGraphics g, RoomListPayload.RoomView room, int x, int y, int w, int h, int mx, int my) {
+        boolean mine = room.id() == myRoomId;
+        boolean enabled = mine || (room.canJoin() && myRoomId == 0 && pendingRoom == 0);
+        boolean hover = hit(mx, my, x, y, w, h);
+        PixelUi.frame(g, x, y, w, h, hover && enabled ? 0xFFF5F2D4 : PixelUi.PAPER, BORDER);
+        g.fill(x + 3, y + 3, x + 6, y + h - 3, mine ? ACCENT : PixelUi.SHADOW);
+        g.fill(x + 7, y + 23, x + w - 7, y + 24, PixelUi.CREAM);
+        if (hover && enabled) PixelUi.arrow(g, x + 10, y + h - 18, ACCENT);
+        String status = status(room);
+        g.drawString(font, fit("#" + room.id() + "  " + room.arena(), w - font.width(status) - 34), x + 12, y + 10, TEXT, false);
+        g.drawString(font, status, x + w - 12 - font.width(status), y + 10,
+                room.state() == 3 ? PixelUi.RED : ACCENT, false);
+        int sideW = (w - 30) / 2;
+        drawSeat(g, room.red(), room.redId(), room.redTeam(), x + 12, y + 29, sideW, PixelUi.RED, "红方");
+        drawSeat(g, room.blue(), room.blueId(), room.blueTeam(), x + 18 + sideW, y + 29, sideW, PixelUi.BLUE, "蓝方");
+        String action = pendingRoom == room.id() ? "正在加入…" : mine ? "返回我的房间"
+                : myRoomId != 0 ? "请先退出当前房间" : room.canJoin() ? "加入房间" : "暂不可加入";
+        g.drawString(font, fit(action, w - 48), x + (hover && enabled ? 22 : 12), y + h - 18, enabled ? ACCENT : MUTED, false);
+        if (h >= 90) {
+            int members = (room.redId().isEmpty() ? 0 : 1) + (room.blueId().isEmpty() ? 0 : 1);
+            String occupancy = members + " / 2";
+            g.drawString(font, occupancy, x + w - 12 - font.width(occupancy), y + h - 18, MUTED, false);
         }
-        if (!room.blue().isEmpty()) {
-            count++;
-        }
-        // 用户要求：大厅行不再显示点位组名（原来尾部是 "· arena2"），只留人数。
-        return count + "/2";
     }
 
-    /** 画玩家头像（取皮肤贴图里 8x8 的脸，再叠第二层）。 */
+    private String status(RoomListPayload.RoomView room) {
+        return switch (room.state()) {
+            case 2 -> "倒计时 " + room.seconds() + "s";
+            case 3 -> "对战中";
+            case 4 -> "结算中";
+            default -> !room.redId().isEmpty() && !room.blueId().isEmpty() ? "双方就绪" : "等待加入";
+        };
+    }
+
+    private void drawSeat(GuiGraphics g, String name, String id, List<String> team, int x, int y, int w, int color, String side) {
+        if (!name.isEmpty()) drawHead(g, name, id, x, y, 18);
+        for (int i = 0; i < Math.min(6, team.size()); i++) {
+            var species = net.minecraft.resources.ResourceLocation.tryParse(team.get(i));
+            var entry = com.pkmoba.pokemon.SpeciesRegistry.byId(species);
+            if (entry != null) g.blit(net.minecraft.resources.ResourceLocation.fromNamespaceAndPath("pkmoba", entry.portrait()),
+                    x + i * 15, y + 26, 14, 14, 0.0F, 0.0F, 64, 64, 64, 64);
+        }
+        g.drawString(font, side, x + 24, y, color, false);
+        g.drawString(font, fit(name.isEmpty() ? "空位" : name, w - 24), x + 24, y + 11, name.isEmpty() ? MUTED : TEXT, false);
+    }
+
+    private String fit(String value, int maxWidth) {
+        return font.width(value) <= maxWidth ? value : font.plainSubstrByWidth(value, Math.max(0, maxWidth - font.width("…"))) + "…";
+    }
+
     static void drawHead(GuiGraphics g, String name, int x, int y, int size) {
-        Minecraft mc = Minecraft.getInstance();
-        PlayerInfo info = null;
-        if (mc.getConnection() != null && name != null && !name.isEmpty()) {
-            info = mc.getConnection().getPlayerInfo(name);
-        }
-        if (info == null) {
-            g.fill(x, y, x + size, y + size, 0xFF6B5B45);
+        drawHead(g, name, "", x, y, size);
+    }
+
+    static void drawHead(GuiGraphics g, String name, String id, int x, int y, int size) {
+        if (name != null && name.contains("人机")) {
+            PixelUi.frame(g, x, y, size, size, 0xFFE5E4D0, PixelUi.INK);
+            int unit = Math.max(1, size / 8);
+            int eyeY = y + size / 3;
+            g.fill(x + unit * 2, eyeY, x + unit * 3, eyeY + unit * 2, PixelUi.GREEN);
+            g.fill(x + size - unit * 3, eyeY, x + size - unit * 2, eyeY + unit * 2, PixelUi.GREEN);
+            g.fill(x + unit * 2, y + size - unit * 3, x + size - unit * 2, y + size - unit * 2, PixelUi.INK);
             return;
         }
-        g.blit(info.getSkin().texture(), x, y, size, size, 8.0F, 8.0F, 8, 8, 64, 64);
-        // 用户要求"玩家的头像第二层显示"：皮肤第二层（帽子/外层，uv 40,8）叠在脸上，
-        // 否则戴帽子/有外发的皮肤在这里只剩一张光脸。
-        g.blit(info.getSkin().texture(), x, y, size, size, 40.0F, 8.0F, 8, 8, 64, 64);
+        Minecraft mc = Minecraft.getInstance();
+        PlayerInfo info = mc.getConnection() == null || name == null || name.isEmpty() ? null : mc.getConnection().getPlayerInfo(name);
+        if (mc.getConnection() != null && id != null && !id.isEmpty()) {
+            try { info = mc.getConnection().getPlayerInfo(java.util.UUID.fromString(id)); }
+            catch (IllegalArgumentException ignored) {}
+        }
+        var skin = info != null ? info.getSkin().texture()
+                : mc.player != null && mc.player.getGameProfile().getName().equals(name) ? mc.player.getSkin().texture()
+                : net.minecraft.client.resources.DefaultPlayerSkin.getDefaultTexture();
+        g.blit(skin, x, y, size, size, 8.0F, 8.0F, 8, 8, 64, 64);
+        g.blit(skin, x, y, size, size, 40.0F, 8.0F, 8, 8, 64, 64);
     }
 
     static void button(GuiGraphics g, int x, int y, int w, int h, String label, boolean hovered) {
-        g.fill(x, y, x + w, y + h, hovered ? BTN_HOVER : BTN);
-        border(g, x, y, w, h, BORDER);
-        Minecraft mc = Minecraft.getInstance();
-        g.drawString(mc.font, label, x + (w - mc.font.width(label)) / 2, y + (h - 8) / 2,
-                0xFFFFFFFF, false);
+        PixelUi.button(g, Minecraft.getInstance().font, x, y, w, h, label, hovered, true);
     }
 
     static void border(GuiGraphics g, int x, int y, int w, int h, int color) {
@@ -209,71 +198,47 @@ public final class RoomLobbyScreen extends Screen {
         g.fill(x + w - 1, y, x + w, y + h, color);
     }
 
+    private static boolean hit(double mx, double my, int x, int y, int w, int h) {
+        return mx >= x && mx < x + w && my >= y && my < y + h;
+    }
+
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (button != 0) {
-            return super.mouseClicked(mouseX, mouseY, button);
-        }
-        if (mouseX >= closeX() && mouseX < closeX() + 88 && mouseY >= closeY() && mouseY < closeY() + 20) {
-            onClose();
+    public boolean mouseClicked(double mx, double my, int button) {
+        if (button != 0) return super.mouseClicked(mx, my, button);
+        int x = left(), w = panelWidth();
+        if (hit(mx, my, x + w - 78, footerY(), 64, 20)) { onClose(); return true; }
+        if (hit(mx, my, x + w - 152, footerY(), 64, 20)) {
+            ClientRooms.send("OPEN", 0, "");
+            waitTicks = 0;
             return true;
         }
-        int lx = listX();
-        int ly = listY();
-        int lw = listW();
-        for (int row = 0; row < MAX_ROWS; row++) {
-            int index = scroll + row;
-            if (index >= rooms.size()) {
-                break;
+        for (int slot = 0; slot < capacity(); slot++) {
+            int index = scroll * columns() + slot;
+            if (index >= rooms.size()) break;
+            int cx = x + 12 + (slot % columns()) * (cardWidth() + GAP);
+            int cy = listY() + (slot / columns()) * (cardHeight() + GAP);
+            if (!hit(mx, my, cx, cy, cardWidth(), cardHeight())) continue;
+            RoomListPayload.RoomView room = rooms.get(index);
+            if (room.id() == myRoomId && minecraft != null) minecraft.setScreen(new RoomDetailScreen(room));
+            else if (room.canJoin() && myRoomId == 0 && pendingRoom == 0) {
+                pendingRoom = room.id();
+                waitTicks = 0;
+                ClientRooms.send("JOIN", room.id(), "");
             }
-            int ry = ly + row * ROW_H;
-            if (mouseX >= lx + 1 && mouseX < lx + lw - 1 && mouseY >= ry && mouseY < ry + ROW_H) {
-                RoomListPayload.RoomView room = rooms.get(index);
-                if (room.id() == myRoomId) {
-                    if (minecraft != null) {
-                        minecraft.setScreen(new RoomDetailScreen(room));
-                    }
-                } else if (room.canJoin()) {
-                    ClientRooms.send("JOIN", room.id(), "");
-                    if (minecraft != null) {
-                        minecraft.setScreen(new RoomDetailScreen(room));
-                    }
-                }
-                return true;
-            }
-        }
-        return super.mouseClicked(mouseX, mouseY, button);
-    }
-
-    @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-        if (rooms.size() > MAX_ROWS) {
-            scroll = Math.max(0, Math.min(maxScroll(), scroll + (scrollY > 0 ? -1 : 1)));
             return true;
         }
-        return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+        return super.mouseClicked(mx, my, button);
     }
 
     @Override
-    public boolean isPauseScreen() {
-        return false;
+    public boolean mouseScrolled(double mx, double my, double sx, double sy) {
+        if (sy != 0 && maxScroll() > 0) {
+            scroll = Math.max(0, Math.min(maxScroll(), scroll + (sy > 0 ? -1 : 1)));
+            return true;
+        }
+        return super.mouseScrolled(mx, my, sx, sy);
     }
 
-    /** 顶栏的精灵球徽标（纯 fill 拼出来，不依赖贴图）。 */
-    private static void drawBall(GuiGraphics g, int cx, int cy, int radius) {
-        for (int dy = -radius; dy <= radius; dy++) {
-            int halfW = (int) Math.sqrt(Math.max(0.0, (double) radius * radius - (double) dy * dy));
-            int color;
-            if (dy < 0) {
-                color = 0xFFE03A2E;
-            } else if (dy > 0) {
-                color = 0xFFF7F2E4;
-            } else {
-                color = 0xFF2B2118;
-            }
-            g.fill(cx - halfW, cy + dy, cx + halfW + 1, cy + dy + 1, color);
-        }
-        g.fill(cx - 3, cy - 3, cx + 4, cy + 4, 0xFF2B2118);
-        g.fill(cx - 2, cy - 2, cx + 3, cy + 3, 0xFFF7F2E4);
-    }
+    @Override
+    public boolean isPauseScreen() { return false; }
 }

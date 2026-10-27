@@ -22,9 +22,6 @@ import net.minecraft.world.phys.Vec3;
 
 /** Right-click entry items for the duel modes, species selection and arena points. */
 public final class ModeItems {
-    public static final Item BATTLE_MENU = Registry.register(BuiltInRegistries.ITEM,
-            ResourceLocation.fromNamespaceAndPath(PkmobaMod.MOD_ID, "battle_menu"),
-            new Item(new Item.Properties().stacksTo(1)));
     /** 宝可梦选择器：右键打开选择界面（也用于更换）。 */
     public static final Item SPECIES_SWITCH = Registry.register(BuiltInRegistries.ITEM,
             ResourceLocation.fromNamespaceAndPath(PkmobaMod.MOD_ID, "species_switch"),
@@ -43,7 +40,6 @@ public final class ModeItems {
             ResourceLocation.fromNamespaceAndPath(PkmobaMod.MOD_ID, "boundary_marker"),
             new Item(new Item.Properties().stacksTo(1)));
 
-    /** 换宠区放置器：右键方块记录该方换宠区中心（蹲下 = 红方，站立 = 蓝方）。 */
     public static final Item SWITCH_MARKER = Registry.register(BuiltInRegistries.ITEM,
             ResourceLocation.fromNamespaceAndPath(PkmobaMod.MOD_ID, "switch_marker"),
             new Item(new Item.Properties().stacksTo(1)));
@@ -53,9 +49,8 @@ public final class ModeItems {
             ResourceLocation.fromNamespaceAndPath(PkmobaMod.MOD_ID, "main"),
             CreativeModeTab.builder(CreativeModeTab.Row.BOTTOM, 7)
                     .title(Component.translatable("itemGroup.pkmoba"))
-                    .icon(() -> new ItemStack(BATTLE_MENU))
+                    .icon(() -> new ItemStack(SPECIES_SWITCH))
                     .displayItems((params, output) -> {
-                        output.accept(BATTLE_MENU);
                         output.accept(SPECIES_SWITCH);
                         output.accept(PLAYER_MARKER);
                         // m05418：宝可梦放置点已删除
@@ -68,7 +63,6 @@ public final class ModeItems {
 
     public static void init() {
         ItemGroupEvents.modifyEntriesEvent(CreativeModeTabs.TOOLS_AND_UTILITIES).register(entries -> {
-            entries.accept(BATTLE_MENU);
             entries.accept(SPECIES_SWITCH);
             entries.accept(PLAYER_MARKER);
             entries.accept(POKEMON_MARKER);
@@ -86,8 +80,14 @@ public final class ModeItems {
             if (level.isClientSide || !(player instanceof ServerPlayer serverPlayer)) {
                 return InteractionResultHolder.pass(stack);
             }
-            if (stack.is(BATTLE_MENU)) {
-                openBattleMenu(serverPlayer);
+            if (stack.is(SWITCH_MARKER)) {
+                ArenaStore.Arena draft = loadEditingArena(serverPlayer);
+                boolean red = player.isShiftKeyDown();
+                if (!draft.hasBoundary()) {
+                    serverPlayer.displayClientMessage(Component.literal("附近没有可编辑场地；请先持边界画笔补齐场地边界，或站在已有场地内。"), true);
+                    return InteractionResultHolder.success(stack);
+                }
+                serverPlayer.displayClientMessage(Component.literal("对方块依次右键四个顶点设置蓝方换宠区；按住潜行设置红方。对空气使用不会清除区域。"), true);
                 return InteractionResultHolder.success(stack);
             }
             if (stack.is(SPECIES_SWITCH)) {
@@ -98,10 +98,12 @@ public final class ModeItems {
         });
         // 点位放置器需要右键方块：蹲下 = 红点，不蹲 = 蓝点
         UseBlockCallback.EVENT.register((player, level, hand, hit) -> {
-            if (level.isClientSide || !(player instanceof ServerPlayer serverPlayer)) {
-                return InteractionResult.PASS;
-            }
             ItemStack stack = player.getItemInHand(hand);
+            if (level.isClientSide) {
+                return stack.is(SWITCH_MARKER) || stack.is(BOUNDARY_MARKER) || stack.is(PLAYER_MARKER)
+                        || stack.is(POKEMON_MARKER) ? InteractionResult.SUCCESS : InteractionResult.PASS;
+            }
+            if (!(player instanceof ServerPlayer serverPlayer)) return InteractionResult.PASS;
             if (stack.is(BOUNDARY_MARKER)) {
                 // m05263：一个组只允许 4 个边界点（画满就自动成组，不再继续加点）。
                 ArenaStore.Arena draft = ArenaStore.draft(player.getUUID());
@@ -119,33 +121,44 @@ public final class ModeItems {
                 int have = draft.boundary.size();
                 // 边界点只走行动栏，不刷聊天（用户 m04462："不要聊天栏里显示那些东西"）。
                 serverPlayer.displayClientMessage(Component.literal("边界第 " + have + " 点"
-                        + (have >= need ? "（4 点已齐，点位组已建立，接着放点位/换宠区）"
+                        + (have >= need ? "（4 点已齐，点位组已建立，接着放红蓝玩家点）"
                         : "（还需 " + (need - have) + " 点）")), true);
                 autoGroup(serverPlayer);
                 return InteractionResult.SUCCESS;
             }
             if (stack.is(SWITCH_MARKER)) {
-                Vec3 center = hit.getBlockPos().above().getCenter();
-                ArenaStore.Arena draft = ArenaStore.draft(player.getUUID());
-                if (outsideBoundary(serverPlayer, draft, center)) {
-                    serverPlayer.displayClientMessage(Component.literal(
-                            "换宠区只能放在边界之内，先把边界画好"), true);
+                Vec3 point = hit.getBlockPos().above().getCenter();
+                ArenaStore.Arena draft = loadEditingArena(serverPlayer);
+                if (outsideArenaBoundary(serverPlayer, draft, point)) {
+                    serverPlayer.displayClientMessage(Component.literal("请先画好四点边界，换宠区四个顶点必须放在这间房的边界内。"), true);
                     return InteractionResult.SUCCESS;
                 }
-                draft.dimension = level.dimension().location();
-                // m05418：换宠区不分红蓝，右键记 4 个点围成一块，双方都在里面换。
-                java.util.List<Vec3> quad = draft.switchQuad;
-                if (quad.size() >= 4) {
-                    quad.clear();
-                    serverPlayer.displayClientMessage(Component.literal(
-                            "换宠区已满 4 点，重新从第 1 点开始"), true);
+                boolean red = player.isShiftKeyDown();
+                java.util.List<Vec3> polygon = red ? draft.redSwitchPolygon : draft.blueSwitchPolygon;
+                if (polygon.size() >= 4) {
+                    polygon.clear();
+                    if (red) draft.redSwitch = null;
+                    else draft.blueSwitch = null;
                 }
-                quad.add(center);
-                serverPlayer.displayClientMessage(Component.literal(
-                        "换宠区第 " + quad.size() + " 点"
-                                + (quad.size() >= 4 ? "（4 点已齐，区域生效）"
-                                : "（还需 " + (4 - quad.size()) + " 点）")), true);
+                polygon.add(point);
+                if (red) draft.redSwitch = point;
+                else draft.blueSwitch = point;
+                int count = polygon.size();
+                if (count == 4) {
+                    ArenaStore.Arena shape = new ArenaStore.Arena("switch-zone-check");
+                    shape.boundary.addAll(polygon);
+                    if (!shape.hasBoundary()) {
+                        polygon.clear();
+                        if (red) draft.redSwitch = null;
+                        else draft.blueSwitch = null;
+                        serverPlayer.displayClientMessage(Component.literal("换宠区四点无效（重叠或面积过小），请重新设置该方区域"), true);
+                        autoGroup(serverPlayer);
+                        return InteractionResult.SUCCESS;
+                    }
+                }
                 autoGroup(serverPlayer);
+                serverPlayer.displayClientMessage(Component.literal((red ? "红" : "蓝") + "方换宠区顶点 "
+                        + count + "/4" + (count == 4 ? " 已闭合" : "；未满四点时该方换宠区不可用")), true);
                 return InteractionResult.SUCCESS;
             }
             if (stack.is(POKEMON_MARKER)) {
@@ -164,14 +177,9 @@ public final class ModeItems {
                 return InteractionResult.SUCCESS;
             }
             draft.dimension = level.dimension().location();
-            if (stack.is(PLAYER_MARKER)) {
-                if (red) draft.redPlayer = point;
-                else draft.bluePlayer = point;
-            } else {
-                if (red) draft.redPokemon = point;
-                else draft.bluePokemon = point;
-            }
-            String label = (stack.is(PLAYER_MARKER) ? "玩家" : "宝可梦") + (red ? "红" : "蓝") + "点";
+            if (red) draft.redPlayer = point;
+            else draft.bluePlayer = point;
+            String label = "玩家" + (red ? "红" : "蓝") + "点";
             // 只走行动栏，聊天栏保持干净。
             serverPlayer.displayClientMessage(Component.literal("已记录 " + label), true);
             autoGroup(serverPlayer);
@@ -185,27 +193,64 @@ public final class ModeItems {
      * <p>草稿里没有边界时（游戏重启后重新拿道具），回退到"这个玩家最后一次自动成组的那块边界"，
      * 否则草稿是空的会把所有位置都放行 —— 这就是"边界之外没有被拒收"的原因。</p>
      */
+    private static ArenaStore.Arena loadEditingArena(ServerPlayer player) {
+        ArenaStore.Arena draft = ArenaStore.draft(player.getUUID());
+        if (draft.autoName != null) {
+            ArenaStore.Arena saved = ArenaStore.get(player.server).byName(draft.autoName);
+            if (saved != null && !saved.name.equals("draft")) copyArena(saved, draft);
+        }
+        if (!draft.hasBoundary()) {
+            for (ArenaStore.Arena saved : ArenaStore.get(player.server).allArenas()) {
+                if (saved.hasBoundary() && sameDimension(player, saved)
+                        && saved.insideBoundary(player.position())) {
+                    copyArena(saved, draft);
+                    break;
+                }
+            }
+        } else if (draft.autoName == null && sameDimension(player, draft)
+                && !draft.insideBoundary(player.position())) {
+            for (ArenaStore.Arena saved : ArenaStore.get(player.server).allArenas()) {
+                if (saved.hasBoundary() && sameDimension(player, saved)
+                        && saved.insideBoundary(player.position())) {
+                    copyArena(saved, draft);
+                    break;
+                }
+            }
+        }
+        return draft;
+    }
+
+    private static boolean sameDimension(ServerPlayer player, ArenaStore.Arena arena) {
+        return arena.dimension == null
+                ? player.serverLevel().dimension().equals(net.minecraft.world.level.Level.OVERWORLD)
+                : arena.dimension.equals(player.serverLevel().dimension().location());
+    }
+
+    private static boolean outsideArenaBoundary(ServerPlayer player, ArenaStore.Arena draft, Vec3 point) {
+        return !draft.hasBoundary() || !draft.insideBoundary(point) || !sameDimension(player, draft);
+    }
+
     private static boolean outsideBoundary(ServerPlayer player, ArenaStore.Arena draft, Vec3 point) {
-        java.util.List<Vec3> boundary = draft.boundary;
-        if (boundary.size() < ArenaStore.BOUNDARY_MIN_POINTS) {
-            String name = draft.autoName;
-            ArenaStore.Arena saved = name == null ? null
-                    : ArenaStore.get(player.server).byName(name);
-            if (saved == null) {
-                java.util.List<ArenaStore.Arena> all = ArenaStore.get(player.server).allArenas();
-                if (!all.isEmpty()) saved = all.get(all.size() - 1);
-            }
-            if (saved == null) {
-                return false;
-            }
-            boundary = saved.boundary;
-        }
-        if (boundary.size() < ArenaStore.BOUNDARY_MIN_POINTS) {
-            return false;
-        }
-        ArenaStore.Arena probe = new ArenaStore.Arena("probe");
-        probe.boundary.addAll(boundary);
-        return !probe.insideBoundary(point);
+        ArenaStore.Arena editing = loadEditingArena(player);
+        return outsideArenaBoundary(player, editing, point);
+    }
+
+    private static void copyArena(ArenaStore.Arena source, ArenaStore.Arena target) {
+        target.autoName = source.name;
+        target.dimension = source.dimension;
+        target.boundary.clear();
+        target.boundary.addAll(source.boundary);
+        target.redPlayer = source.redPlayer;
+        target.bluePlayer = source.bluePlayer;
+        target.redPokemon = source.redPokemon;
+        target.bluePokemon = source.bluePokemon;
+        target.redSwitch = source.redSwitch;
+        target.blueSwitch = source.blueSwitch;
+        target.switchRadius = source.switchRadius;
+        target.redSwitchPolygon.clear();
+        target.redSwitchPolygon.addAll(source.redSwitchPolygon);
+        target.blueSwitchPolygon.clear();
+        target.blueSwitchPolygon.addAll(source.blueSwitchPolygon);
     }
 
     /**
@@ -213,102 +258,125 @@ public final class ModeItems {
      * 玩家不用再敲 /mo arena create。补画边界后同样会原地更新这一组。
      */
     private static void autoGroup(ServerPlayer player) {
-        String before = ArenaStore.draft(player.getUUID()).autoName;
-        String name = ArenaStore.get(player.server).saveDraftAuto(player.server, player.getUUID());
-        if (name == null) {
-            return;
-        }
-        // m04816：去掉「必须先不在房间里」这道门 —— 只要四点凑齐就自动建房，
-        // 建房是幂等的（同一 arena 已有房间会复用），所以在不在房间里都该触发。
-        com.pkmoba.duel.RoomManager.create(player, name);
-        if (before == null) {
-            // 只在第一次成组时报一次；之后每次补点都刷同一条会被当成 bug。
+        ArenaStore store = ArenaStore.get(player.server);
+        ArenaStore.Arena draft = ArenaStore.draft(player.getUUID());
+        boolean wasReady = draft.autoName != null && store.byName(draft.autoName) != null
+                && store.byName(draft.autoName).complete();
+        String name = store.saveDraftAuto(player.server, player.getUUID());
+        if (name == null) return;
+        ArenaStore.Arena saved = store.byName(name);
+        if (saved != null && saved.complete()) {
+            com.pkmoba.duel.RoomManager.create(player, name);
+            if (!wasReady) player.displayClientMessage(Component.literal(
+                    "场地「" + name + "」已就绪，按 H 加入房间"), true);
+            if (!saved.insideSwitchZone(saved.redPlayer, true)
+                    || !saved.insideSwitchZone(saved.bluePlayer, false)) {
+                player.displayClientMessage(Component.literal(
+                        "红蓝换宠区尚未设置完整；场地和房间可正常使用，但战中无法换宠"), true);
+            }
+        } else {
             player.displayClientMessage(Component.literal(
-                    "点位组「" + name + "」已就绪，房间已创建（按 H 查看）"), true);
+                    "场地「" + name + "」未就绪：需补齐四点边界、边界内红蓝玩家点，以及红蓝各四个顶点的换宠区域"), true);
         }
     }
 
-    /** 手持点位/边界工具时，在已记录的点上持续撒粒子（不持有时完全不显示）。 */
+    /** 主副手持有编辑工具即持续显示预览；不依赖蹲下、使用动作、房间或战斗状态。 */
     public static void tickHints(net.minecraft.server.MinecraftServer server) {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            ItemStack main = player.getMainHandItem();
-            boolean holdsPlayerMarker = main.is(PLAYER_MARKER);
-            boolean holdsPokemonMarker = main.is(POKEMON_MARKER);
-            boolean holdsBoundary = main.is(BOUNDARY_MARKER);
-            boolean holdsSwitch = main.is(SWITCH_MARKER);
+            boolean holdsPlayerMarker = holds(player, PLAYER_MARKER);
+            boolean holdsPokemonMarker = holds(player, POKEMON_MARKER);
+            boolean holdsBoundary = holds(player, BOUNDARY_MARKER);
+            boolean holdsSwitch = holds(player, SWITCH_MARKER);
             if (!holdsPlayerMarker && !holdsPokemonMarker && !holdsBoundary && !holdsSwitch) continue;
             ArenaStore.Arena draft = ArenaStore.draft(player.getUUID());
-            var level = player.serverLevel();
-            if (holdsPlayerMarker) {
-                hintPoint(level, draft.redPlayer, 1.0F, 0.25F, 0.25F);
-                hintPoint(level, draft.bluePlayer, 0.25F, 0.55F, 1.0F);
-            }
-            if (holdsPokemonMarker) {
-                hintPoint(level, draft.redPokemon, 1.0F, 0.6F, 0.2F);
-                hintPoint(level, draft.bluePokemon, 0.2F, 0.9F, 0.9F);
-            }
-            if (holdsSwitch) {
-                switchHint(level, draft.redSwitch, draft.redPlayer, draft.switchRadius, 1.0F, 0.3F, 0.3F);
-                switchHint(level, draft.blueSwitch, draft.bluePlayer, draft.switchRadius, 0.3F, 0.6F, 1.0F);
-            }
-            if (holdsBoundary) {
-                for (Vec3 point : draft.boundary) {
-                    hintPoint(level, point, 0.55F, 1.0F, 0.55F);
+            // 已存场地独立于草稿：自动成组、换组、重新登录后仍可直接拿工具看见。
+            java.util.List<ArenaStore.Arena> previews = ArenaStore.get(server).allArenas();
+            previews.add(draft);
+            // 去重当前草稿与已存版本相同的点/线，避免每次自动保存后粒子翻倍。
+            java.util.Set<String> emitted = new java.util.HashSet<>();
+            for (ArenaStore.Arena arena : previews) {
+                if (arena.dimension != null && !arena.dimension.equals(player.level().dimension().location())) continue;
+                // 没有维度的空草稿不画；旧存档缺省维度按主世界解释，避免跨维度误画。
+                if (arena.dimension == null && arena != draft
+                        && !player.level().dimension().equals(net.minecraft.world.level.Level.OVERWORLD)) continue;
+                if (holdsPlayerMarker || holdsPokemonMarker) {
+                    // 宝可梦点位工具已停用，但旧物品持握时仍预览实际使用的玩家出场点。
+                    hintPoint(player, arena.redPlayer != null ? arena.redPlayer : arena.redPokemon,
+                            1.0F, 0.25F, 0.25F, emitted);
+                    hintPoint(player, arena.bluePlayer != null ? arena.bluePlayer : arena.bluePokemon,
+                            0.25F, 0.55F, 1.0F, emitted);
                 }
-                // 边界连线：相邻两点之间按 0.6 格采样撒点，方便看出多边形形状
-                if (draft.boundary.size() >= 2) {
-                    for (int i = 0; i < draft.boundary.size(); i++) {
-                        Vec3 a = draft.boundary.get(i);
-                        Vec3 b = draft.boundary.get((i + 1) % draft.boundary.size());
-                        double len = a.distanceTo(b);
-                        int steps = (int) Math.min(48, Math.max(2, len / 0.6));
-                        for (int s = 0; s <= steps; s++) {
-                            Vec3 p = a.lerp(b, s / (double) steps);
-                            level.sendParticles(net.minecraft.core.particles.ParticleTypes.END_ROD,
-                                    p.x, p.y + 0.08, p.z, 1, 0.0, 0.0, 0.0, 0.0);
+                if (holdsSwitch) {
+                    boolean red = player.isShiftKeyDown();
+                    boolean editingArena = arena == draft || (draft.autoName != null
+                            && draft.autoName.equalsIgnoreCase(arena.name));
+                    java.util.List<Vec3> redPoints = editingArena
+                            ? draft.redSwitchPolygon : arena.switchPolygon(true);
+                    java.util.List<Vec3> bluePoints = editingArena
+                            ? draft.blueSwitchPolygon : arena.switchPolygon(false);
+                    polygonHint(player, redPoints, 1F, .25F, .25F, emitted);
+                    polygonHint(player, bluePoints, .25F, .55F, 1F, emitted);
+                    java.util.List<Vec3> current = red ? redPoints : bluePoints;
+                    if (current.size() < 4) {
+                        Vec3 preview = player.pick(5.0, 0.0F, false).getLocation();
+                        if (preview != null && (editingArena
+                                ? sameDimension(player, arena)
+                                : !outsideBoundary(player, arena, preview))) {
+                            hintPoint(player, preview, red ? 1F : .25F, red ? .25F : .55F,
+                                    red ? .25F : 1F, emitted);
                         }
                     }
+                    if (redPoints.size() != 4 || bluePoints.size() != 4) {
+                        hintPoint(player, arena.redPlayer, 1F, .25F, .25F, emitted);
+                        hintPoint(player, arena.bluePlayer, .25F, .55F, 1F, emitted);
+                    }
                 }
+                if (holdsBoundary) polygonHint(player, arena.boundary, 0.55F, 1.0F, 0.55F, emitted);
             }
         }
     }
 
-    /** 换宠区提示：地面圆环 + 一条从换宠区中心到本方玩家点的虚线（和边界画笔同样的粒子线）。 */
-    private static void switchHint(net.minecraft.server.level.ServerLevel level, Vec3 center, Vec3 playerPoint,
-                                   double radius, float r, float g, float b) {
-        if (center == null) return;
-        int ringSteps = 44;
-        for (int i = 0; i < ringSteps; i++) {
-            double a = (Math.PI * 2.0) * i / ringSteps;
-            double x = center.x + Math.cos(a) * radius;
-            double z = center.z + Math.sin(a) * radius;
-            level.sendParticles(net.minecraft.core.particles.ParticleTypes.END_ROD,
-                    x, center.y + 0.08, z, 1, 0.0, 0.0, 0.0, 0.0);
-        }
-        if (playerPoint != null) {
-            int steps = (int) Math.min(64, Math.max(4, center.distanceTo(playerPoint) / 0.5));
-            for (int s = 0; s <= steps; s++) {
-                Vec3 p = center.lerp(playerPoint, s / (double) steps);
-                level.sendParticles(new net.minecraft.core.particles.DustParticleOptions(
-                                new org.joml.Vector3f(r, g, b), 1.0F),
-                        p.x, p.y + 0.1, p.z, 1, 0.02, 0.0, 0.02, 0.0);
-            }
+    private static boolean holds(ServerPlayer player, Item item) {
+        return player.getMainHandItem().is(item) || player.getOffhandItem().is(item);
+    }
+
+    /** 未满四点时画开放折线，满四点才闭合；单点也有可见标记。 */
+    private static void polygonHint(ServerPlayer player, java.util.List<Vec3> points,
+                                    float r, float g, float b, java.util.Set<String> emitted) {
+        for (Vec3 point : points) hintPoint(player, point, r, g, b, emitted);
+        int edges = points.size() >= 4 ? points.size() : points.size() - 1;
+        for (int i = 0; i < edges; i++) {
+            lineHint(player, points.get(i), points.get((i + 1) % points.size()), r, g, b, emitted);
         }
     }
 
-    private static void hintPoint(net.minecraft.server.level.ServerLevel level, Vec3 point,
-                                  float r, float g, float b) {
-        if (point == null) return;
-        level.sendParticles(new net.minecraft.core.particles.DustParticleOptions(
-                        new org.joml.Vector3f(r, g, b), 1.0F),
-                point.x, point.y + 0.15, point.z, 3, 0.18, 0.05, 0.18, 0.0);
+    private static void lineHint(ServerPlayer player, Vec3 a, Vec3 b,
+                                  float r, float g, float blue, java.util.Set<String> emitted) {
+        int steps = (int) Math.min(256, Math.max(2, a.distanceTo(b) / 0.6));
+        for (int s = 0; s <= steps; s++) {
+            previewParticle(player, a.lerp(b, s / (double) steps).add(0, 0.08, 0),
+                    r, g, blue, 1, emitted);
+        }
+    }
+
+    private static void hintPoint(ServerPlayer player, Vec3 point,
+                                  float r, float g, float b, java.util.Set<String> emitted) {
+        if (point != null) previewParticle(player, point.add(0, 0.15, 0), r, g, b, 3, emitted);
+    }
+
+    private static void previewParticle(ServerPlayer player, Vec3 point, float r, float g, float b,
+                                        int count, java.util.Set<String> emitted) {
+        String key = point.x + ":" + point.y + ":" + point.z + ":" + r + ":" + g + ":" + b;
+        if (!emitted.add(key)) return;
+        // 只发送给持握者；force 绕过普通粒子的短距离发送与客户端粒子减少设置。
+        player.serverLevel().sendParticles(player,
+                new net.minecraft.core.particles.DustParticleOptions(new org.joml.Vector3f(r, g, b), 1.0F),
+                true, point.x, point.y, point.z, count,
+                count > 1 ? 0.18 : 0.0, count > 1 ? 0.05 : 0.0, count > 1 ? 0.18 : 0.0, 0.0);
     }
 
     private static String format(Vec3 vec) {
         return String.format("%.1f, %.1f, %.1f", vec.x, vec.y, vec.z);
     }
 
-    private static void openBattleMenu(ServerPlayer player) {
-        com.pkmoba.duel.MenuActions.open(player, com.pkmoba.network.MenuOpenPayload.MenuKind.BATTLE);
-    }
 }

@@ -29,7 +29,14 @@ public final class ClientRooms {
         latest = payload;
         Minecraft client = Minecraft.getInstance();
         client.execute(() -> {
-            if (client.screen instanceof RoomLobbyScreen lobby) {
+            RoomListPayload.RoomView mine = payload.rooms().stream()
+                    .filter(room -> room.id() == payload.myRoomId())
+                    .findFirst().orElse(null);
+            if (mine != null && (mine.state() == 2 || mine.state() == 3)) {
+                if (client.screen instanceof RoomLobbyScreen || client.screen instanceof RoomDetailScreen) {
+                    client.setScreen(null);
+                }
+            } else if (client.screen instanceof RoomLobbyScreen lobby) {
                 lobby.update(payload);
             } else if (client.screen instanceof RoomDetailScreen detail) {
                 detail.update(payload);
@@ -44,6 +51,7 @@ public final class ClientRooms {
         if (ClientPlayNetworking.canSend(RoomActionPayload.TYPE)) {
             ClientPlayNetworking.send(RoomActionPayload.of("OPEN"));
         }
+        latest = null; // Never show another server's cached rooms while awaiting OPEN.
         client.setScreen(new RoomLobbyScreen());
     }
 

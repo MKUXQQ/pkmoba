@@ -35,12 +35,18 @@ public class PkmobaClient implements ClientModInitializer {
         CharizardSkillAnimator.init();
         HudOverlay.init();
         SkillHud.init();
+        PartyHud.init();
+        VenusaurEffects.init();
+        RemoteSkillAnimations.init();
+        BodyAnchorStabilizer.init();
+        PikachuEffects.init();
         SelectionOutlineRenderer.init();
         // m04660：普通攻击与普攻白圈已整体删除，不再注册 AttackRangeRenderer。
         ClickMarker.init();
         BallFlightFx.init();
         RecallFx.init();
         SkillRangeRenderer.init();
+        SwitchZoneRenderer.init();
         TornadoEffects.init();
         WaterEffects.init();
         // 0.43：水箭龟 R「水炮风暴」——地面范围圈 + 6 道旋转水柱 + 螺旋水带 + 扩散水刃
@@ -101,7 +107,7 @@ public class PkmobaClient implements ClientModInitializer {
                     int entityId = ClientState.getCharizardId();
                     var entity = context.client().level == null ? null : context.client().level.getEntity(entityId);
                     boolean alive = entity instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon
-                            && pokemon.isAlive();
+                            && !pokemon.isRemoved() && (pokemon.isAlive() || payload.hp() > 0.0F);
                     if (!alive) {
                         if (payload.hp() <= 0.0F) {
                             // 阵亡/收回：没有活实体也接受服务端给的设计上限，HUD 画 0/上限。
@@ -119,7 +125,7 @@ public class PkmobaClient implements ClientModInitializer {
                             payload.arenaDist(), payload.arenaCx(), payload.arenaCy(), payload.arenaCz(),
                             payload.arenaRadius());
                     // 让本地 Pokemon 对象认同服务端下发的血量上限（P 界面与血条一致）
-                    ClientHpSync.apply(entityId, payload.maxHp());
+                    ClientHpSync.apply(entityId, payload.maxHp(), payload.hp());
                 }));
 
         // 招式粒子特效
@@ -127,6 +133,7 @@ public class PkmobaClient implements ClientModInitializer {
                 context.client().execute(() -> {
                     // 0.39：命中反馈复用同一个 EffectPayload（effectId 前缀 pkmoba:hit/），
                     // 由 HitFeedback 解析，命中包不再当普通粒子特效处理。
+                    if (SwitchZoneRenderer.accept(payload) || RemoteSkillAnimations.accept(payload) || PikachuEffects.accept(payload)) return;
                     if (HitFeedback.handle(payload)) {
                         TargetOverlay.captureHit(payload);
                         return;

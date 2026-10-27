@@ -24,7 +24,6 @@ public final class InputHandler {
     public static final String KEY_SWITCH_POKEMON = "key.pkmoba.switch_pokemon";
     public static final String KEY_SUMMON_POKEMON = "key.pkmoba.summon_pokemon";
     public static final String KEY_ROOM_LOBBY = "key.pkmoba.room_lobby";
-
     private static KeyMapping godViewKey;
     private static KeyMapping lockCameraKey;
     private static KeyMapping switchPokemonKey;
@@ -51,7 +50,6 @@ public final class InputHandler {
 
         roomLobbyKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
                 KEY_ROOM_LOBBY, InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_H, KEY_CATEGORY));
-
         ClientTickEvents.END_CLIENT_TICK.register(InputHandler::onClientTick);
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             GodView.reset();
@@ -72,18 +70,12 @@ public final class InputHandler {
 
         while (lockCameraKey.consumeClick()) { }
 
-        // 手动换宝可梦：0.35 起不再要求上帝视角——平时也能按 C 收回 / 放出下一只。
-        // 具体能不能换、换成谁，全部由服务端 TeamService.switchTarget / advanceSelection 决定。
+        // C opens the server-authoritative party menu; selection and confirm happen in PartyScreen.
         while (switchPokemonKey.consumeClick()) {
-            if (mc.screen == null && mc.player != null
-                    && ClientPlayNetworking.canSend(com.pkmoba.network.SwitchPokemonPayload.TYPE)) {
-                // 先本地给反馈，不等服务端往返
-                SwitchFx.onPress();
-                ClientPlayNetworking.send(new com.pkmoba.network.SwitchPokemonPayload());
-            }
+            if (mc.screen == null && mc.player != null) PartyScreen.open();
         }
 
-        // X：在玩家正前方 3 格召唤当前选中的宝可梦（0.40 起取消"召唤到准星点"的旧行为）
+        // X：召唤 / 收回切换；状态由服务器判断，快速连按不会重复生成。
         while (summonPokemonKey.consumeClick()) {
             if (mc.screen == null && mc.player != null && mc.level != null
                     && ClientPlayNetworking.canSend(com.pkmoba.network.SummonPayload.TYPE)) {
@@ -100,7 +92,7 @@ public final class InputHandler {
         // H：打开房间大厅（房间系统唯一入口；点位配置仍走道具/命令）
         while (roomLobbyKey.consumeClick()) {
             if (mc.screen == null && mc.player != null) {
-                com.pkmoba.client.ClientRooms.openLobby();
+                ClientRooms.openLobby();
             }
         }
 

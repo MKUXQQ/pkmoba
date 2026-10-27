@@ -18,8 +18,8 @@ public final class SkillPresentation {
      * 格子宽 {@link #CELL_W}、间距 {@link #CELL_GAP}，图标用原生 32×32 像素绘制
      * （{@link #ICON_SIZE}），不再每格按 30/32 非整数缩放，四格尺寸与位置严格一致。
      */
-    public static final int CELL_W = 54;
-    public static final int CELL_GAP = 5;
+    public static final int CELL_W = 44;
+    public static final int CELL_GAP = 3;
     public static final int CELL_STEP = CELL_W + CELL_GAP;
     /** 格子背景的上/下边界（相对面板顶）。 */
     public static final int CELL_TOP = 12;
@@ -33,6 +33,9 @@ public final class SkillPresentation {
 
     private static final String[] ICONS = {"flamethrower", "fire_spin", "fly", "fire_blast"};
     private static final String[] BLASTOISE_ICONS = {"blastoise_0", "blastoise_1", "blastoise_2", "blastoise_3"};
+    private static final String[] VENUSAUR_ICONS = {"venusaur_vine", "venusaur_razor", "venusaur_solar", "venusaur_sludge"};
+
+    private static final String[] PIKACHU_ICONS = {"pikachu_thundershock", "pikachu_electroweb", "pikachu_quick_attack", "pikachu_thunder"};
 
     private SkillPresentation() { }
 
@@ -45,13 +48,15 @@ public final class SkillPresentation {
     }
 
     public static ResourceLocation icon(PokemonEntity pokemon, int index) {
-        String[] icons = Skill.isBlastoise(pokemon) ? BLASTOISE_ICONS : ICONS;
+        String[] icons = Skill.isPikachu(pokemon) ? PIKACHU_ICONS : Skill.isVenusaur(pokemon) ? VENUSAUR_ICONS
+                : Skill.isBlastoise(pokemon) ? BLASTOISE_ICONS : ICONS;
         return ResourceLocation.fromNamespaceAndPath("pkmoba", "textures/gui/skills/" + icons[index] + ".png");
     }
 
     /** 按物种 id 取图标（宝可梦还没召唤出来时 HUD 也要能画对）。 */
     public static ResourceLocation icon(String speciesId, int index) {
-        String[] icons = Skill.isBlastoise(speciesId) ? BLASTOISE_ICONS : ICONS;
+        String[] icons = Skill.isPikachu(speciesId) ? PIKACHU_ICONS : Skill.isVenusaur(speciesId) ? VENUSAUR_ICONS
+                : Skill.isBlastoise(speciesId) ? BLASTOISE_ICONS : ICONS;
         return ResourceLocation.fromNamespaceAndPath("pkmoba", "textures/gui/skills/" + icons[index] + ".png");
     }
 
@@ -61,7 +66,7 @@ public final class SkillPresentation {
         if (!(entity instanceof PokemonEntity pokemon) || !pokemon.isAlive()) return false;
         try {
             return "cobblemon:charizard".equals(pokemon.getPokemon().getSpecies().getResourceIdentifier().toString())
-                    || Skill.isBlastoise(pokemon);
+                    || Skill.isBlastoise(pokemon) || Skill.isVenusaur(pokemon) || Skill.isPikachu(pokemon);
         } catch (RuntimeException ignored) {
             return false;
         }

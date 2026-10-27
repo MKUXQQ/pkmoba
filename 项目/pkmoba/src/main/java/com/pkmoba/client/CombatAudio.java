@@ -46,7 +46,7 @@ public final class CombatAudio {
 
     /** 当前需要的循环音种类；由服务端 channel + 受控宝可梦物种推断。 */
     private enum LoopKind {
-        NONE, FLAME, FLAME_CHARGE, SPIN, FLY, SURF, SPOUT, CANNON
+        NONE, FLAME, FLAME_CHARGE, SPIN, FLY, SURF, SPOUT, CANNON, SLUDGE_CHARGE
     }
 
     private static boolean initialized;
@@ -116,6 +116,7 @@ public final class CombatAudio {
             lastChannel = channel;
             channelTicks = 0;
             fireCued = false;
+            lastChargeHighOnChannel = false;
         } else {
             channelTicks++;
         }
@@ -150,7 +151,7 @@ public final class CombatAudio {
         boolean fire;
         if (channel == 1) {
             fire = channelTicks >= FLAME_WINDUP_TICKS;
-        } else if (channel == 4 || channel == 6) {
+        } else if (channel == 4 || channel == 6 || channel == 10) {
             fire = lastChargeHighOnChannel && !chargeHigh;
         } else {
             fire = channelTicks >= 2;
@@ -162,10 +163,13 @@ public final class CombatAudio {
         fireCued = true;
         SoundEvent event = switch (channel) {
             case 1 -> SoundEvents.GHAST_SHOOT;
-            case 4, 6 -> SoundEvents.GHAST_SHOOT;
+            case 4 -> SoundEvents.GHAST_SHOOT;
+            case 6 -> SoundEvents.GENERIC_SPLASH;
+            case 10 -> SoundEvents.SLIME_SQUISH;
             default -> SoundEvents.PLAYER_ATTACK_STRONG;
         };
-        playAt(mc, event, 0.55F, channel == 1 ? 0.85F : 1.0F, mc.player.position());
+        float pitch = channel == 10 ? 0.62F : channel == 6 ? 0.65F : channel == 1 ? 0.85F : 1.0F;
+        playAt(mc, event, channel == 10 || channel == 6 ? 0.80F : 0.55F, pitch, mc.player.position());
     }
 
     // ---------------------------------------------------------------- 循环音
@@ -186,6 +190,7 @@ public final class CombatAudio {
             case 5 -> blastoise ? LoopKind.SURF : LoopKind.NONE;
             // 水箭龟 R 喷水
             case 6 -> LoopKind.SPOUT;
+            case 10 -> LoopKind.SLUDGE_CHARGE;
             default -> LoopKind.NONE;
         };
     }
@@ -238,6 +243,7 @@ public final class CombatAudio {
             case SURF -> SoundEvents.PLAYER_SWIM;
             case SPOUT -> SoundEvents.PLAYER_SWIM;
             case CANNON -> SoundEvents.BUBBLE_COLUMN_UPWARDS_AMBIENT;
+            case SLUDGE_CHARGE -> SoundEvents.PORTAL_AMBIENT;
             case NONE -> null;
         };
         if (event == null) {
@@ -251,6 +257,7 @@ public final class CombatAudio {
             case SURF -> 0.60F;
             case SPOUT -> 0.52F;
             case CANNON -> 0.85F;
+            case SLUDGE_CHARGE -> 0.65F;
             case NONE -> 1.0F;
         };
         return new LoopInstance(event, SoundSource.PLAYERS, pos, pitch);

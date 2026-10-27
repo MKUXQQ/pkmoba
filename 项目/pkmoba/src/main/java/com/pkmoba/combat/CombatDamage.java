@@ -31,10 +31,15 @@ public final class CombatDamage {
 
     /** 伤害量 → 打击强度的分档阈值（只影响表现，不影响实际伤害）。 */
     private static final float HEAVY_THRESHOLD = 10.0F;
-    private static final float ULTIMATE_THRESHOLD = 26.0F;
 
     public static boolean apply(ServerLevel level, PokemonEntity source, LivingEntity target, float amount) {
-        return apply(level, source, target, amount, null, null);
+        return apply(level, source, target, amount, null, null, null);
+    }
+
+    /** Explicit move type when an attack differs from its user's species (e.g. Charizard Fly). */
+    public static boolean apply(ServerLevel level, PokemonEntity source, LivingEntity target, float amount,
+                                TypeEffectiveness.MoveType moveType) {
+        return apply(level, source, target, amount, null, null, moveType);
     }
 
     /**
@@ -43,20 +48,36 @@ public final class CombatDamage {
      */
     public static boolean apply(ServerLevel level, PokemonEntity source, LivingEntity target, float amount,
                                 EffectPayload.Element element, EffectPayload.Power power) {
+        return apply(level, source, target, amount, element, power, null);
+    }
+
+    public static boolean apply(ServerLevel level, PokemonEntity source, LivingEntity target, float amount,
+                                 EffectPayload.Element element, EffectPayload.Power power,
+                                 TypeEffectiveness.MoveType moveType) {
         if (source == null || !BasicAttack.validTarget(target, source) || target.level() != level
-                || !Float.isFinite(amount) || amount <= 0) return false;
+                || !Float.isFinite(amount) || amount <= 0
+                || com.pkmoba.duel.DuelManager.isPreparing(source)
+                || com.pkmoba.duel.DuelManager.isPreparing(target)) return false;
+        String species = target instanceof PokemonEntity pokemon && pokemon.getPokemon() != null
+                ? pokemon.getPokemon().getSpecies().getResourceIdentifier().toString() : "";
+        TypeEffectiveness.MoveType actualType = moveType == null
+                ? TypeEffectiveness.forAttackerSpecies(source.getPokemon() == null ? "" : source.getPokemon().getSpecies().getResourceIdentifier().toString())
+                : moveType;
+        amount *= (float) TypeEffectiveness.multiplier(actualType, species);
         // W 高速旋转期间受到的伤害 -20%（只减伤，不免控、不无敌）。
         if (com.pkmoba.combat.BlastoiseCombat.isSpinningPokemon(target)) {
             amount *= 1.0F - com.pkmoba.combat.BlastoiseCombat.SPIN_DAMAGE_REDUCTION;
         }
         float before = target.getHealth();
+        final float damageAmount = amount;
         // Skill cadence is authoritative. Remove only the previous hit's vanilla cooldown
         // during this call, not entity invulnerability, creative protection or event cancellation.
         int previousCooldown = target.invulnerableTime;
         target.invulnerableTime = 0;
         boolean accepted;
         try {
-            accepted = target.hurt(level.damageSources().mobAttack(source), amount);
+            accepted = SkillDamagePermit.hurt(source, target,
+                    () -> target.hurt(level.damageSources().mobAttack(source), damageAmount));
         } catch (RuntimeException | Error failure) {
             target.invulnerableTime = previousCooldown;
             throw failure;
@@ -126,9 +147,7 @@ public final class CombatDamage {
 
     /** 强度：只按真实伤害量分档；掉落伤害为 0（被抗性吸收）时算轻击。 */
     private static EffectPayload.Power powerOf(float dealt) {
-        if (dealt >= ULTIMATE_THRESHOLD) {
-            return EffectPayload.Power.ULTIMATE;
-        }
+        // Only an explicitly tagged R hit may move the camera; damage size is not a skill identity.
         if (dealt >= HEAVY_THRESHOLD) {
             return EffectPayload.Power.HEAVY;
         }

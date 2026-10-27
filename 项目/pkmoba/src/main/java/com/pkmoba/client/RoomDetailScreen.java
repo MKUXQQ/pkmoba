@@ -15,29 +15,58 @@ import net.minecraft.resources.ResourceLocation;
  * 「等待玩家加入」/「已就位」）；底部两个自绘按钮：退出房间、关闭。画风与大厅完全一致。
  */
 public final class RoomDetailScreen extends Screen {
-    private static final int PANEL_W_MAX = 330;
-    private static final int PANEL_H = 210;
+    private static final int PANEL_W_MAX = 420;
+    private static final int PANEL_H = 224;
     private static final int PAD = 10;
     /** 出战列表里宝可梦头像的边长（像素）。 */
     private static final int PORTRAIT = 14;
 
-    private static final int PANEL = 0xFFF3E7CE;
-    private static final int BORDER = 0xFF3B2B1E;
-    private static final int INNER = 0xFFE7D7B8;
-    private static final int TEXT = 0xFF3A2A1C;
-    private static final int MUTED = 0xFF8A7256;
-    private static final int GOLD = 0xFFD8402F;
-    private static final int RED = 0xFFC4564E;
-    private static final int BLUE = 0xFF5C7CC4;
+    private static final int PANEL = PixelUi.CREAM;
+    private static final int BORDER = PixelUi.INK;
+    private static final int INNER = PixelUi.PAPER;
+    private static final int TEXT = PixelUi.TEXT;
+    private static final int MUTED = PixelUi.MUTED;
+    private static final int GOLD = PixelUi.GREEN;
+    private static final int RED = PixelUi.RED;
+    private static final int BLUE = PixelUi.BLUE;
 
     private final int roomId;
     private String hostName = "";
+    private String redId = "", blueId = "";
+    private java.util.List<String> redTeam = java.util.List.of(), blueTeam = java.util.List.of();
     private String redName = "";
     private String blueName = "";
     private int state;
     private int seconds;
+    private String arenaName = "";
+    private boolean canStart;
+    private boolean leaving;
+    private boolean hoverStart;
     private boolean hoverLeave;
     private boolean hoverClose;
+    private boolean requestingBot;
+    private int botRequestTicks;
+    private int pointerX;
+    private int pointerY;
+
+    private boolean mouseInsideOpponentButton(int x, int y, int w) {
+        return pointerX >= x + 8 && pointerX < x + w - 8
+                && pointerY >= y + 78 && pointerY < y + 100;
+    }
+
+    private boolean canSummonBot() {
+        return !requestingBot && state <= 1 && hostName.equals(myName())
+                && opponentName().isEmpty();
+    }
+
+    private boolean botOpponent() {
+        return opponentName().contains("人机");
+    }
+
+    @Override
+    public void tick() {
+        if (botRequestTicks > 0 && --botRequestTicks == 0) requestingBot = false;
+    }
 
     public RoomDetailScreen(RoomListPayload.RoomView room) {
         super(Component.literal("房间"));
@@ -47,14 +76,27 @@ public final class RoomDetailScreen extends Screen {
 
     private void apply(RoomListPayload.RoomView room) {
         this.hostName = room.host();
+        this.redId = room.redId();
+        this.blueId = room.blueId();
+        this.redTeam = room.redTeam();
+        this.blueTeam = room.blueTeam();
         this.redName = room.red();
         this.blueName = room.blue();
         this.state = room.state();
         this.seconds = room.seconds();
+        this.arenaName = room.arena();
+        this.canStart = room.canStart();
     }
 
     /** 房间快照刷新（大厅每收到一次快照都会调到这里）。 */
     void update(RoomListPayload payload) {
+        if (payload.myRoomId() != roomId) {
+            if (minecraft != null) minecraft.setScreen(new RoomLobbyScreen());
+            return;
+        }
+        leaving = false;
+        requestingBot = false;
+        botRequestTicks = 0;
         for (RoomListPayload.RoomView room : payload.rooms()) {
             if (room.id() == roomId) {
                 apply(room);
@@ -89,22 +131,25 @@ public final class RoomDetailScreen extends Screen {
 
     @Override
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-        g.fill(0, 0, width, height, 0xC0101014);
+        pointerX = mouseX;
+        pointerY = mouseY;
+        g.fill(0, 0, width, height, 0xB0252A20);
         int x = left();
         int y = top();
         int w = panelWidth();
 
-        g.fill(x, y, x + w, y + PANEL_H, PANEL);
-        RoomLobbyScreen.border(g, x, y, w, PANEL_H, BORDER);
-        g.fill(x + 4, y + 4, x + w - 4, y + 22, INNER);
-        g.drawString(font, "房间 " + roomId, x + PAD, y + 9, GOLD, false);
+        PixelUi.panel(g, x, y, w, PANEL_H, PANEL);
+        PixelUi.frame(g, x + 6, y + 6, w - 12, 20, INNER, BORDER);
+        PixelUi.ball(g, x + 11, y + 10, 1);
+        String heading = "房间 #" + roomId + " · " + arenaName;
+        g.drawString(font, PixelUi.fit(font, heading, w - 116), x + 29, y + 12, TEXT, false);
         String status = switch (state) {
             case 2 -> "倒计时 " + Math.max(0, seconds) + "s";
             case 3 -> "对战中";
             case 4 -> "已结束";
             default -> "等待开始";
         };
-        g.drawString(font, status, x + w - PAD - font.width(status), y + 9, MUTED, false);
+        g.drawString(font, status, x + w - PAD - font.width(status), y + 12, state == 3 ? RED : GOLD, false);
 
         // 左右两栏：我方（左）/ 对方（右）
         int colW = (w - PAD * 3) / 2;
@@ -113,11 +158,24 @@ public final class RoomDetailScreen extends Screen {
         drawSide(g, x + PAD, colY, colW, colH, "我方", myName(), mySideIsBlue(), true);
         drawSide(g, x + PAD * 2 + colW, colY, colW, colH, "对方", opponentName(), !mySideIsBlue(), false);
 
+        String rule = "开始后自动收回 · 关闭界面倒计时 · X召唤";
+        g.drawCenteredString(font, PixelUi.fit(font, rule, w - 20), x + w / 2, y + 151, MUTED);
+
         // 底部按钮
         hoverLeave = mouseX >= leaveX() && mouseX < leaveX() + 88 && mouseY >= buttonY() && mouseY < buttonY() + 20;
         hoverClose = mouseX >= closeX() && mouseX < closeX() + 88 && mouseY >= buttonY() && mouseY < buttonY() + 20;
-        RoomLobbyScreen.button(g, leaveX(), buttonY(), 88, 20, "退出房间", hoverLeave);
-        RoomLobbyScreen.button(g, closeX(), buttonY(), 88, 20, "关闭", hoverClose);
+        boolean locked = state == 2 || state == 3 || state == 4;
+        PixelUi.button(g, font, leaveX(), buttonY(), 88, 20,
+                locked ? "对局中不可退出" : leaving ? "正在退出…" : "退出房间", hoverLeave, !locked && !leaving);
+        hoverStart = mouseX >= x + PAD && mouseX < x + w - PAD
+                && mouseY >= y + 165 && mouseY < y + 185;
+        String startLabel = (canStart || botOpponent() && state <= 1) ? "开始挑战"
+                : state == 2 ? "倒计时结束后自动开战"
+                : state == 3 ? "对战进行中" : redName.isEmpty() || blueName.isEmpty()
+                ? "等待另一位训练家 / 召唤人机" : "确认队伍并准备";
+        PixelUi.button(g, font, x + PAD, y + 165, w - PAD * 2, 20,
+                PixelUi.fit(font, startLabel, w - PAD * 2 - 12), hoverStart, canStart || (state <= 1 && !leaving));
+        PixelUi.button(g, font, closeX(), buttonY(), 88, 20, "关闭", hoverClose, true);
     }
 
     private String myName() {
@@ -142,52 +200,38 @@ public final class RoomDetailScreen extends Screen {
     }
 
     private String opponentName() {
-        String me = myName();
-        if (hostName.equals(me)) {
-            return blueName.isEmpty() ? "" : blueName;
-        }
-        return redName.isEmpty() ? "" : redName;
+        return mySideIsBlue() ? redName : blueName;
     }
 
     /** 一栏：标题 / 头像+名字 / 三条宝可梦。 */
     private void drawSide(GuiGraphics g, int x, int y, int w, int h, String title, String name,
                           boolean blue, boolean mine) {
-        g.fill(x, y, x + w, y + h, INNER);
-        RoomLobbyScreen.border(g, x, y, w, h, BORDER);
-        g.drawString(font, title, x + 6, y + 5, mine ? GOLD : MUTED, false);
-        g.fill(x + 6, y + 15, x + w - 6, y + 16, blue ? BLUE : RED);
+        PixelUi.frame(g, x, y, w, h, INNER, BORDER);
+        g.fill(x + 3, y + 3, x + w - 3, y + 18, blue ? 0xFFDEE6EB : 0xFFF0DDD1);
+        g.drawString(font, title + " · " + (blue ? "蓝方" : "红方"), x + 7, y + 6, blue ? BLUE : RED, false);
+        g.fill(x + 4, y + 18, x + w - 4, y + 19, PixelUi.SHADOW);
 
         if (name == null || name.isEmpty()) {
-            g.drawString(font, "等待玩家加入…", x + 8, y + 34, MUTED, false);
-            g.drawString(font, "（把 H 房间号告诉对方）", x + 8, y + 46, MUTED, false);
+            g.drawString(font, PixelUi.fit(font, "等待训练家加入…", w - 16), x + 8, y + 62, MUTED, false);
+            if (!mine) {
+                boolean hovered = mouseInsideOpponentButton(x, y, w);
+                PixelUi.button(g, font, x + 8, y + 78, w - 16, 22,
+                        requestingBot ? "正在召唤…" : "召唤人机", hovered, canSummonBot());
+            }
             return;
         }
-        RoomLobbyScreen.drawHead(g, name, x + 8, y + 24, 20);
-        g.drawString(font, name, x + 34, y + 29, TEXT, false);
+        RoomLobbyScreen.drawHead(g, name, blue ? blueId : redId, x + 8, y + 24, 20);
+        g.drawString(font, PixelUi.fit(font, name, w - 42), x + 34, y + 29, TEXT, false);
 
-        // 宝可梦：我方读本地队伍；对方不公开就不显示具体的
-        int lineY = y + 54;
-        if (mine) {
-            java.util.List<String> team = ClientState.getTeam();
-            g.drawString(font, "出战：", x + 8, lineY, MUTED, false);
-            lineY += 12;
-            for (int i = 0; i < Math.min(3, team.size()); i++) {
-                String id = team.get(i);
-                // 用户要求：名字前面带宝可梦头像（和左侧 HUD 同一套 64×64 头像贴图），
-                // 名字用中文（SpeciesRegistry.displayName），不再显示 cobblemon 的英文 id。
-                ResourceLocation portrait = portraitOf(id);
-                int icon = PORTRAIT;
-                if (portrait != null) {
-                    g.blit(portrait, x + 12, lineY, icon, icon, 0.0F, 0.0F, 64, 64, 64, 64);
-                } else {
-                    g.fill(x + 12, lineY, x + 12 + icon, lineY + icon, 0xFFCFC0A0);
-                }
-                g.drawString(font, displayName(id), x + 12 + icon + 4, lineY + (icon - 8) / 2, TEXT, false);
-                lineY += icon + 1;
-            }
-        } else {
-            g.drawString(font, state >= 3 ? "对战中" : "已就位", x + 8, lineY, TEXT, false);
-            g.drawString(font, "（对方的宝可梦开局后可见）", x + 8, lineY + 12, MUTED, false);
+        java.util.List<String> team = blue ? blueTeam : redTeam;
+        int lineY = y + 53;
+        g.drawString(font, team.isEmpty() ? "尚未选择宝可梦" : "出战宝可梦", x + 8, lineY, MUTED, false);
+        for (int i = 0; i < Math.min(6, team.size()); i++) {
+            int tx = x + 8 + (i % 2) * ((w - 16) / 2);
+            int ty = lineY + 12 + (i / 2) * 16;
+            ResourceLocation portrait = portraitOf(team.get(i));
+            if (portrait != null) g.blit(portrait, tx, ty, PORTRAIT, PORTRAIT, 0.0F, 0.0F, 64, 64, 64, 64);
+            g.drawString(font, PixelUi.fit(font, displayName(team.get(i)), (w - 16) / 2 - 18), tx + 17, ty + 3, TEXT, false);
         }
     }
 
@@ -211,9 +255,29 @@ public final class RoomDetailScreen extends Screen {
         if (button != 0) {
             return super.mouseClicked(mouseX, mouseY, button);
         }
+        int colW = (panelWidth() - PAD * 3) / 2;
+        int botX = left() + PAD * 2 + colW + 8;
+        int botY = top() + 30 + 78;
+        if (canSummonBot() && mouseX >= botX && mouseX < botX + colW - 16
+                && mouseY >= botY && mouseY < botY + 22) {
+            requestingBot = true;
+            botRequestTicks = 60;
+            ClientRooms.send("ADD_BOT", roomId, "");
+            return true;
+        }
+        if (mouseX >= left() + PAD && mouseX < left() + panelWidth() - PAD
+                && mouseY >= top() + 165 && mouseY < top() + 185) {
+            if (canStart || (state <= 1 && !leaving && !redName.isEmpty() && !blueName.isEmpty())) {
+                boolean starting = canStart || botOpponent();
+                ClientRooms.send(starting ? "START" : "READY", roomId, "");
+                if (starting) Minecraft.getInstance().setScreen(null);
+            }
+            return true;
+        }
         if (mouseX >= leaveX() && mouseX < leaveX() + 88 && mouseY >= buttonY() && mouseY < buttonY() + 20) {
+            if (state == 2 || state == 3 || state == 4 || leaving) return true;
+            leaving = true;
             ClientRooms.send("LEAVE", roomId, "");
-            onClose();
             return true;
         }
         if (mouseX >= closeX() && mouseX < closeX() + 88 && mouseY >= buttonY() && mouseY < buttonY() + 20) {

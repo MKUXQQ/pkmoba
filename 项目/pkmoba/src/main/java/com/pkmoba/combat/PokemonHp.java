@@ -60,6 +60,25 @@ public final class PokemonHp {
         }
     }
 
+    /** Write a design max and current HP to both the entity and Cobblemon's Pokemon mirror. */
+    public static void setHealth(PokemonEntity entity, float designMax, float health) {
+        if (entity == null || !Float.isFinite(designMax) || designMax <= 0 || !Float.isFinite(health)) return;
+        // Publish the max first, then update the Pokemon and entity with the same HP units.
+        var pokemon = entity.getPokemon();
+        pokemon.getPersistentData().putInt(KEY, Math.round(designMax));
+        var attribute = entity.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH);
+        if (attribute != null) attribute.setBaseValue(designMax);
+        float wanted = Math.max(0.0F, Math.min(health, designMax));
+        pokemon.setCurrentHealth(Math.round(wanted));
+        entity.setHealth(wanted);
+        apply(entity, designMax);
+    }
+
+    /** Set a deployed entity to its species' designed full health. */
+    public static void healToFull(PokemonEntity entity, float designMax) {
+        setHealth(entity, designMax, designMax);
+    }
+
     /** 读设计上限；未写过返回 0。 */
     public static int maxHealthOf(Pokemon pokemon) {
         if (pokemon == null) {

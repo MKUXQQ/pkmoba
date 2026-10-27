@@ -53,9 +53,12 @@ public final class CharizardCombat {
     // 原实现两只宝可梦统一 100 血，而四技能一轮合计 94~97 点，先手方 5~8 秒就能打完，
     // TTK 过短、看不出拉扯。改成按物种给血量，并把单次命中压到对方血量的约 10%。
     /** 喷火龙最大血量：脆皮高机动，靠位移与爆发换输出。 */
-    public static final float CHARIZARD_MAX_HP = 280.0F;
-    /** 水箭龟最大血量：重装坦克，靠持续输出与受压反打。 */
+    public static final float CHARIZARD_MAX_HP = 300.0F;
+    /** 水箭龟坚韧耐久，配合较慢的技能节奏。 */
     public static final float BLASTOISE_MAX_HP = 340.0F;
+    /** 妙蛙花中等偏高耐久，补偿较短射程与低机动。 */
+    public static final float VENUSAUR_MAX_HP = 320.0F;
+    public static final float PIKACHU_MAX_HP = 280.0F;
     /** 兼容旧调用（无实体上下文时按喷火龙血量）。 */
     public static final float MAX_HP = CHARIZARD_MAX_HP;
     private static final float MAX_POINTS = 10.0F;
@@ -63,23 +66,27 @@ public final class CharizardCombat {
 
     /** 按实体取最大血量：喷火龙 280 / 水箭龟 340。 */
     public static float maxHpFor(PokemonEntity entity) {
-        return CharizardManager.isBlastoise(entity) ? BLASTOISE_MAX_HP : CHARIZARD_MAX_HP;
+        return CharizardManager.isPikachu(entity) ? PIKACHU_MAX_HP
+                : CharizardManager.isBlastoise(entity) ? BLASTOISE_MAX_HP
+                : CharizardManager.isVenusaur(entity) ? VENUSAUR_MAX_HP : CHARIZARD_MAX_HP;
     }
 
     /** 按物种 id 取最大血量（实体已被移除、只剩物种名时用）。 */
     public static float maxHpFor(String speciesId) {
-        return Skill.isBlastoise(speciesId) ? BLASTOISE_MAX_HP : CHARIZARD_MAX_HP;
+        return Skill.isPikachu(speciesId) ? PIKACHU_MAX_HP
+                : Skill.isBlastoise(speciesId) ? BLASTOISE_MAX_HP
+                : Skill.isVenusaur(speciesId) ? VENUSAUR_MAX_HP : CHARIZARD_MAX_HP;
     }
 
     // ---- 0.37 技能伤害（单次命中 ≤ 对方血量约 10%，四技能一轮 ≤ 45%）----
-    /** Q 每跳伤害（5 跳合计 30）。 */
-    private static final float Q_TICK_DAMAGE = 6.0F;
-    /** W 每跳伤害（10 跳合计 20）。 */
-    private static final float W_TICK_DAMAGE = 2.0F;
+    /** Q 每跳伤害（严格 5 跳合计 35）。 */
+    private static final float Q_TICK_DAMAGE = 7.0F;
+    /** W 每跳伤害（10 跳合计 30）。 */
+    private static final float W_TICK_DAMAGE = 3.0F;
     /** R 中心命中伤害。 */
-    private static final float R_DAMAGE_CENTER = 30.0F;
+    private static final float R_DAMAGE_CENTER = 44.0F;
     /** R 边缘最低伤害（线性衰减）。 */
-    private static final float R_DAMAGE_EDGE = 22.0F;
+    private static final float R_DAMAGE_EDGE = 30.0F;
 
     private static final double Q_RANGE = 11.0;
     private static final double Q_HALF_ANGLE = 20.0;
@@ -152,7 +159,7 @@ public final class CharizardCombat {
     private static final int E_LANDING_TICKS = 6;
     /** 飞翔途中每次接触造成的伤害（同一趟飞行每个目标只算一次）。 */
     /** 飞翔撞击伤害（0.37：16 -> 14，约占对方血量 5%）。 */
-    private static final float E_CONTACT_DAMAGE = 14.0F;
+    private static final float E_CONTACT_DAMAGE = 20.0F;
     /** 飞翔途中接触判定的额外半径（贴合实体碰撞箱）。 */
     private static final double E_CONTACT_INFLATE = 1.5;
 
@@ -396,6 +403,8 @@ public final class CharizardCombat {
 
     public static void init() {
         BlastoiseCombat.init();
+        VenusaurCombat.init();
+        PikachuCombat.init();
         ServerPlayNetworking.registerGlobalReceiver(SkillCastPayload.TYPE, (payload, context) ->
                 context.server().execute(() -> cast(context.player(), Skill.byIndex(payload.skill()),
                         new Vec3(payload.x(), payload.y(), payload.z()))));
@@ -409,12 +418,13 @@ public final class CharizardCombat {
                     }
                     // 无论是否在引导，都记下最新瞄准点：模型要"时时刻刻"朝鼠标慢慢转。
                     AimTracker.set(entity, aim);
-                    // 0.39.5（用户 m03653）：施法期间不再用鼠标覆盖方向 ——"朝第一次释放技能的位置"。
-                    // 引导中只让模型慢慢转向已经记下的 channelAim，避免水炮/喷火被鼠标甩得乱晃。
+                    // 水炮定身不等于锁住瞄准：由各通道自己决定是否接收新的鼠标位置。
                     if (CharizardManager.isBlastoise(entity)) {
-                        if (!BlastoiseCombat.blocksMovement(entity)) {
-                            BlastoiseCombat.updateAim(entity, aim);
-                        }
+                        BlastoiseCombat.updateAim(entity, aim);
+                    } else if (CharizardManager.isVenusaur(entity)) {
+                        VenusaurCombat.updateAim(entity, aim);
+                    } else if (CharizardManager.isPikachu(entity)) {
+                        PikachuCombat.updateAim(entity, aim);
                     } else {
                         State st = s(entity);
                         if (st.channel == 0 && st.dashTicks == 0) {
@@ -454,7 +464,8 @@ public final class CharizardCombat {
     public static boolean isBasicAttackBlocked(PokemonEntity entity) {
         State st = peek(entity);
         boolean busy = st != null && (st.channel != 0 || st.dashTicks > 0);
-        return busy || BlastoiseCombat.blocksBasicAttack(entity);
+        return busy || BlastoiseCombat.blocksBasicAttack(entity) || VenusaurCombat.blocksBasicAttack(entity)
+                || PikachuCombat.isBusy(entity);
     }
 
     /** Moving casts (Q) never own locomotion; E and R explicitly do. */
@@ -465,11 +476,21 @@ public final class CharizardCombat {
     public static boolean blocksMovement(PokemonEntity entity) {
         State st = peek(entity);
         boolean busy = st != null && (st.channel == 4 || st.dashTicks > 0);
-        return busy || BlastoiseCombat.blocksMovement(entity);
+        return busy || BlastoiseCombat.blocksMovement(entity) || VenusaurCombat.blocksMovement(entity)
+                || PikachuCombat.blocksMovement(entity);
+    }
+
+    private static boolean authorizedActor(ServerPlayer player, PokemonEntity entity) {
+        if (player == null || entity == null
+                || !player.getUUID().equals(CharizardManager.getControlledOwner(entity))) return false;
+        if (com.pkmoba.duel.BotDuelService.isBot(entity)) {
+            return player == com.pkmoba.duel.BotDuelService.actor(player.getUUID());
+        }
+        return ServerGodMode.isActive(player);
     }
 
     private static boolean canControl(ServerPlayer player, PokemonEntity entity, Vec3 aim) {
-        return entity != null && ServerGodMode.isActive(player)
+        return entity != null && authorizedActor(player, entity)
                 && player.getUUID().equals(CharizardManager.getControlledOwner(entity))
                 && player.level().dimension().equals(entity.level().dimension())
                 && Double.isFinite(aim.x) && Double.isFinite(aim.y) && Double.isFinite(aim.z)
@@ -497,7 +518,10 @@ public final class CharizardCombat {
     }
 
     /** 清空全部实体的战斗状态（/mo remove、对局结束、服务器停机）。 */
-    public static void resetAll() {        BlastoiseCombat.resetAll();
+    public static void resetAll() {
+        BlastoiseCombat.resetAll();
+        VenusaurCombat.resetAll();
+        PikachuCombat.resetAll();
         for (State st : new ArrayList<>(STATES.values())) {
             st.abort();
         }
@@ -507,6 +531,9 @@ public final class CharizardCombat {
     /** 只清一只实体的状态。 */
     public static void reset(PokemonEntity entity) {
         if (entity == null) return;
+        BlastoiseCombat.reset(entity);
+        VenusaurCombat.reset(entity);
+        PikachuCombat.reset(entity);
         State st = STATES.remove(entity.getUUID());
         if (st != null) st.abort();
     }
@@ -577,17 +604,13 @@ public final class CharizardCombat {
         if (entity == null || !entity.isAlive() || entity.isRemoved()) {
             return;
         }
-        // Cobblemon 会在首 tick 用等级/种族血量曲线重置 MAX_HEALTH（约 32 心），
-        // 覆盖对局血量，导致"打一下就死"。这里每 tick 强制回 360，
-        // 仅在属性被重置的那一帧回满血，之后正常掉血不再自动回复。
+        // Correct attribute recalculation while preserving damage and saved recall health.
         float maxHp = maxHpFor(entity);
         var maxHpAttr = entity.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH);
         if (maxHpAttr != null && Math.abs(maxHpAttr.getBaseValue() - maxHp) > 0.01) {
+            float currentHealth = entity.getHealth();
             maxHpAttr.setBaseValue(maxHp);
-            // 只在"活着且被重置成低血量"的那一帧回满；已经 0 血（正在播战败动画）绝不复活。
-            if (entity.getHealth() > 0.0F && entity.getHealth() < maxHp) {
-                entity.setHealth(maxHp);
-            }
+            entity.setHealth(Math.min(currentHealth, maxHp));
         }
         // 旧版本召唤出来的实体可能还带着无敌，这里统一解除
         entity.setInvulnerable(false);
@@ -597,6 +620,25 @@ public final class CharizardCombat {
         State st = s(entity);
         st.hp = entity.getHealth();
 
+        if (com.pkmoba.duel.DuelManager.isPreparing(entity)) {
+            st.abort();
+            BlastoiseCombat.clearTransient(entity);
+            VenusaurCombat.clearTransient(entity);
+            PikachuCombat.clearTransient(entity);
+            entity.getNavigation().stop();
+            entity.setDeltaMovement(Vec3.ZERO);
+            return;
+        }
+        if (CharizardManager.isPikachu(entity)) {
+            enforceRangeLimit(entity, st);
+            PikachuCombat.tick((ServerLevel) entity.level(), entity);
+            return;
+        }
+        if (CharizardManager.isVenusaur(entity)) {
+            enforceRangeLimit(entity, st);
+            VenusaurCombat.tick((ServerLevel) entity.level(), entity);
+            return;
+        }
         if (CharizardManager.isBlastoise(entity)) {
             enforceRangeLimit(entity, st);
             BlastoiseCombat.tick((ServerLevel) entity.level(), entity);
@@ -674,7 +716,8 @@ public final class CharizardCombat {
                 // Q：服务端统一原点(嘴部)/方向/墙截断长度；客户端嘴部仅作短接驳。
                 sendJet(level, entity, dir);
                 // 喷吐窗口 20 tick，每 4 tick 一跳伤害（5 跳 × 6 = 30，与调整前一致）
-                if (jetTicks % Q_DAMAGE_INTERVAL == 0) {
+                if (jetTicks < Q_CHANNEL_TICKS - Q_WINDUP_TICKS
+                        && jetTicks % Q_DAMAGE_INTERVAL == 0) {
                     coneDamage(level, entity, dir, Q_TICK_DAMAGE);
                 }
             }
@@ -690,14 +733,16 @@ public final class CharizardCombat {
             if (st.channelTicks >= W_WINDUP_TICKS) {
                 // 前摇结束：落区 + 播成形特效 + 开始冷却（冷却从"技能真正出手"算起）
                 st.channel = 0;
-                double dist = Math.min(new Vec3(st.channelAim.x - entity.getX(), 0,
-                        st.channelAim.z - entity.getZ()).length(), W_CAST_RANGE);
-                Vec3 center = entity.position().add(dir.scale(dist));
+                Vec3 center = tornadoCenter(level, entity, st.channelAim);
                 FacingService.snap(entity, FacingService.Priority.CHANNEL, dir);
                 st.zones.add(new Zone(level.dimension(), center, W_DURATION_TICKS));
                 sendTornado(level, entity, center);
+                if (com.pkmoba.duel.BotDuelService.isBot(entity)) {
+                    PkmobaMod.LOGGER.info("[pkmoba-bot] release skill=W source={} center={} aim={} tick={} duration={}",
+                            entity.getId(), center, st.channelAim, entity.tickCount, W_DURATION_TICKS);
+                }
                 sound(level, center, "cobblemon:move.flamethrower.actor");
-                playAnim(entity, "special");
+                // Client channel transition owns the release pose; a second full special would replay the windup.
                 st.cdW = Skill.cooldownTicks(false, 1);
             }
         } else if (st.channel == 4) {
@@ -759,9 +804,16 @@ public final class CharizardCombat {
             if (zone.ticksLeft % 10 == 0) {
                 for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class,
                         new AABB(zone.pos, zone.pos).inflate(W_RADIUS), e -> validTarget(e, owner))) {
-                    double d = Math.sqrt(target.distanceToSqr(zone.pos));
-                    if (d <= W_RADIUS) {
+                    Vec3 contact = BasicAttack.closestPoint(target.getBoundingBox(), zone.pos.add(0, .5, 0));
+                    double d = contact.subtract(zone.pos).horizontalDistance();
+                    if (d <= W_RADIUS && target.getBoundingBox().maxY >= zone.pos.y - .5
+                            && target.getBoundingBox().minY <= zone.pos.y + 4.0) {
+                        float hpBefore = target.getHealth();
                         hurt(level, owner, target, W_TICK_DAMAGE);
+                        if (com.pkmoba.duel.BotDuelService.isBot(owner)) {
+                            PkmobaMod.LOGGER.info("[pkmoba-bot] hit skill=W source={} target={} hp={}->{} zone={}",
+                                    owner.getId(), target.getId(), hpBefore, target.getHealth(), zone.pos);
+                        }
                         target.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, 25,
                                 d < W_RADIUS * 0.5 ? 3 : 1, false, false));
                     }
@@ -769,6 +821,21 @@ public final class CharizardCombat {
             }
             return zone.ticksLeft <= 0;
         });
+    }
+
+    /** Ground targeted W uses one placement function for warning, release, visuals and damage. */
+    private static Vec3 tornadoCenter(ServerLevel level, PokemonEntity entity, Vec3 aim) {
+        Vec3 dir = aimDirection(entity, aim);
+        double distance = Math.min(new Vec3(aim.x - entity.getX(), 0, aim.z - entity.getZ()).length(), W_CAST_RANGE);
+        Vec3 point = entity.position().add(dir.scale(distance));
+        // Search from the target's elevation, not a flying caster's Y, so the vortex lands.
+        // Bot aims at the opponent's torso, which can be well above a four-block
+        // downward probe after Fly. A ground skill must reach the arena floor.
+        BlockHitResult floor = level.clip(new ClipContext(new Vec3(point.x, aim.y + .5, point.z),
+                new Vec3(point.x, Math.min(entity.getY(), aim.y) - 24, point.z),
+                ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
+        double ground = floor.getType() == HitResult.Type.BLOCK ? floor.getLocation().y : Double.NaN;
+        return new Vec3(point.x, Double.isFinite(ground) ? ground + .04 : entity.getY(), point.z);
     }
 
     private static void sendTornado(ServerLevel level, PokemonEntity entity, Vec3 center) {
@@ -891,7 +958,7 @@ public final class CharizardCombat {
         for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class,
                 entity.getBoundingBox().inflate(E_CONTACT_INFLATE), e -> validTarget(e, entity))) {
             if (st.dashHit.add(target.getId())) {
-                hurt(level, entity, target, E_CONTACT_DAMAGE);
+                CombatDamage.apply(level, entity, target, E_CONTACT_DAMAGE, TypeEffectiveness.MoveType.FLYING);
                 particleBurst(level, target.position().add(0, 1, 0), ParticleTypes.CRIT, 6);
                 sound(level, target.position(), "cobblemon:impact.flying");
             }
@@ -948,8 +1015,6 @@ public final class CharizardCombat {
                 launchDir = flat.normalize();
             }
         }
-        st.rDir = launchDir;
-
         // 出火点贴嘴，但要保证"第一帧不会立刻撞墙"——否则火球刚生成就在脚下炸开。
         // 依次尝试：嘴里 -> 抬高 0.4/0.8 -> 沿方向前移 1.2 格，取第一个前方 1.6 格无阻挡的点。
         Vec3 start = mouthPosition(entity, launchDir, MOUTH_FORWARD, MOUTH_DROP);
@@ -972,7 +1037,22 @@ public final class CharizardCombat {
         // 出手瞬间把模型掰到发射方向：否则客户端看到"身体朝左、火球朝右"，
         // 加上转身动画就会像"从原地炸出去"。
         FacingService.snap(entity, FacingService.Priority.CHANNEL, launchDir);
+        // Players aim at the ground; bots already supply the target's body center.
+        // Both must retain pitch: a horizontal mouth-height ray passes over Pikachu.
+        // Lift a ground cursor into a small opponent's body, then freeze this ray.
+        if (st.channelAim != null) {
+            Vec3 impactAim = com.pkmoba.duel.BotDuelService.isBot(entity)
+                    ? st.channelAim : st.channelAim.add(0.0, 0.45, 0.0);
+            Vec3 toTarget = impactAim.subtract(start);
+            if (toTarget.lengthSqr() > 1.0E-6) launchDir = toTarget.normalize();
+        }
+        st.rDir = launchDir;
+        st.rNudged = false;
         st.rPos = start;
+        if (com.pkmoba.duel.BotDuelService.isBot(entity)) {
+            PkmobaMod.LOGGER.info("[pkmoba-bot] release skill=R source={} start={} aim={} direction={} tick={}",
+                    entity.getId(), start, st.channelAim, launchDir, entity.tickCount);
+        }
         st.rTravelled = 0;
         st.rTick = 0;
         st.rFlying = true;
@@ -991,6 +1071,27 @@ public final class CharizardCombat {
         Vec3 next = st.rPos.add(st.rDir.scale(R_SPEED_PER_TICK));
         BlockHitResult wall = level.clip(new ClipContext(st.rPos, next, ClipContext.Block.COLLIDER,
                 ClipContext.Fluid.NONE, entity));
+        Vec3 segmentEnd = wall.getType() == HitResult.Type.BLOCK ? wall.getLocation() : next;
+        Vec3 firstContact = null;
+        double nearest = Double.POSITIVE_INFINITY;
+        for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class,
+                new AABB(st.rPos, segmentEnd).inflate(PROJECTILE_HIT_RADIUS + 1.5), e -> validTarget(e, entity))) {
+            AABB hitBox = target.getBoundingBox().inflate(PROJECTILE_HIT_RADIUS);
+            Vec3 contact = hitBox.contains(st.rPos) ? st.rPos : hitBox.clip(st.rPos, segmentEnd).orElse(null);
+            if (contact != null && contact.distanceToSqr(st.rPos) < nearest) {
+                nearest = contact.distanceToSqr(st.rPos);
+                firstContact = contact;
+            }
+        }
+        if (firstContact != null) {
+            st.rPos = firstContact;
+            double radius = R_RADIUS_START - (R_RADIUS_START - R_RADIUS_END)
+                    * Math.min(1.0, st.rTravelled / R_MAX_DISTANCE);
+            explode(level, entity, st.rPos, radius);
+            sendGlyph(level, false, Vec3.ZERO, 0, Vec3.ZERO);
+            st.rFlying = false;
+            return;
+        }
         if (wall.getType() == HitResult.Type.BLOCK) {
             // 出膛就被地形挡住（绝大多数是脚下斜坡/台阶）：先抬高一点再继续飞，
             // 而不是立刻在嘴边炸开。只给一次机会，第二次真撞上才爆。
@@ -1017,33 +1118,9 @@ public final class CharizardCombat {
         st.rPos = next;
         st.rTravelled += R_SPEED_PER_TICK;
 
-        double progress = Math.min(1.0, st.rTravelled / R_MAX_DISTANCE);
-        double radius = R_RADIUS_START - (R_RADIUS_START - R_RADIUS_END) * progress;
-
         // 弹道本体：客户端用贴图渲染这个"大"字（朝向固定，不会边飞边转）
         // 字面冒火和拖尾都由客户端根据字形几何生成（服务端不知道镜头朝向）
         sendGlyph(level, true, st.rPos, 2.5, st.rDir);
-
-        // 命中判定：用"包围盒 + 半径"而不是到脚点的距离。
-        // 到脚点的距离会把身高算进去（弹道在 1.5 格高处，半径缩到 1 格时永远打不中）。
-        boolean hit = false;
-        if (st.rTravelled >= PROJECTILE_MIN_TRAVEL) {
-            for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class,
-                    new AABB(st.rPos, st.rPos).inflate(PROJECTILE_HIT_RADIUS + 1.5),
-                    e -> validTarget(e, entity))) {
-                if (target.getBoundingBox().inflate(PROJECTILE_HIT_RADIUS).contains(st.rPos)) {
-                    hit = true;
-                    break;
-                }
-            }
-        }
-
-        if (hit) {
-            explode(level, entity, st.rPos, radius);
-            sendGlyph(level, false, Vec3.ZERO, 0, Vec3.ZERO);
-            st.rFlying = false;
-            return;
-        }
 
         if (st.rTravelled >= R_MAX_DISTANCE) {
             vfx(level, "smoke", List.of(st.rPos));
@@ -1054,12 +1131,134 @@ public final class CharizardCombat {
 
     // ------------------------------------------------------------ 释放入口
 
+    private static int cooldownFor(PokemonEntity entity, Skill skill) {
+        if (CharizardManager.isVenusaur(entity)) return VenusaurCombat.cooldown(entity, skill.ordinal());
+        if (CharizardManager.isBlastoise(entity)) return BlastoiseCombat.cooldown(entity, skill.ordinal());
+        if (CharizardManager.isPikachu(entity)) return PikachuCombat.cooldown(entity, skill.ordinal());
+        State state = entity == null ? null : STATES.get(entity.getUUID());
+        return state == null ? 0 : switch (skill) {
+            case Q -> state.cdQ; case W -> state.cdW; case E -> state.cdE; case R -> state.cdR;
+        };
+    }
+
+    public static int channelFor(PokemonEntity entity) {
+        if (CharizardManager.isVenusaur(entity)) return VenusaurCombat.channel(entity);
+        if (CharizardManager.isBlastoise(entity)) return BlastoiseCombat.channel(entity);
+        if (CharizardManager.isPikachu(entity)) return PikachuCombat.channel(entity);
+        State state = entity == null ? null : STATES.get(entity.getUUID());
+        return state == null ? 0 : state.channel;
+    }
+
+    /** Keep bot windups/charged skills aimed without re-casting or cancelling their channels. */
+    public static void updateAimForBot(PokemonEntity entity, Vec3 aim) {
+        if (entity == null || aim == null || !com.pkmoba.duel.BotDuelService.isBot(entity)
+                || !Double.isFinite(aim.x) || !Double.isFinite(aim.y) || !Double.isFinite(aim.z)) return;
+        AimTracker.set(entity, aim);
+        if (CharizardManager.isBlastoise(entity)) BlastoiseCombat.updateAim(entity, aim);
+        else if (CharizardManager.isVenusaur(entity)) VenusaurCombat.updateAim(entity, aim);
+        else if (CharizardManager.isPikachu(entity)) PikachuCombat.updateAim(entity, aim);
+        else {
+            State state = s(entity);
+            state.channelAim = aim;
+            FacingService.request(entity, FacingService.Priority.CHANNEL, aimDirection(entity, aim), 90);
+        }
+    }
+
+    /** Ready excluding beans: bots may reserve resources instead of spending every regen tick. */
+    public static boolean readyForBot(PokemonEntity entity, Skill skill) {
+        return entity != null && entity.isAlive() && !entity.isRemoved() && skill != null
+                && com.pkmoba.duel.BotDuelService.isBot(entity)
+                && channelFor(entity) == 0 && !blocksMovement(entity)
+                && cooldownFor(entity, skill) <= 0;
+    }
+
+    public static boolean canCastForBot(PokemonEntity entity, Skill skill) {
+        if (entity == null || skill == null || !com.pkmoba.duel.BotDuelService.isBot(entity)) return false;
+        if (CharizardManager.isVenusaur(entity)) return VenusaurCombat.canCastForBot(entity, skill);
+        if (CharizardManager.isBlastoise(entity)) return BlastoiseCombat.canCastForBot(entity, skill);
+        if (CharizardManager.isPikachu(entity)) return PikachuCombat.canCastForBot(entity, skill);
+        State state = STATES.get(entity.getUUID());
+        int cooldown = state == null ? 0 : switch (skill) {
+            case Q -> state.cdQ;
+            case W -> state.cdW;
+            case E -> state.cdE;
+            case R -> state.cdR;
+        };
+        float points = state == null ? MAX_POINTS : state.points;
+        return (state == null || state.channel == 0 && state.dashTicks == 0)
+                && cooldown <= 0 && points >= Skill.cost(entity, skill.ordinal());
+    }
+
+    public static boolean tryCastForBot(PokemonEntity entity, Skill skill, Vec3 aim) {
+        if (entity == null || skill == null || aim == null || !canCastForBot(entity, skill)
+                || com.pkmoba.pokemon.BallThrow.locked(entity)
+                || com.pkmoba.duel.DuelManager.isPreparing(entity)
+                || !(entity.level() instanceof ServerLevel)) return false;
+        ServerPlayer actor = com.pkmoba.duel.BotDuelService.actor(CharizardManager.getControlledOwner(entity));
+        if (actor == null || !actor.isAlive() || actor.level() != entity.level()
+                || !Double.isFinite(aim.x) || !Double.isFinite(aim.y) || !Double.isFinite(aim.z)
+                || entity.distanceToSqr(aim) > 512.0 * 512.0) return false;
+        int oldCooldown = cooldownFor(entity, skill);
+        int oldChannel = channelFor(entity);
+        castForBot(entity, skill, aim);
+        boolean cast = cooldownFor(entity, skill) > oldCooldown
+                || oldChannel == 0 && channelFor(entity) != 0;
+        if (cast) {
+            sendBotCastCue((ServerLevel) entity.level(), entity, skill);
+            PkmobaMod.LOGGER.info("[pkmoba-bot] cast source={} species={} skill={} oldChannel={} newChannel={} cooldown={} aim={} tick={}",
+                    entity.getId(), entity.getPokemon().getSpecies().getResourceIdentifier(), skill,
+                    oldChannel, channelFor(entity), cooldownFor(entity, skill), aim, entity.tickCount);
+        }
+        return cast;
+    }
+
+    private static void sendBotCastCue(ServerLevel level, PokemonEntity entity, Skill skill) {
+        String id = "pkmoba:cast/" + entity.getId() + "/" + skill.ordinal();
+        Vec3 pos = entity.position();
+        EffectPayload cue = new EffectPayload(id, pos.x, pos.y, pos.z, 0, 0, 0);
+        for (ServerPlayer viewer : level.players()) {
+            if (viewer.distanceToSqr(pos) < 128 * 128 && ServerPlayNetworking.canSend(viewer, EffectPayload.TYPE)) {
+                ServerPlayNetworking.send(viewer, cue);
+            }
+        }
+    }
+
+    public static void castForBot(PokemonEntity entity, Skill skill, Vec3 aim) {
+        if (entity == null || aim == null || !com.pkmoba.duel.BotDuelService.isBot(entity)
+                || !(entity.level() instanceof ServerLevel)) return;
+        ServerPlayer actor = com.pkmoba.duel.BotDuelService.actor(CharizardManager.getControlledOwner(entity));
+        if (actor == null || !actor.isAlive() || actor.level() != entity.level()
+                || com.pkmoba.pokemon.BallThrow.locked(entity)
+                || !Double.isFinite(aim.x) || !Double.isFinite(aim.y)
+                || !Double.isFinite(aim.z) || entity.distanceToSqr(aim) > 512.0 * 512.0) return;
+        if (CharizardManager.isVenusaur(entity)) {
+            VenusaurCombat.castForBot(entity, skill, aim);
+        } else if (CharizardManager.isBlastoise(entity)) {
+            BlastoiseCombat.castForBot(entity, skill, aim);
+        } else if (CharizardManager.isPikachu(entity)) {
+            PikachuCombat.castForBot(entity, skill, aim);
+        } else {
+            cast(actor, entity, skill, aim);
+        }
+    }
+
     private static void cast(ServerPlayer player, Skill skill, Vec3 aim) {
-        if (skill == null || !ServerGodMode.isActive(player)) {
+        cast(player, CharizardManager.getControlled(player), skill, aim);
+    }
+
+    private static void cast(ServerPlayer player, PokemonEntity entity, Skill skill, Vec3 aim) {
+        if (skill == null || !authorizedActor(player, entity)
+                || entity == null || !player.getUUID().equals(CharizardManager.getControlledOwner(entity))
+                || player.level().dimension() != entity.level().dimension()
+                || !Double.isFinite(aim.x) || !Double.isFinite(aim.y) || !Double.isFinite(aim.z)
+                || entity.distanceToSqr(aim) > 512.0 * 512.0
+                || com.pkmoba.pokemon.BallThrow.locked(entity)) return;
+        if (CharizardManager.isVenusaur(entity)) {
+            VenusaurCombat.cast(player, entity, skill, aim);
             return;
         }
-        PokemonEntity entity = CharizardManager.getControlled(player);
-        if (!canControl(player, entity, aim)) {
+        if (CharizardManager.isPikachu(entity)) {
+            PikachuCombat.cast(player, entity, skill, aim);
             return;
         }
         State st = s(entity);
@@ -1091,7 +1290,8 @@ public final class CharizardCombat {
             return;
         }
 
-        if (st.points < skill.cost) {
+        int cost = Skill.cost(entity, skill.ordinal());
+        if (st.points < cost) {
             return;
         }
         int cd = switch (skill) {
@@ -1104,8 +1304,7 @@ public final class CharizardCombat {
             return;
         }
 
-        BasicAttack.interruptSwing(entity);
-        st.points -= skill.cost;
+        st.points -= cost;
         PkmobaMod.LOGGER.info("[pkmoba] 释放 {} 剩余点数 {}", skill, st.points);
 
         switch (skill) {
@@ -1122,10 +1321,11 @@ public final class CharizardCombat {
             case W -> {
                 // 0.38.4：先进入前摇（channel 2）。落区、成形特效、冷却全部等前摇走完
                 // 在 tickChannel 里触发 —— 用户要求"有前摇、有形成特效"，不能按下就落地。
-                Vec3 dir = aimDirection(entity, aim);
-                double dist = Math.min(new Vec3(aim.x - entity.getX(), 0,
-                        aim.z - entity.getZ()).length(), W_CAST_RANGE);
-                Vec3 center = entity.position().add(dir.scale(dist));
+                Vec3 center = tornadoCenter(level, entity, aim);
+                if (com.pkmoba.duel.BotDuelService.isBot(entity)) {
+                    entity.getNavigation().stop();
+                    com.pkmoba.move.MoveOrderService.clear(entity);
+                }
                 st.channel = 2;
                 st.channelTicks = 0;
                 st.channelAim = aim;
@@ -1235,12 +1435,18 @@ public final class CharizardCombat {
                     ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity)).getType() == HitResult.Type.BLOCK) {
                 continue;
             }
-            double d = Math.min(radius, Math.sqrt(target.distanceToSqr(center)));
+            double d = BasicAttack.closestPoint(target.getBoundingBox(), center).distanceTo(center);
+            if (d > radius) continue;
             double t = radius <= 0 ? 0 : d / radius;
             float amount = (float) (R_DAMAGE_CENTER - (R_DAMAGE_CENTER - R_DAMAGE_EDGE) * t);
             // 0.39：R 大字爆是终极大招，命中反馈按 ULTIMATE 走（最强顿帧/震屏/推镜）。
+            float hpBefore = target.getHealth();
             hurt(level, entity, target, amount,
                     EffectPayload.Element.FIRE, EffectPayload.Power.ULTIMATE);
+            if (com.pkmoba.duel.BotDuelService.isBot(entity)) {
+                PkmobaMod.LOGGER.info("[pkmoba-bot] hit skill=R source={} target={} hp={}->{} center={}",
+                        entity.getId(), target.getId(), hpBefore, target.getHealth(), center);
+            }
         }
     }
 
@@ -1466,14 +1672,28 @@ public final class CharizardCombat {
             }
             if (CharizardManager.isBlastoise(entity)) {
                 BlastoiseCombat.syncHud(player, entity);
+            } else if (CharizardManager.isVenusaur(entity)) {
+                VenusaurCombat.syncHud(player, entity);
+            } else if (CharizardManager.isPikachu(entity)) {
+                PikachuCombat.syncHud(player, entity);
             } else {
                 sendState(player, entity);
             }
         }
     }
 
+    /** Push actual HP immediately after commands, without waiting for the periodic HUD tick. */
+    public static void syncPlayer(ServerPlayer player) {
+        PokemonEntity entity = CharizardManager.getControlled(player);
+        if (entity == null) return;
+        if (CharizardManager.isBlastoise(entity)) BlastoiseCombat.syncHud(player, entity);
+        else if (CharizardManager.isVenusaur(entity)) VenusaurCombat.syncHud(player, entity);
+        else if (CharizardManager.isPikachu(entity)) PikachuCombat.syncHud(player, entity);
+        else sendState(player, entity);
+    }
+
     private static void sendState(ServerPlayer player, PokemonEntity entity) {
-        if (!ServerPlayNetworking.canSend(player, SkillStatePayload.TYPE)) {
+        if (player == null || player.connection == null || !ServerPlayNetworking.canSend(player, SkillStatePayload.TYPE)) {
             return;
         }
         State st = s(entity);

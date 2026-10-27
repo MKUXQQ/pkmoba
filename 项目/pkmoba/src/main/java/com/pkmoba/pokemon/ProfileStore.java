@@ -37,6 +37,11 @@ public final class ProfileStore extends SavedData {
                 for (int j = 0; j < team.size(); j++) profile.team.add(team.getString(j));
                 ListTag fainted = entry.getList("fainted", Tag.TAG_STRING);
                 for (int j = 0; j < fainted.size(); j++) profile.fainted.add(fainted.getString(j));
+                CompoundTag health = entry.getCompound("health");
+                for (String species : health.getAllKeys()) {
+                    float hp = health.getFloat(species);
+                    if (profile.team.contains(species) && Float.isFinite(hp) && hp >= 0) profile.health.put(species, hp);
+                }
                 profile.activeIndex = entry.getInt("active");
                 store.profiles.put(id, profile);
             } catch (IllegalArgumentException ex) {
@@ -59,6 +64,9 @@ public final class ProfileStore extends SavedData {
             for (String id : profile.fainted) fainted.add(StringTag.valueOf(id));
             entry.put("fainted", fainted);
             entry.putInt("active", profile.activeIndex);
+            CompoundTag health = new CompoundTag();
+            profile.health.forEach((species, hp) -> health.putFloat(species, hp));
+            entry.put("health", health);
             list.add(entry);
         }
         tag.put("profiles", list);

@@ -28,6 +28,23 @@ public abstract class BlastoiseSpinPoseMixin {
                 ModelPart part = parts.get(name);
                 if (part != null) part.z -= 2.0F;
             }
+            int channel = ClientState.getChannel();
+            if (channel == 4 || channel == 6) {
+                // Brace through Q charge; R stays planted until its water columns release.
+                float charge = Math.max(0, Math.min(1, ClientState.getCharge()));
+                float recoil = charge >= .99F
+                        ? (float) Math.pow(Math.max(0, Math.sin(state.getAnimationSeconds()
+                                * (channel == 6 ? 14.0 : 22.0))), 3) : 0;
+                ModelPart torso = parts.get("torso");
+                if (torso != null) torso.xRot += (channel == 6 ? .10F : .07F) * charge
+                        + (channel == 6 ? .12F : .12F) * recoil;
+                ModelPart head = parts.get("head");
+                if (head != null) head.xRot -= .06F * charge;
+                for (String name : new String[]{"cannon_left", "cannon_right"}) {
+                    ModelPart cannon = parts.get(name);
+                    if (cannon != null) cannon.z += (channel == 6 ? .45F : .65F) * recoil;
+                }
+            }
             model.updateLocators(entity, state);
             return;
         }

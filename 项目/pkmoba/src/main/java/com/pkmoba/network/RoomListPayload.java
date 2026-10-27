@@ -22,7 +22,7 @@ public record RoomListPayload(List<RoomView> rooms, int myRoomId, int mySide, Li
     /** 单个房间的展示数据。 */
     public record RoomView(int id, String arena, String host, String red, String blue,
                            int state, int seconds, boolean canJoin, boolean canStart,
-                           String hostId, String redId, String blueId) {
+                           String hostId, String redId, String blueId, List<String> redTeam, List<String> blueTeam) {
     }
 
     public static final ResourceLocation ID =
@@ -46,6 +46,8 @@ public record RoomListPayload(List<RoomView> rooms, int myRoomId, int mySide, Li
                     buf.writeUtf(room.hostId(), 64);
                     buf.writeUtf(room.redId(), 64);
                     buf.writeUtf(room.blueId(), 64);
+                    writeTeam(buf, room.redTeam());
+                    writeTeam(buf, room.blueTeam());
                 }
                 buf.writeVarInt(p.myRoomId);
                 buf.writeVarInt(p.mySide);
@@ -60,7 +62,7 @@ public record RoomListPayload(List<RoomView> rooms, int myRoomId, int mySide, Li
                     rooms.add(new RoomView(buf.readVarInt(), buf.readUtf(64), buf.readUtf(64),
                             buf.readUtf(64), buf.readUtf(64), buf.readVarInt(),
                             buf.readVarInt(), buf.readBoolean(), buf.readBoolean(),
-                            buf.readUtf(64), buf.readUtf(64), buf.readUtf(64)));
+                            buf.readUtf(64), buf.readUtf(64), buf.readUtf(64), readTeam(buf), readTeam(buf)));
                 }
                 int myRoomId = buf.readVarInt();
                 int mySide = buf.readVarInt();
@@ -70,6 +72,19 @@ public record RoomListPayload(List<RoomView> rooms, int myRoomId, int mySide, Li
                 for (int i = 0; i < arenaCount; i++) arenas.add(buf.readUtf(64));
                 return new RoomListPayload(rooms, myRoomId, mySide, arenas);
             });
+
+    private static void writeTeam(FriendlyByteBuf buf, List<String> team) {
+        buf.writeVarInt(Math.min(6, team.size()));
+        for (int i = 0; i < Math.min(6, team.size()); i++) buf.writeUtf(team.get(i), 128);
+    }
+
+    private static List<String> readTeam(FriendlyByteBuf buf) {
+        int count = buf.readVarInt();
+        if (count < 0 || count > 6) throw new IllegalArgumentException("room team count");
+        List<String> team = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) team.add(buf.readUtf(128));
+        return team;
+    }
 
     @Override
     public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {

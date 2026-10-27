@@ -39,8 +39,8 @@ public final class RoomManager {
     /** 房间状态。 */
     public enum State { WAITING, READY, COUNTDOWN, FIGHTING, ENDED }
 
-    /** 倒计时长度：5 秒。 */
-    private static final int COUNTDOWN_TICKS = 20 * 5;
+    /** 确认队伍后提供完整入场预告。 */
+    private static final int COUNTDOWN_TICKS = 20 * 10;
     /** 对局结束到房间恢复的等待：3 秒。 */
     private static final int END_LINGER_TICKS = 20 * 3;
 
@@ -53,6 +53,8 @@ public final class RoomManager {
         public UUID host;
         public UUID red;
         public UUID blue;
+        public UUID bot;
+        public final java.util.Set<UUID> ready = new java.util.HashSet<>();
         public State state = State.WAITING;
         public int countdown;
         public int endTicks;
@@ -84,7 +86,18 @@ public final class RoomManager {
     }
 
     private static final Map<Integer, Room> ROOMS = new LinkedHashMap<>();
-    private static int nextId = 1;
+    /** Match arenaN to room N whenever free; otherwise reuse the first vacant room ID. */
+    private static int nextRoomId(String arenaName) {
+        if (arenaName.matches("(?i)arena[1-9][0-9]*")) {
+            try {
+                int preferred = Integer.parseInt(arenaName.substring(5));
+                if (!ROOMS.containsKey(preferred)) return preferred;
+            } catch (NumberFormatException ignored) { }
+        }
+        int candidate = 1;
+        while (ROOMS.containsKey(candidate)) candidate++;
+        return candidate;
+    }
     private static MinecraftServer server;
 
     private RoomManager() {
@@ -92,6 +105,12 @@ public final class RoomManager {
 
     public static void init() {
         ServerTickEvents.END_SERVER_TICK.register(RoomManager::tick);
+        net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STOPPED.register(stopped -> {
+            ROOMS.clear();
+            LANDING.clear();
+            ArenaStore.clearDrafts();
+            server = null;
+        });
     }
 
     // ------------------------------------------------------------------ 操作入口
@@ -115,7 +134,8 @@ public final class RoomManager {
             player.sendSystemMessage(Component.literal("找不到点位组：" + arenaName + "（用 /mo arena list 查看）"));
             return;
         }
-        if (!arena.complete()) {
+        server = running;
+        if (!usable(running, arena)) {
             player.sendSystemMessage(Component.literal("点位组「" + arena.name + "」还没配置完整，不能开房。"));
             return;
         }
@@ -130,7 +150,7 @@ public final class RoomManager {
                     + other.id + " 已存在，按 H 打开大厅即可加入。"));
             return;
         }
-        Room room = new Room(nextId++, arena.name);
+        Room room = new Room(nextRoomId(arena.name), arena.name);
         ROOMS.put(room.id, room);
         player.sendSystemMessage(Component.literal("点位组「" + arena.name + "」已生成房间 #" + room.id
                 + "（空房）。按 H 打开大厅，第一个加入的人成为房主。"));
@@ -139,6 +159,7 @@ public final class RoomManager {
 
     /** 加入房间：自动补空位（红先、蓝后）。 */
     public static void join(ServerPlayer player, int roomId) {
+        reconcile(player.server);
         Room room = ROOMS.get(roomId);
         if (room == null) {
             player.sendSystemMessage(Component.literal("房间不存在或已解散。"));
@@ -200,7 +221,38 @@ public final class RoomManager {
         broadcast();
     }
 
-    /** 房主开始对战：双方都在才能开，进入 5 秒倒计时。 */
+    public static void addBot(ServerPlayer player, int roomId) {
+        Room room = roomOf(player.getUUID());
+        if (room == null || room.id != roomId || !player.getUUID().equals(room.host)
+                || room.full() || (room.state != State.WAITING && room.state != State.READY)) return;
+        room.bot = UUID.randomUUID();
+        if (room.red == null) room.red = room.bot; else room.blue = room.bot;
+        room.state = State.READY;
+        broadcast();
+    }
+
+    private static boolean allReady(Room room) {
+        return room.full() && (room.red.equals(room.bot) || room.ready.contains(room.red))
+                && (room.blue.equals(room.bot) || room.ready.contains(room.blue));
+    }
+
+    public static void ready(ServerPlayer player) {
+        Room room = roomOf(player.getUUID());
+        if (room == null || (room.state != State.WAITING && room.state != State.READY)) return;
+        var profile = com.pkmoba.pokemon.ProfileStore.get(player.server).profile(player.getUUID());
+        if (profile.team.isEmpty()) {
+            player.sendSystemMessage(Component.literal("请先准备至少一只宝可梦再确认队伍。"));
+            return;
+        }
+        if (!DuelManager.hasTeam(player)) return;
+        room.ready.add(player.getUUID());
+        player.sendSystemMessage(Component.literal("已确认队伍并准备。双方准备后由房主开始，入场倒计时 10 秒；倒下后有 20 秒按 C 换宠。"));
+        ServerPlayer host = playerOf(player.server, room.host);
+        if (host != null && allReady(room)) host.sendSystemMessage(Component.literal("双方已准备！按 H 进入房间，点击开始对战。"));
+        broadcast();
+    }
+
+    /** 双方明确准备后，房主才能启动入场倒计时。 */
     public static void start(ServerPlayer player) {
         Room room = roomOf(player.getUUID());
         if (room == null) {
@@ -219,13 +271,34 @@ public final class RoomManager {
             player.sendSystemMessage(Component.literal("房间状态不允许开始（当前：" + stateName(room.state) + "）。"));
             return;
         }
+        if (room.bot != null && !room.ready.contains(player.getUUID())) {
+            ready(player);
+        }
+        if (!allReady(room)) {
+            player.sendSystemMessage(Component.literal("请双方先确认队伍并点击准备，再开始对战。"));
+            return;
+        }
         ArenaStore.Arena arena = ArenaStore.get(player.server).byName(room.arenaName);
-        if (arena == null || !arena.complete()) {
+        if (!usable(player.server, arena)) {
             player.sendSystemMessage(Component.literal("点位组不可用，无法开始。"));
             return;
         }
         ServerPlayer red = playerOf(player.server, room.red);
         ServerPlayer blue = playerOf(player.server, room.blue);
+        if (room.bot != null) {
+            if (!DuelManager.hasTeam(player)) {
+                player.sendSystemMessage(Component.literal("请先准备可出战的宝可梦队伍。"));
+                return;
+            }
+            ServerPlayer human = playerOf(player.server, room.host);
+            if (human == null || !BotDuelService.start(human, room.bot, arena, room.host.equals(room.red))) {
+                player.sendSystemMessage(Component.literal("训练对战无法开始，请确认队伍和竞技场可用。"));
+                return;
+            }
+            room.state = State.FIGHTING;
+            room.countdown = 0;
+            return;
+        }
         if (red == null || blue == null) {
             player.sendSystemMessage(Component.literal("有一方玩家不在线。"));
             return;
@@ -234,15 +307,14 @@ public final class RoomManager {
             player.sendSystemMessage(Component.literal("有一方还没有宝可梦队伍。"));
             return;
         }
-        // 倒计时期间双方先各自站到己方玩家点。
-        if (!teleportTo(red, arena, arena.redPlayer) || !teleportTo(blue, arena, arena.bluePlayer)) {
-            player.sendSystemMessage(Component.literal("点位组所在维度不可用，无法开始。"));
+        if (!DuelManager.startRoom(red, blue, arena)) {
+            player.sendSystemMessage(Component.literal("开局失败：请确认双方队伍与竞技场可用。"));
             return;
         }
-        room.state = State.COUNTDOWN;
-        room.countdown = COUNTDOWN_TICKS;
-        title(red, "对战即将开始", "5");
-        title(blue, "对战即将开始", "5");
+        room.state = State.FIGHTING;
+        room.countdown = 0;
+        applyLanding(red);
+        applyLanding(blue);
         broadcast();
     }
 
@@ -256,21 +328,8 @@ public final class RoomManager {
         for (Room room : snapshot) {
             switch (room.state) {
                 case COUNTDOWN -> {
-                    room.countdown--;
-                    int seconds = Math.max(0, (room.countdown + 19) / 20);
-                    if (room.countdown % 20 == 0) {
-                        ServerPlayer red = playerOf(running, room.red);
-                        ServerPlayer blue = playerOf(running, room.blue);
-                        if (seconds > 0) {
-                            title(red, "对战即将开始", String.valueOf(seconds));
-                            title(blue, "对战即将开始", String.valueOf(seconds));
-                        }
-                        changed = true;
-                    }
-                    if (room.countdown <= 0) {
-                        beginMatch(running, room);
-                        changed = true;
-                    }
+                    beginMatch(running, room);
+                    changed = true;
                 }
                 case FIGHTING -> {
                     ServerPlayer red = playerOf(running, room.red);
@@ -287,8 +346,15 @@ public final class RoomManager {
                     room.endTicks--;
                     if (room.endTicks <= 0) {
                         // 对局结束：房间保留、双方仍在房里，状态回到「待开局」可以再来一局。
+                        room.ready.clear();
                         room.countdown = 0;
                         room.endTicks = 0;
+                        // Bots exist only for the challenge explicitly requested by the host.
+                        if (room.bot != null) {
+                            if (room.bot.equals(room.red)) room.red = null;
+                            if (room.bot.equals(room.blue)) room.blue = null;
+                            room.bot = null;
+                        }
                         room.state = room.full() ? State.READY : State.WAITING;
                         changed = true;
                     }
@@ -304,6 +370,18 @@ public final class RoomManager {
         ServerPlayer red = playerOf(running, room.red);
         ServerPlayer blue = playerOf(running, room.blue);
         ArenaStore.Arena arena = ArenaStore.get(running).byName(room.arenaName);
+        if (room.bot != null) {
+            ServerPlayer human = playerOf(running, room.host);
+            if (human == null || !BotDuelService.start(human, room.bot, arena, room.host.equals(room.red))) {
+                room.state = State.READY;
+                return;
+            }
+            room.state = State.FIGHTING;
+            room.countdown = 0;
+            applyLanding(human);
+            title(human, "选择出战", "C 确定成员 · X 召唤后开始倒计时");
+            return;
+        }
         if (red == null || blue == null || arena == null) {
             room.state = State.WAITING;
             return;
@@ -334,7 +412,11 @@ public final class RoomManager {
     /** m05326：点位组被删时，把挂在这一组上的房间也一并清掉。 */
     public static void deleteByArena(String arenaName) {
         if (arenaName == null) return;
-        ROOMS.values().removeIf(room -> arenaName.trim().equalsIgnoreCase(room.arenaName));
+        ROOMS.values().removeIf(room -> {
+            if (!arenaName.trim().equalsIgnoreCase(room.arenaName)) return false;
+            if (server != null) invalidate(server, room);
+            return true;
+        });
         broadcast();
     }
 
@@ -377,9 +459,17 @@ public final class RoomManager {
     }
 
     private static void removeMember(Room room, UUID player) {
+        if (room.bot != null) {
+            if (server != null) BotDuelService.cancelArena(server, room.arenaName);
+            if (room.bot.equals(room.red)) room.red = null;
+            if (room.bot.equals(room.blue)) room.blue = null;
+            room.bot = null;
+        }
         if (player.equals(room.red)) room.red = null;
         if (player.equals(room.blue)) room.blue = null;
+        room.ready.clear();
         room.joinOrder.remove(player);
+        LANDING.remove(player);
         // 房主离开：按加入顺序把房主交给最早的下一位成员。
         if (player.equals(room.host)) {
             room.host = room.joinOrder.isEmpty() ? null : room.joinOrder.get(0);
@@ -400,6 +490,8 @@ public final class RoomManager {
         room.host = null;
         room.red = null;
         room.blue = null;
+        room.bot = null;
+        room.ready.clear();
         room.joinOrder.clear();
         room.state = State.WAITING;
         room.countdown = 0;
@@ -427,8 +519,16 @@ public final class RoomManager {
         return player.server.getLevel(key);
     }
 
+    private static void holdPlayer(@Nullable ServerPlayer player, @Nullable Vec3 position) {
+        if (player == null || position == null) return;
+        player.setDeltaMovement(Vec3.ZERO);
+        if (player.position().distanceToSqr(position) > 0.01)
+            player.teleportTo(player.serverLevel(), position.x, position.y, position.z, player.getYRot(), player.getXRot());
+    }
+
     private static void title(@Nullable ServerPlayer player, String main, String sub) {
         if (player == null) return;
+        player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket(0, 25, 5));
         player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket(
                 Component.literal(main)));
         player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket(
@@ -454,18 +554,59 @@ public final class RoomManager {
         }
     }
 
+    /** Rebuild transient rooms from persisted, playable arenas, including after a restart. */
+    private static void reconcile(MinecraftServer running) {
+        server = running;
+        ArenaStore store = ArenaStore.get(running);
+        ROOMS.values().removeIf(room -> {
+            ArenaStore.Arena arena = store.byName(room.arenaName);
+            if (usable(running, arena)) return false;
+            invalidate(running, room);
+            return true;
+        });
+        for (ArenaStore.Arena arena : store.allArenas()) {
+            if (!usable(running, arena)) continue;
+            boolean exists = ROOMS.values().stream()
+                    .anyMatch(room -> room.arenaName.equalsIgnoreCase(arena.name));
+            if (!exists) {
+                Room room = new Room(nextRoomId(arena.name), arena.name);
+                ROOMS.put(room.id, room);
+            }
+        }
+    }
+
+    private static void invalidate(MinecraftServer running, Room room) {
+        DuelManager.cancelArena(running, room.arenaName);
+        for (UUID member : new ArrayList<>(room.joinOrder)) {
+            LANDING.remove(member);
+            ServerPlayer player = playerOf(running, member);
+            if (player != null) player.sendSystemMessage(Component.literal(
+                    "场地「" + room.arenaName + "」已删除或未就绪，已退出房间。"));
+        }
+        resetRoom(room);
+    }
+
+    private static boolean usable(MinecraftServer running, @Nullable ArenaStore.Arena arena) {
+        return arena != null && arena.complete() && (arena.dimension == null
+                || running.getLevel(ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION,
+                arena.dimension)) != null);
+    }
+
     public static void sendSnapshot(ServerPlayer player) {
         MinecraftServer running = player.server;
+        reconcile(running);
         List<RoomListPayload.RoomView> views = new ArrayList<>();
         for (Room room : ROOMS.values()) {
             UUID me = player.getUUID();
-            boolean startable = me.equals(room.host) && room.full()
+            boolean startable = me.equals(room.host) && allReady(room)
                     && (room.state == State.WAITING || room.state == State.READY);
             int seconds = room.state == State.COUNTDOWN ? Math.max(0, (room.countdown + 19) / 20) : 0;
             views.add(new RoomListPayload.RoomView(room.id, room.arenaName,
                     nameOf(running, room.host), nameOf(running, room.red), nameOf(running, room.blue),
-                    room.state.ordinal(), seconds, !room.full(), startable,
-                    idOf(room.host), idOf(room.red), idOf(room.blue)));
+                    room.state.ordinal(), seconds, room.state == State.WAITING && !room.full()
+                    && roomOf(me) == null && !DuelManager.inMatch(player), startable,
+                    idOf(room.host), idOf(room.red), idOf(room.blue),
+                    teamOf(running, room, room.red), teamOf(running, room, room.blue)));
         }
         if (!ServerPlayNetworking.canSend(player, RoomListPayload.TYPE)) return;
         ServerPlayNetworking.send(player, new RoomListPayload(views, roomIdOf(player.getUUID()),
@@ -496,8 +637,11 @@ public final class RoomManager {
             return;
         }
         ArenaStore.Arena arena = ArenaStore.get(player.server).byName(room.arenaName);
-        if (arena == null || !arena.insideBoundary(point)) {
-            player.sendSystemMessage(Component.literal("落点必须在竞技场边界内。"));
+        boolean red = player.getUUID().equals(room.red);
+        if (arena == null || !arena.insideSwitchZone(point, red)) {
+            player.sendSystemMessage(Component.literal(arena == null
+                    ? "场地数据不可用，无法设置落点。"
+                    : "落点必须在己方四点换宠区内；场地可正常开房，未配置己方换宠区时无法在战中换宠。"));
             return;
         }
         LANDING.put(player.getUUID(), point);
@@ -518,6 +662,12 @@ public final class RoomManager {
         entity.teleportTo(point.x, point.y, point.z);
     }
 
+    private static List<String> teamOf(MinecraftServer running, Room room, UUID id) {
+        if (id == null) return List.of();
+        if (id.equals(room.bot)) return BotDuelService.teamForDisplay();
+        return List.copyOf(com.pkmoba.pokemon.ProfileStore.get(running).profile(id).team);
+    }
+
     private static String idOf(UUID id) {
         return id == null ? "" : id.toString();
     }
@@ -529,6 +679,7 @@ public final class RoomManager {
 
     private static String nameOf(MinecraftServer running, @Nullable UUID id) {
         if (id == null) return "";
+        for (Room room : ROOMS.values()) if (id.equals(room.bot)) return BotDuelService.BOT_NAME;
         ServerPlayer player = running.getPlayerList().getPlayer(id);
         if (player != null) return player.getGameProfile().getName();
         return "";
@@ -542,7 +693,9 @@ public final class RoomManager {
             case "CREATE" -> create(player, payload.arg());
             case "JOIN" -> join(player, payload.roomId());
             case "LEAVE" -> leave(player);
+            case "READY" -> ready(player);
             case "START" -> start(player);
+            case "ADD_BOT" -> addBot(player, payload.roomId());
             case "SELECT" -> {
                 if (!inCountdown(player)) {
                     player.sendSystemMessage(Component.literal("只有在开局倒计时期间才能选宝可梦。"));

@@ -21,22 +21,6 @@ def frame(d):
     d.rectangle((3, 3, 28, 28), fill=CREAM)
 
 
-def pokeball():
-    im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
-    frame(d)
-    # top red half
-    d.pieslice((8, 8, 24, 24), 180, 360, fill=RED, outline=OUTLINE, width=1)
-    # bottom white half
-    d.pieslice((8, 8, 24, 24), 0, 180, fill=WHITE, outline=OUTLINE, width=1)
-    # dark horizontal band
-    d.rectangle((7, 15, 25, 17), fill=BAND)
-    # center button
-    d.ellipse((13, 13, 19, 19), fill=BAND, outline=WHITE, width=1)
-    d.ellipse((15, 15, 17, 17), fill=WHITE)
-    return im
-
-
 def crown():
     im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
@@ -54,6 +38,5 @@ def crown():
     return im
 
 
-pokeball().save(OUT / "battle_menu.png")
 crown().save(OUT / "admin_duel.png")
 print("wrote", OUT)

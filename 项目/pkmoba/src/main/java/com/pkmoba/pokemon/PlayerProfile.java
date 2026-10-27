@@ -13,6 +13,8 @@ public final class PlayerProfile {
     public final List<String> team = new ArrayList<>();
     /** 已阵亡、需要复活才能再上场的物种 id。 */
     public final Set<String> fainted = new LinkedHashSet<>();
+    /** 收回后保存的实际剩余血量；缺省表示从未出战。 */
+    public final java.util.Map<String, Float> health = new java.util.LinkedHashMap<>();
     /** 当前上场的是队伍第几只（0 起）。 */
     public int activeIndex;
 
@@ -78,6 +80,7 @@ public final class PlayerProfile {
         if (index < 0) return false;
         team.remove(index);
         fainted.remove(speciesId);
+        health.remove(speciesId);
         if (team.isEmpty()) {
             activeIndex = 0;
         } else if (index < activeIndex) {
@@ -89,10 +92,14 @@ public final class PlayerProfile {
     }
 
     public void markFainted(String speciesId) {
-        if (speciesId != null) fainted.add(speciesId);
+        if (speciesId != null) {
+            fainted.add(speciesId);
+            health.put(speciesId, 0.0F);
+        }
     }
 
     public void reviveAll() {
         fainted.clear();
+        health.clear();
     }
 }

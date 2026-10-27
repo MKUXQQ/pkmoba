@@ -1,6 +1,8 @@
 package com.pkmoba.client;
 
 import com.cobblemon.mod.common.client.render.models.blockbench.PosableState;
+import com.cobblemon.mod.common.client.render.models.blockbench.animation.PrimaryAnimation;
+import com.cobblemon.mod.common.client.render.models.blockbench.bedrock.animation.BedrockActiveAnimation;
 import com.cobblemon.mod.common.client.render.models.blockbench.bedrock.animation.BedrockAnimationRepository;
 import com.cobblemon.mod.common.entity.PosableEntity;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
@@ -10,10 +12,11 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.Entity;
 
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
- * 喷火龙 Q（喷射火焰）/ R（大字炎爆）的专用施法动画。
+ * 喷火龙 Q（喷射火焰）/ W（火焰旋涡）/ E（飞翔）/ R（大字炎爆）的专用技能动画。
  *
  * <p>为什么不再直接播 Cobblemon 的 {@code special}：那条动画是 3 秒整段（起手 0~1.25s /
  * 喷吐保持 1.25~2.0s / 收势 2.0~3s）。我们每次施法都整段播，于是出现：
@@ -27,6 +30,7 @@ import java.util.UUID;
  * 由这里按引导状态逐阶段驱动，节奏和服务端严格的 tick 数对齐：
  * <pre>
  *   Q: 前摇 q_windup(0.55s) -> 引导 q_sustain(循环) -> 引导结束清空
+ *   W: 前摇 q_windup(0.55s) -> 旋涡成形 r_blast(0.7s) -> 播完清空
  *   R: 蓄力 r_charge(1.0s)  -> 出手 r_blast(0.7s)   -> 播完清空
  * </pre>
  * 只做表现，不参与任何判定；任何异常都只停用本类，绝不影响游戏。
@@ -45,7 +49,7 @@ public final class CharizardSkillAnimator {
     /** r_blast 时长 0.7s ≈ 14 tick。 */
     private static final int R_BLAST_TICKS = 14;
 
-    private enum Phase { NONE, Q_WINDUP, Q_SUSTAIN, R_CHARGE, R_BLAST }
+    private enum Phase { NONE, Q_WINDUP, Q_SUSTAIN, W_WINDUP, W_RELEASE, R_CHARGE, R_BLAST }
 
     private static Phase phase = Phase.NONE;
     private static int phaseTicks;
@@ -53,6 +57,9 @@ public final class CharizardSkillAnimator {
     private static UUID lastEntity;
     /** 上一次驱动动画的实体，切换/离场时用来把它的主动画清干净。 */
     private static PokemonEntity lastPokemon;
+    /** 独立保存整趟飞翔的动画实例；姿势切换不得重置它的 startedSeconds。 */
+    private static PosableState flightState;
+    private static PrimaryAnimation flightAnimation;
     /** 一旦出错就永久停用，避免每 tick 刷异常。 */
     private static boolean disabled;
 
@@ -71,6 +78,11 @@ public final class CharizardSkillAnimator {
             tickInner(mc);
         } catch (Throwable t) {
             disabled = true;
+            try {
+                stopFlight();
+            } catch (Throwable ignored) {
+                // 故障停用时也尽量释放无限循环，不能把实体永久留在飞行姿态。
+            }
             org.slf4j.LoggerFactory.getLogger("pkmoba")
                     .warn("[pkmoba] 喷火龙施法动画已停用：{}", t.toString());
         }
@@ -96,6 +108,19 @@ public final class CharizardSkillAnimator {
             lastChannel = -1;
         }
 
+        if (channel == 3) {
+            // channel 3 覆盖起飞、巡航、主动/自动降落，不依赖插值这一 tick 是否移动。
+            // WalkAnimator 可能在 FLY/HOVER 间切换；独立 primary 保持同一条扑翼时间轴。
+            if (lastChannel != 3) {
+                clear(pokemon);
+            }
+            sustainFlight(pokemon);
+            lastChannel = channel;
+            lastPokemon = pokemon;
+            return;
+        }
+        stopFlight();
+
         if (channel == 1) {
             if (lastChannel != 1) {
                 phase = Phase.Q_WINDUP;
@@ -108,6 +133,12 @@ public final class CharizardSkillAnimator {
                     phase = Phase.Q_SUSTAIN;
                     play(pokemon, ANIM_Q_SUSTAIN);
                 }
+            }
+        } else if (channel == 2) {
+            if (lastChannel != 2) {
+                phase = Phase.W_WINDUP;
+                phaseTicks = 0;
+                play(pokemon, ANIM_Q_WINDUP);
             }
         } else if (channel == 4) {
             if (lastChannel != 4) {
@@ -127,6 +158,12 @@ public final class CharizardSkillAnimator {
             // 引导已经结束：Q 立刻收；R 让 r_blast 播完再收，避免"喷完还卡在出手动作"
             if (phase == Phase.Q_WINDUP || phase == Phase.Q_SUSTAIN) {
                 clear(pokemon);
+            } else if (phase == Phase.W_WINDUP) {
+                phase = Phase.W_RELEASE;
+                phaseTicks = 0;
+                play(pokemon, ANIM_R_BLAST);
+            } else if (phase == Phase.W_RELEASE && ++phaseTicks >= R_BLAST_TICKS) {
+                clear(pokemon);
             } else if (phase == Phase.R_CHARGE) {
                 // channel 4 结束 = 服务端这一 tick 发了火球（R_CHARGE_TICKS 到点就出手）。
                 // 注意：服务端在"蓄满那一 tick"就把 channel 关掉，所以客户端几乎不可能在
@@ -141,6 +178,48 @@ public final class CharizardSkillAnimator {
         }
         lastChannel = channel;
         lastPokemon = pokemon;
+    }
+
+    /**
+     * Cobblemon 自带 air_fly 是 4 秒循环（loop=true），不是一次性施法动画。
+     * 只在接管实体/首次拿到 delegate 时 start；FLY/HOVER 的切换即便替换 primary，
+     * 也只放回原实例，绝不调用 start/addPrimaryAnimation 重置扑翼进度。
+     */
+    private static void sustainFlight(PokemonEntity entity) {
+        if (!(entity.getDelegate() instanceof PosableState state)) {
+            return;
+        }
+        if (flightState != state) {
+            stopFlight();
+            var animation = BedrockAnimationRepository.INSTANCE.getAnimationOrNull(
+                    "charizard", "animation.charizard.air_fly");
+            if (animation == null) {
+                // 不回退到 special：一次性吐火动作不能代替持续飞行。
+                return;
+            }
+            // PosableState 按 ActiveAnimation.duration 清 primary，即便 Bedrock loop=true。
+            // 无限的是接管寿命，不是关键帧周期：air_fly 自己仍按 4 秒循环采样。
+            BedrockActiveAnimation looping = new BedrockActiveAnimation(animation) {
+                @Override
+                public float getDuration() {
+                    return Float.POSITIVE_INFINITY;
+                }
+            };
+            flightAnimation = new PrimaryAnimation(looping, progress -> 1.0F, Set.of(), false);
+            flightState = state;
+            state.addPrimaryAnimation(flightAnimation);
+        } else if (state.getPrimaryAnimation() != flightAnimation) {
+            state.setPrimaryAnimation(flightAnimation);
+        }
+    }
+
+    /** 只释放自己拥有的飞行动画，不能误清同 tick 新接管的其他动画。 */
+    private static void stopFlight() {
+        if (flightState != null && flightState.getPrimaryAnimation() == flightAnimation) {
+            flightState.setPrimaryAnimation(null);
+        }
+        flightState = null;
+        flightAnimation = null;
     }
 
     private static boolean isCharizard(PokemonEntity entity) {
@@ -201,6 +280,7 @@ public final class CharizardSkillAnimator {
     }
 
     private static void reset(PokemonEntity entity) {
+        stopFlight();
         // 切换/离场时把"上一次驱动的那只"也清掉，否则它的主动画会永久卡在最后一帧
         if (phase != Phase.NONE) {
             if (entity != null) {

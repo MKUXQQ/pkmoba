@@ -43,7 +43,6 @@ public class PkmobaMod implements ModInitializer {
         PayloadTypeRegistry.playC2S().register(PlaceOrderPayload.TYPE, PlaceOrderPayload.CODEC);
         PayloadTypeRegistry.playC2S().register(com.pkmoba.network.SkillCastPayload.TYPE, com.pkmoba.network.SkillCastPayload.CODEC);
         PayloadTypeRegistry.playC2S().register(com.pkmoba.network.AimPayload.TYPE, com.pkmoba.network.AimPayload.CODEC);
-        PayloadTypeRegistry.playC2S().register(com.pkmoba.network.BasicAttackPayload.TYPE, com.pkmoba.network.BasicAttackPayload.CODEC);
         PayloadTypeRegistry.playC2S().register(com.pkmoba.network.MenuActionPayload.TYPE, com.pkmoba.network.MenuActionPayload.CODEC);
         PayloadTypeRegistry.playC2S().register(com.pkmoba.network.StarterChoosePayload.TYPE, com.pkmoba.network.StarterChoosePayload.CODEC);
         PayloadTypeRegistry.playC2S().register(com.pkmoba.network.SwitchPokemonPayload.TYPE, com.pkmoba.network.SwitchPokemonPayload.CODEC);
@@ -90,7 +89,6 @@ public class PkmobaMod implements ModInitializer {
         com.pkmoba.charizard.CharizardSleepSuppressor.init();
         // 技能系统（技能点 / 冷却 / 四技能判定）
         com.pkmoba.combat.CharizardCombat.init();
-        com.pkmoba.combat.BasicAttack.init();
         // 0.35：关闭世界自然生成（只拦截自然生成，玩家主动召唤不受影响）
         com.pkmoba.world.NaturalSpawnBlocker.init();
         com.pkmoba.world.PokemonDropBlocker.init();
@@ -115,21 +113,23 @@ public class PkmobaMod implements ModInitializer {
                                         context.player(), payload.species());
                                 case "DELETE" -> com.pkmoba.pokemon.TeamService.deleteFromPicker(
                                         context.player(), payload.species());
+                                case "SWITCH" -> com.pkmoba.duel.DuelManager.selectPartyPokemon(
+                                        context.player(), payload.species());
+                                case "RECALL" -> com.pkmoba.duel.DuelManager.recallPartyPokemon(
+                                        context.player(), payload.species());
                                 default -> com.pkmoba.pokemon.TeamService.choose(
                                         context.player(), payload.species());
                             }
                         }));
 
-        // X 键：把宝可梦召唤到准星指向的地面点
+        // X 键：服务器决定召唤或收回，客户端不预测实体状态。
         net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.registerGlobalReceiver(
                 com.pkmoba.network.SummonPayload.TYPE, (payload, context) ->
                         context.server().execute(() -> {
                             net.minecraft.server.level.ServerPlayer player = context.player();
                             net.minecraft.world.phys.Vec3 landing =
                                     new net.minecraft.world.phys.Vec3(payload.x(), payload.y(), payload.z());
-                            // 方案 §三.3：投球 → 落地才显形；§三.4：登场 2 秒硬直
-                            com.pkmoba.pokemon.BallThrow.throwBall(player, landing,
-                                    at -> com.pkmoba.pokemon.TeamService.summonAt(player, at));
+                            com.pkmoba.duel.DuelManager.togglePartyPokemon(player, landing);
                         }));
 
         // 挑战弹窗的接受/拒绝：服务端复核 requestId、过期时间、双方状态后才真正开战

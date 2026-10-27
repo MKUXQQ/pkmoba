@@ -11,24 +11,21 @@ import net.minecraft.resources.ResourceLocation;
 
 /** Compact cream moveset panel for the currently controlled supported Pokemon. */
 public final class SkillHud {
-    private static final int PANEL_W = 306;
+    private static final int PANEL_W = 4 * SkillPresentation.CELL_W + 3 * SkillPresentation.CELL_GAP + 12;
     private static final int PANEL_H = 98;
-    /** 左侧队伍模块占用的宽度，右侧技能内容整体右移这么多。 */
-    private static final int TEAM_W = 52;
-    private static final int CONTENT_X = 57;
+    /** 技能面板独立居中；队伍列表由 PartyHud 在左侧单独绘制。 */
+    private static final int TEAM_W = 0;
+    private static final int CONTENT_X = 0;
     private static final int MARGIN = 8;
+    private static final int NEXT_H = 22; // retained for binary/source compatibility; preview is no longer rendered
     /**
-     * 整体缩放：用户反馈面板偏大，缩到 85%。
+     * 整体缩放：用户反馈面板偏大，缩到 72%。
      *
      * <p>注意：这是非整数的 pose 缩放，面板内的文字必须用 {@link #drawCenteredText} 这类
      * <b>无阴影</b>方式绘制 —— 带阴影的 {@code drawCenteredString} 会把 1px 阴影一起缩放到
-     * 0.85px 再重采样，字形和阴影糊成一团双影（用户反馈的"血量数字重影叠字"）。
+     * 0.72px 再重采样，字形和阴影糊成一团双影（用户反馈的"血量数字重影叠字"）。
      */
-    private static final float SCALE = 0.85F;
-    private static final int DRAW_W = Math.round(PANEL_W * SCALE);
-    private static final int DRAW_H = Math.round(PANEL_H * SCALE);
-    /** "下一只"预览铭牌的高度。 */
-    private static final int NEXT_H = 22;
+    private static final float SCALE = 0.86F;
     private static final int PANEL = 0xFFF4E7C5;
     private static final int BORDER = 0xFF765638;
     private static final int TEXT = 0xFF493522;
@@ -128,9 +125,14 @@ public final class SkillHud {
         int height = mc.getWindow().getGuiScaledHeight();
         double x = (ndc[0] + 1) * width / 2;
         double y = (1 - ndc[1]) * height / 2;
-        int left = (width - DRAW_W) / 2;
-        int top = height - DRAW_H - MARGIN - (hasNextPreview() ? NEXT_H : 0);
-        return x >= left - 3 && x <= left + DRAW_W + 3 && y >= top - 3 && y <= top + DRAW_H + 3;
+        float scale = Math.min(SCALE, Math.min(1.0F, (width - 12.0F) / PANEL_W));
+        int drawW = Math.round(PANEL_W * scale);
+        int drawH = Math.round(PANEL_H * scale);
+        int left = (width - drawW) / 2;
+        int previewH = 0;
+        int top = Math.max(6, height - drawH - MARGIN);
+        return x >= left - 3 && x <= left + drawW + 3
+                && y >= top - 3 && y <= top + drawH + 3 + previewH;
     }
 
     private static com.cobblemon.mod.common.entity.pokemon.PokemonEntity controlledPokemon(Minecraft mc) {
@@ -138,7 +140,8 @@ public final class SkillHud {
         var entity = mc.level.getEntity(ClientState.getCharizardId());
         if (!(entity instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon) || !pokemon.isAlive()) return null;
         String species = pokemon.getPokemon().getSpecies().getResourceIdentifier().toString();
-        return species.equals("cobblemon:charizard") || species.equals("cobblemon:blastoise") ? pokemon : null;
+        return species.equals("cobblemon:charizard") || species.equals("cobblemon:blastoise")
+                || species.equals("cobblemon:venusaur") || species.equals("cobblemon:pikachu") ? pokemon : null;
     }
 
     /**
@@ -160,6 +163,7 @@ public final class SkillHud {
 
     private static void render(GuiGraphics ctx, DeltaTracker tick) {
         Minecraft mc = Minecraft.getInstance();
+        if (mc.screen instanceof PartyScreen) return;
         int sw = mc.getWindow().getGuiScaledWidth();
         int sh = mc.getWindow().getGuiScaledHeight();
         if (GodView.isActive() && CameraSettings.isPreviewVisible()) drawPreview(ctx, sw, sh);
@@ -175,26 +179,22 @@ public final class SkillHud {
         }
 
         drawOpponent(ctx, mc);
-        // 技能栏正下方的"下一只"预览：有预览时整个技能栏上移，给它留出位置
-        boolean nextPreview = hasNextPreview();
-        int previewH = nextPreview ? NEXT_H : 0;
-        int x = (sw - DRAW_W) / 2;
-        int y = sh - DRAW_H - MARGIN - previewH;
+        float scale = Math.min(SCALE, Math.min(1.0F, (sw - 12.0F) / PANEL_W));
+        int drawW = Math.round(PANEL_W * scale);
+        int drawH = Math.round(PANEL_H * scale);
+        int x = (sw - drawW) / 2;
+        int y = Math.max(6, sh - drawH - MARGIN);
         ctx.pose().pushPose();
         ctx.pose().translate(x, y, 0);
-        ctx.pose().scale(SCALE, SCALE, 1);
+        ctx.pose().scale(scale, scale, 1);
         drawPanel(ctx, mc, 0, 0);
         ctx.pose().popPose();
-        if (nextPreview) {
-            drawNextPreview(ctx, mc, x, sh - MARGIN - NEXT_H);
-        }
-        drawHoveredTooltip(ctx, mc, x, y);
+        drawHoveredTooltip(ctx, mc, x, y, scale);
     }
 
     /** 是否展示"下一只"预览：队伍里还有别的可用宝可梦。 */
     private static boolean hasNextPreview() {
-        String next = ClientState.getTeamNext();
-        return next != null && !next.isBlank();
+        return false;
     }
 
     /**
@@ -207,7 +207,7 @@ public final class SkillHud {
      * 物种来自服务端 {@code TeamStatePayload.next}，与按 C 时实际会切换到的目标
      * 共用 {@link com.pkmoba.pokemon.TeamService#switchTarget} 的同一套选择逻辑。
      */
-    private static void drawNextPreview(GuiGraphics ctx, Minecraft mc, int panelX, int plateY) {
+    private static void drawNextPreview(GuiGraphics ctx, Minecraft mc, int panelX, int plateY, int drawW) {
         String next = ClientState.getTeamNext();
         if (next == null || next.isBlank()) return;
         net.minecraft.resources.ResourceLocation speciesRl = net.minecraft.resources.ResourceLocation.tryParse(
@@ -220,7 +220,7 @@ public final class SkillHud {
         int textW = mc.font.width(name) + mc.font.width(tag) + 62;
         int w = Math.max(128, Math.min(210, textW));
         int h = NEXT_H;
-        int x = panelX + (DRAW_W - w) / 2;
+        int x = panelX + (drawW - w) / 2;
 
         float pulse = SwitchFx.previewPulse();
         int border = pulse > 0.02F ? 0xFFE4C77D : BORDER;
@@ -357,10 +357,12 @@ public final class SkillHud {
         String speciesId = hudSpecies(mc);
         boolean summoned = pokemon != null;
         boolean water = com.pkmoba.combat.Skill.isBlastoise(speciesId);
-        int panelColor = water ? WATER_PANEL : PANEL;
-        int borderColor = water ? WATER_BORDER : BORDER;
-        int textColor = water ? WATER_TEXT : TEXT;
-        int mutedColor = water ? WATER_MUTED : MUTED;
+        boolean venusaur = com.pkmoba.combat.Skill.isVenusaur(speciesId);
+        boolean electric = com.pkmoba.combat.Skill.isPikachu(speciesId);
+        int panelColor = electric ? 0xFFFFEEA6 : (water ? WATER_PANEL : PANEL);
+        int borderColor = electric ? 0xFFD28A0E : (water ? WATER_BORDER : (venusaur ? 0xFF3D6B3D : BORDER));
+        int textColor = water ? WATER_TEXT : (venusaur ? 0xFF214D2B : TEXT);
+        int mutedColor = water ? WATER_MUTED : (venusaur ? 0xFF648064 : MUTED);
         net.minecraft.resources.ResourceLocation speciesRl = net.minecraft.resources.ResourceLocation.tryParse(
                 speciesId.contains(":") ? speciesId : "cobblemon:" + speciesId);
         String displayName = summoned
@@ -370,13 +372,12 @@ public final class SkillHud {
         ctx.fill(x + 2, y - 2, x + PANEL_W - 2, y + PANEL_H + 2, borderColor);
         ctx.fill(x - 2, y + 2, x + PANEL_W + 2, y + PANEL_H - 2, borderColor);
         ctx.fill(x, y, x + PANEL_W, y + PANEL_H, panelColor);
-        ctx.fill(x + 3, y + 3, x + PANEL_W - 3, y + 4, water ? 0xFFE9F8FA : 0xFFFFF8E8);
+        ctx.fill(x + 3, y + 3, x + PANEL_W - 3, y + 4,
+                water ? 0xFFE9F8FA : (venusaur ? 0xFFE8F6DE : 0xFFFFF8E8));
 
         // 标题做成挂在面板上沿的小铭牌（原先是浮在面板外的裸文字，与米黄 UI 不搭）
-        drawNamePlate(ctx, mc, displayName, x + (CONTENT_X + PANEL_W - 9) / 2, y,
+        drawNamePlate(ctx, mc, displayName, x + PANEL_W / 2, y,
                 panelColor, borderColor, textColor);
-
-        drawTeamModule(ctx, mc, x, y, speciesId, borderColor, textColor, mutedColor, water);
 
         // 0.38.3：切宠宽限期（ClientState 300ms）内沿用上一帧数值并淡出，宽限期结束仍无数据
         // 才画"同步中"；不再"立刻清零 → 下一包回填"，避免切宠时 UI 一闪一闪。
@@ -389,8 +390,8 @@ public final class SkillHud {
         } else {
             hpText = (int) Math.ceil(ClientState.getHp()) + "/" + (int) ClientState.getMaxHp();
         }
-        int barLeft = x + CONTENT_X;
-        int contentRight = x + PANEL_W - 9;
+        int barLeft = x + 6;
+        int contentRight = x + PANEL_W - 6;
         // 血量数字右对齐放在血条右侧，不再压在血条上（旧版数字画在 y+4、血条占 y+7..y+12，
         // 字形下半截压在填充色上，看起来像叠了一层字）。
         int hpTextX = contentRight - mc.font.width(hpText);
@@ -404,7 +405,7 @@ public final class SkillHud {
         // channel 4/6 有服务端下发的 charge（大字爆炎/加农水炮/喷水前摇），其余引导只画满条提示。
         int channel = ClientState.getChannel();
         int guidedSlot = SkillKeys.slotForChannel(speciesId, channel);
-        boolean chargeBar = channel == 4 || channel == 6;
+        boolean chargeBar = channel == 4 || channel == 6 || (electric && channel == 14);
         float charge = Math.max(0.0F, Math.min(1.0F, ClientState.getCharge()));
         boolean casting = channel != 0;
         long now = Util.getMillis();
@@ -427,23 +428,24 @@ public final class SkillHud {
             // 格子底 + 统一外框：四格同宽同高，图标固定 32px 原生像素居中，位置由
             // SkillPresentation 的布局常量统一决定，四格不会再出现大小/位置不一致。
             ctx.fill(cellX, y + SkillPresentation.CELL_TOP, cellX + SkillPresentation.CELL_W,
-                    y + SkillPresentation.CELL_BOTTOM, water ? 0x334A829B : 0x33765A3C);
+                    y + SkillPresentation.CELL_BOTTOM,
+                    water ? 0x334A829B : (venusaur ? 0x334C7A45 : 0x33765A3C));
             ctx.fill(cellX + 1, y + SkillPresentation.CELL_TOP + 1,
                     cellX + SkillPresentation.CELL_W - 1, y + SkillPresentation.CELL_TOP + 2, 0x55FFFFFF);
             ctx.fill(iconX - 1, iconY - 1, iconX + iconSize + 1, iconY + iconSize + 1, borderColor);
             ctx.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xFF1B1F22);
             drawIcon(ctx, skillIcon(speciesId, i), iconX, iconY, iconSize,
-                    (affordable || inCast) ? 1.0F : 0.48F, pressScale(i));
+                    (electric || affordable || inCast) ? 1.0F : 0.48F, pressScale(i));
 
             if (inCast) {
                 // 施法/前摇/引导：整张图标压成灰色（灰色盖住图标本身），不再写"施法中"文字。
-                ctx.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xB46F7A82);
+                ctx.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, electric ? 0x33FFF27A : 0xB46F7A82);
             } else if (cooldown > 0) {
                 // 冷却遮罩：分母与服务端同一张表（Skill.cooldownTicks），自下而上退去。
                 int full = Math.max(1, com.pkmoba.combat.Skill.cooldownTicks(speciesId, i));
                 int mask = Math.max(1, Math.min(iconSize, (int) (iconSize * cooldown / (float) full)));
                 ctx.fill(iconX, iconY + iconSize - mask, iconX + iconSize, iconY + iconSize,
-                        water ? 0x99174666 : 0x9934291E);
+                        electric ? 0x337E5100 : (water ? 0x99174666 : 0x9934291E));
                 // 剩余秒数自带深色底：压在遮罩上仍然清晰，0.1s 精度（<1s 显示 0.x），不裁切。
                 String remaining = remainText(cooldown);
                 int chipW = mc.font.width(remaining) + 4;
@@ -451,7 +453,7 @@ public final class SkillHud {
                 int chipY = iconY + iconSize - 12;
                 ctx.fill(chipX, chipY, chipX + chipW, chipY + 10, 0xC0000000);
                 drawCenteredText(ctx, mc, remaining, iconX + iconSize / 2, chipY + 1, 0xFFFFFFFF);
-            } else if (!affordable) {
+            } else if (!affordable && !electric) {
                 ctx.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0x66000000);
             }
 
@@ -472,10 +474,11 @@ public final class SkillHud {
                 }
             }
 
-            ctx.fill(cellX + 14, y + 48, cellX + 40, y + 60, borderColor);
-            drawCenteredText(ctx, mc, bindingLabel(i), cellX + 27, y + 49,
+            int cellCenter = cellX + SkillPresentation.CELL_W / 2;
+            ctx.fill(cellCenter - 13, y + 48, cellCenter + 13, y + 60, borderColor);
+            drawCenteredText(ctx, mc, bindingLabel(i), cellCenter, y + 49,
                     water ? 0xFFE4F5F8 : 0xFFFFF3D4);
-            drawCenteredText(ctx, mc, skillName(speciesId, i), cellX + 27, y + 64,
+            drawCenteredText(ctx, mc, skillName(speciesId, i), cellCenter, y + 64,
                     affordable ? textColor : mutedColor);
         }
 
@@ -606,7 +609,7 @@ public final class SkillHud {
             hint = (pending + 19) / 20 + "s";
             hintColor = 0xFFC94F3D;
         } else {
-            hint = summoned ? "C 收回" : "C 换";
+            hint = "C 队伍";
             hintColor = mutedColor;
         }
         drawCenteredText(ctx, mc, hint, x + 25, y + 70, hintColor);
@@ -797,12 +800,12 @@ public final class SkillHud {
         graphics.pose().popPose();
     }
 
-    private static void drawHoveredTooltip(GuiGraphics ctx, Minecraft mc, int x, int y) {
+    private static void drawHoveredTooltip(GuiGraphics ctx, Minecraft mc, int x, int y, float scale) {
         double[] cursor = GodView.cursorNdc(mc);
         double mouseX = (cursor[0] + 1) * mc.getWindow().getGuiScaledWidth() / 2.0;
         double mouseY = (1 - cursor[1]) * mc.getWindow().getGuiScaledHeight() / 2.0;
         for (int i = 0; i < SkillPresentation.COUNT; i++) {
-            if (SkillPresentation.isSkillIconHovered(mc, i, x, y, SCALE, mouseX, mouseY)) {
+            if (SkillPresentation.isSkillIconHovered(mc, i, x, y, scale, mouseX, mouseY)) {
                 String speciesId = hudSpecies(mc);
                 if (speciesId.isEmpty()) return;
                 String skillName = skillName(speciesId, i);
@@ -818,7 +821,7 @@ public final class SkillHud {
      * 面板内的无阴影居中文字。
      *
      * <p>为什么不用 {@code GuiGraphics#drawCenteredString}：它默认带阴影，阴影在设计坐标里
-     * 偏移 1px；面板整体套了 0.85 的非整数 pose 缩放后，阴影只偏 0.85 屏幕像素，和字形一起
+     * 偏移 1px；面板整体套了 0.72 的非整数 pose 缩放后，阴影只偏 0.72 屏幕像素，和字形一起
      * 被最近邻采样，糊成"两行字重叠"的双影（用户反馈的血量数字重影）。面板内所有文字统一走
      * 这里，保持清晰。
      */

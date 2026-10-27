@@ -62,7 +62,7 @@ public final class SpoutEffects {
     private static final double WAVE_MIN_SPACING = 1.2;
     private static final int WAVE_RESAMPLE = 8;
     /** 前摇 10t 渐亮、降雨结束后残留 10t 渐隐。 */
-    private static final int WINDUP_TICKS = 10;
+    private static final int WINDUP_TICKS = 24;
     private static final int LINGER_TICKS = 10;
     /** 距相机超过 96 格的水滴直接不渲染。 */
     private static final double RENDER_DISTANCE = 96.0;

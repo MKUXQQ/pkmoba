@@ -9,6 +9,13 @@ import com.pkmoba.particle.PkmobaParticles;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.minecraft.client.renderer.LightTexture;
+import net.minecraft.client.renderer.texture.OverlayTexture;
+import net.minecraft.client.renderer.RenderType;
+import org.joml.Matrix4f;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.particles.ParticleOptions;
@@ -39,6 +46,10 @@ import java.util.List;
 public final class TornadoEffects {
     private static final ResourceLocation FIRE = ResourceLocation.parse("cobblemon:firespin_target");
     private static final ResourceLocation CINDER = ResourceLocation.parse("cobblemon:firespin_actorcinder");
+    private static final ResourceLocation VORTEX_TEXTURE =
+            ResourceLocation.fromNamespaceAndPath("pkmoba", "textures/effect/fire_vortex_veil.png");
+    private static final int VORTEX_RIBBONS = 3;
+    private static final int VORTEX_SEGMENTS = 40;
     /** 同时存在的旋涡上限。 */
     private static final int MAX_ACTIVE = 8;
     /** payload 半径钳制区间：0.38.4 服务端默认 4.5，留出头给后续调参。 */
@@ -94,6 +105,30 @@ public final class TornadoEffects {
     private static double previewRadius = WINDUP_RADIUS;
     private static int previewEntityId = -1;
     private static int previewAge;
+    private static final List<RemoteWindup> REMOTE_WINDUPS = new ArrayList<>();
+
+    private static final class RemoteWindup {
+        final int entityId;
+        final Vec3 center;
+        final double radius;
+        int age;
+        RemoteWindup(int entityId, Vec3 center, double radius) {
+            this.entityId = entityId; this.center = center; this.radius = radius;
+        }
+        boolean tick(Minecraft client) {
+            if (client.level == null || ++age > WINDUP_TICKS) return false;
+            if (entityId == ClientState.getCharizardId()) return true;
+            double progress = Math.min(1, age / (double) WINDUP_TICKS);
+            for (int i = 0; i < 20; i++) {
+                double angle = i * Math.PI * 2 / 20 + age * .12;
+                double r = radius * (1 - progress * .35);
+                client.level.addParticle(ParticleTypes.FLAME,
+                        center.x + Math.cos(angle) * r, center.y + .08,
+                        center.z + Math.sin(angle) * r, 0, .015 + progress * .035, 0);
+            }
+            return true;
+        }
+    }
 
     private TornadoEffects() { }
 
@@ -113,19 +148,41 @@ public final class TornadoEffects {
                         previewCenter = new Vec3(p.x(), p.y(), p.z());
                         previewRadius = Math.max(MIN_RADIUS, Math.min(MAX_RADIUS, -p.radius()));
                         previewAge = 0;
+                        REMOTE_WINDUPS.removeIf(w -> w.entityId == p.entityId());
+                        if (p.entityId() != ClientState.getCharizardId()) {
+                            REMOTE_WINDUPS.add(new RemoteWindup(p.entityId(), previewCenter, previewRadius));
+                        }
                         return;
                     }
+                    REMOTE_WINDUPS.removeIf(w -> w.entityId == p.entityId());
+                    if (p.entityId() == ClientState.getCharizardId()) {
+                        windupActive = false;
+                        windupTicks = 0;
+                        windupEntityId = -1;
+                        releaseGrace = 0;
+                        clearPreview();
+                    }
+                    ACTIVE.removeIf(v -> {
+                        if (v.entityId != p.entityId()) return false;
+                        v.clear();
+                        return true;
+                    });
                     if (ACTIVE.size() >= MAX_ACTIVE) ACTIVE.remove(0).clear();
                     ACTIVE.add(new Vortex(level, p.entityId(), new Vec3(p.x(), p.y(), p.z()),
                             Math.max(MIN_RADIUS, Math.min(MAX_RADIUS, Math.abs(p.radius()))),
                             Math.max(1, Math.min(100, p.durationTicks()))));
                 }));
-        ClientTickEvents.END_CLIENT_TICK.register(client -> ACTIVE.removeIf(v -> !v.tick(client)));
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            ACTIVE.removeIf(v -> !v.tick(client));
+            REMOTE_WINDUPS.removeIf(w -> !w.tick(client));
+        });
+        WorldRenderEvents.AFTER_TRANSLUCENT.register(TornadoEffects::renderVortexMeshes);
         ClientTickEvents.END_CLIENT_TICK.register(TornadoEffects::tickFlight);
         ClientTickEvents.END_CLIENT_TICK.register(TornadoEffects::tickWindup);
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             ACTIVE.forEach(Vortex::clear);
             ACTIVE.clear();
+            REMOTE_WINDUPS.clear();
             flightEntityId = -1;
             flightTicks = 0;
             resetWindup();
@@ -154,7 +211,7 @@ public final class TornadoEffects {
         int id = ClientState.getCharizardId();
         PokemonEntity entity = id >= 0 && mc.level.getEntity(id) instanceof PokemonEntity pokemon
                 && pokemon.isAlive() ? pokemon : null;
-        if (entity == null || Skill.isBlastoise(entity)) {
+        if (entity == null || Skill.isBlastoise(entity) || Skill.isVenusaur(entity)) {
             flightEntityId = -1;
             flightTicks = 0;
             return;
@@ -262,7 +319,7 @@ public final class TornadoEffects {
         }
         PokemonEntity entity = controlled(mc);
         boolean channeling = entity != null && entity.isAlive()
-                && ClientState.getChannel() == WINDUP_CHANNEL && !Skill.isBlastoise(entity);
+                && ClientState.getChannel() == WINDUP_CHANNEL && !Skill.isBlastoise(entity) && !Skill.isVenusaur(entity);
         if (!channeling) {
             stopWindup(mc);
             // 正半径 payload 常比 channel 0 晚一两帧到：宽限期内等它，否则会把正常成形当成"被打断"。
@@ -447,6 +504,162 @@ public final class TornadoEffects {
         if (particle != null) particle.scale(scale);
     }
 
+    private static void renderVortexMeshes(WorldRenderContext ctx) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || ctx.matrixStack() == null || ctx.consumers() == null || ACTIVE.isEmpty()) return;
+        Vec3 camera = ctx.camera().getPosition();
+        Matrix4f matrix = ctx.matrixStack().last().pose();
+        VertexConsumer vc = ctx.consumers().getBuffer(RenderType.entityTranslucentEmissive(VORTEX_TEXTURE));
+        double partial = ctx.tickCounter().getGameTimeDeltaPartialTick(false);
+        double time = mc.level.getGameTime() + partial;
+        for (Vortex vortex : ACTIVE) {
+            if (vortex.level != mc.level || mc.player == null
+                    || mc.player.distanceToSqr(vortex.center) > RENDER_DISTANCE_SQR) continue;
+            double form = vortex.age < IMPACT_TICKS
+                    ? 0.40 + 0.60 * easeOutCubic((vortex.age + partial) / (IMPACT_TICKS - 1.0)) : 1.0;
+            double fadeIn = Math.min(1.0, (vortex.age + partial + 1) / 5.0);
+            double fadeOut = Math.min(1.0, (vortex.duration - vortex.age - partial) / 10.0);
+            float alpha = (float) Math.max(0, Math.min(1, fadeIn * fadeOut));
+            double height = 1.8 + vortex.radius * 0.72;
+            double maxRadius = vortex.radius * form;
+            // Continuous funnel wall: adjacent curved panels keep the silhouette connected.
+            // The texture drifts diagonally around the cone instead of stretching into vertical sticks.
+            final int rings = 20, sides = 24;
+            for (int layer = 0; layer < 2; layer++) {
+                double layerScale = layer == 0 ? 1.0 : 0.74;
+                for (int row = 0; row < rings; row++) {
+                    double v0 = row / (double) rings, v1 = (row + 1) / (double) rings;
+                    double r0 = maxRadius * layerScale * (0.09 + 0.91 * Math.pow(v0, 0.78));
+                    double r1 = maxRadius * layerScale * (0.09 + 0.91 * Math.pow(v1, 0.78));
+                    double sway0 = Math.sin(v0 * 5.0 - time * 0.09) * 0.10 * v0;
+                    double sway1 = Math.sin(v1 * 5.0 - time * 0.09) * 0.10 * v1;
+                    float wallAlpha = alpha * (layer == 0 ? 0.64F : 0.43F);
+                    for (int side = 0; side < sides; side++) {
+                        double a0 = side * Math.PI * 2 / sides;
+                        double a1 = (side + 1) * Math.PI * 2 / sides;
+                        float u0 = side / (float) sides, u1 = (side + 1) / (float) sides;
+                        // UV stays within the atlas texture; rotation lives in vertex geometry.
+                        double spin0 = time * 0.13 + v0 * 8.0 + layer * 1.7;
+                        double spin1 = time * 0.13 + v1 * 8.0 + layer * 1.7;
+                        Vec3 p0 = funnelPoint(vortex.center, camera, a0 + spin0, r0, height * v0, sway0);
+                        Vec3 p1 = funnelPoint(vortex.center, camera, a1 + spin0, r0, height * v0, sway0);
+                        Vec3 p2 = funnelPoint(vortex.center, camera, a1 + spin1, r1, height * v1, sway1);
+                        Vec3 p3 = funnelPoint(vortex.center, camera, a0 + spin1, r1, height * v1, sway1);
+                        vortexQuad(vc, matrix, p0, p1, p2, p3, u0, u1, (float)v0, (float)v1,
+                                wallAlpha, 255, layer == 0 ? 160 : 213, layer == 0 ? 65 : 116);
+                    }
+                }
+            }
+            for (int ribbon = 0; ribbon < VORTEX_RIBBONS; ribbon++) {
+                double phase = time * (0.105 + ribbon * 0.012) + ribbon * Math.PI * 2 / VORTEX_RIBBONS;
+                double twist = 7.5 + ribbon * 0.65;
+                double width = Math.max(0.48, vortex.radius * (0.38 - ribbon * 0.035));
+                for (int i = 0; i < VORTEX_SEGMENTS; i++) {
+                    double v0 = i / (double) VORTEX_SEGMENTS;
+                    double v1 = (i + 1) / (double) VORTEX_SEGMENTS;
+                    double y0 = height * v0;
+                    double y1 = height * v1;
+                    // Bottom is tightly pinched, then the cone opens toward its crown.
+                    double r0 = maxRadius * (0.14 + 0.86 * Math.pow(v0, 0.82));
+                    double r1 = maxRadius * (0.14 + 0.86 * Math.pow(v1, 0.82));
+                    double a0 = phase + twist * (v0 * 2.1 + 0.12 * Math.sin(v0 * 9 - time * 0.12));
+                    double a1 = phase + twist * (v1 * 2.1 + 0.12 * Math.sin(v1 * 9 - time * 0.12));
+                    double u0 = v0;
+                    double u1 = v1;
+                    double edge = Math.sin(Math.PI * Math.min(v0, v1));
+                    float ribbonAlpha = alpha * (float) (0.68 + 0.32 * edge);
+                    texturedRibbon(vc, matrix, camera, vortex.center, y0, y1, r0, r1,
+                            a0, a1, width, u0, u1, ribbonAlpha,
+                            ribbon == 0 ? 255 : 255, ribbon == 0 ? 174 : 102, ribbon == 0 ? 64 : 25);
+                }
+            }
+            // Low annular skirt anchors the funnel to the impact point.
+            for (int side = 0; side < 48; side++) {
+                double a0 = side * Math.PI / 24 + time * 0.09;
+                double a1 = (side + 1) * Math.PI / 24 + time * 0.09;
+                double inner = maxRadius * 0.25, outer = maxRadius * 0.90;
+                vortexQuad(vc, matrix,
+                        funnelPoint(vortex.center, camera, a0, inner, 0.07, 0),
+                        funnelPoint(vortex.center, camera, a1, inner, 0.07, 0),
+                        funnelPoint(vortex.center, camera, a1, outer, 0.10, 0),
+                        funnelPoint(vortex.center, camera, a0, outer, 0.10, 0),
+                        side / 48F, (side + 1) / 48F, 0.15F, 0.85F,
+                        alpha * 0.68F, 255, 166, 66);
+            }
+            // Two low emissive growth rings make the footprint readable from the overhead camera.
+            for (int band = 0; band < 2; band++) {
+                double pulse = (time * .025 + band * .5) % 1.0;
+                double radius = maxRadius * (.40 + .56 * pulse);
+                double thickness = .055 + .07 * (1 - pulse);
+                for (int side = 0; side < 40; side++) {
+                    double a0 = side * Math.PI * 2 / 40, a1 = (side + 1) * Math.PI * 2 / 40;
+                    vortexQuad(vc, matrix,
+                            funnelPoint(vortex.center, camera, a0, radius - thickness, .045, 0),
+                            funnelPoint(vortex.center, camera, a1, radius - thickness, .045, 0),
+                            funnelPoint(vortex.center, camera, a1, radius + thickness, .045, 0),
+                            funnelPoint(vortex.center, camera, a0, radius + thickness, .045, 0),
+                            0, 1, .2F, .8F, alpha * (float)(.65 * (1 - pulse)), 255, 214, 110);
+                }
+            }
+            // Narrow, steady luminous heart reinforces the center of the funnel.
+            for (int i = 0; i < VORTEX_SEGMENTS; i++) {
+                double v0 = i / (double) VORTEX_SEGMENTS, v1 = (i + 1) / (double) VORTEX_SEGMENTS;
+                double r0 = maxRadius * (0.08 + 0.24 * v0), r1 = maxRadius * (0.08 + 0.24 * v1);
+                double a0 = -time * 0.08 + v0 * 3.5, a1 = -time * 0.08 + v1 * 3.5;
+                texturedRibbon(vc, matrix, camera, vortex.center, height * v0, height * v1,
+                        r0, r1, a0, a1, Math.max(0.12, vortex.radius * 0.10),
+                        v0, v1, alpha * 0.92F, 255, 224, 118);
+            }
+        }
+    }
+
+    private static Vec3 funnelPoint(Vec3 center, Vec3 camera, double angle, double radius, double y, double sway) {
+        return center.add(Math.cos(angle) * radius + sway, y, Math.sin(angle) * radius).subtract(camera);
+    }
+
+    private static void vortexQuad(VertexConsumer vc, Matrix4f matrix, Vec3 p0, Vec3 p1, Vec3 p2, Vec3 p3,
+                                   float u0, float u1, float v0, float v1, float alpha, int r, int g, int b) {
+        texturedVertex(vc, matrix, p0, u0, v0, r, g, b, alpha);
+        texturedVertex(vc, matrix, p1, u1, v0, r, g, b, alpha);
+        texturedVertex(vc, matrix, p2, u1, v1, r, g, b, alpha);
+        texturedVertex(vc, matrix, p3, u0, v1, r, g, b, alpha);
+        texturedVertex(vc, matrix, p3, u0, v1, r, g, b, alpha);
+        texturedVertex(vc, matrix, p2, u1, v1, r, g, b, alpha);
+        texturedVertex(vc, matrix, p1, u1, v0, r, g, b, alpha);
+        texturedVertex(vc, matrix, p0, u0, v0, r, g, b, alpha);
+    }
+
+    private static void texturedRibbon(VertexConsumer vc, Matrix4f matrix, Vec3 camera, Vec3 center,
+                                       double y0, double y1, double r0, double r1,
+                                       double a0, double a1, double width,
+                                       double u0, double u1, float alpha, int red, int green, int blue) {
+        Vec3 c0 = center.add(Math.cos(a0) * r0, y0, Math.sin(a0) * r0).subtract(camera);
+        Vec3 c1 = center.add(Math.cos(a1) * r1, y1, Math.sin(a1) * r1).subtract(camera);
+        double dx0 = -Math.sin(a0), dz0 = Math.cos(a0);
+        double dx1 = -Math.sin(a1), dz1 = Math.cos(a1);
+        Vec3 l0 = c0.add(dx0 * width * 0.5, 0, dz0 * width * 0.5);
+        Vec3 rgt0 = c0.add(-dx0 * width * 0.5, 0, -dz0 * width * 0.5);
+        Vec3 l1 = c1.add(dx1 * width * 0.5, 0, dz1 * width * 0.5);
+        Vec3 rgt1 = c1.add(-dx1 * width * 0.5, 0, -dz1 * width * 0.5);
+        texturedVertex(vc, matrix, l0, (float)u0, 1, red, green, blue, alpha);
+        texturedVertex(vc, matrix, rgt0, (float)u0, 0, red, green, blue, alpha);
+        texturedVertex(vc, matrix, rgt1, (float)u1, 0, red, green, blue, alpha);
+        texturedVertex(vc, matrix, l1, (float)u1, 1, red, green, blue, alpha);
+        // Double-sided sheet for arbitrary viewing angles.
+        texturedVertex(vc, matrix, l1, (float)u1, 1, red, green, blue, alpha);
+        texturedVertex(vc, matrix, rgt1, (float)u1, 0, red, green, blue, alpha);
+        texturedVertex(vc, matrix, rgt0, (float)u0, 0, red, green, blue, alpha);
+        texturedVertex(vc, matrix, l0, (float)u0, 1, red, green, blue, alpha);
+    }
+
+    private static void texturedVertex(VertexConsumer vc, Matrix4f matrix, Vec3 p, float u, float v,
+                                       int red, int green, int blue, float alpha) {
+        vc.addVertex(matrix, (float)p.x, (float)p.y, (float)p.z)
+                .setColor(red, green, blue, (int)(255 * Math.max(0, Math.min(1, alpha))))
+                .setUv(u, v).setOverlay(OverlayTexture.NO_OVERLAY).setLight(LightTexture.FULL_BRIGHT)
+                .setNormal(0, 1, 0);
+    }
+
     /** 1 - (1-t)^3：环弹出先快后慢，看起来是"弹"出去而不是匀速撑开。 */
     private static double easeOutCubic(double t) {
         double inv = 1.0 - Math.max(0.0, Math.min(1.0, t));
@@ -473,21 +686,13 @@ public final class TornadoEffects {
         }
 
         boolean tick(Minecraft client) {
-            if (client.level != level || ClientState.getCharizardId() != entityId
-                    || level.getEntity(entityId) == null || age >= duration) {
+            if (client.level != level || level.getEntity(entityId) == null || age >= duration) {
                 clear();
                 return false;
             }
-            // 复用效果本身1.1秒发射/0.6秒粒子寿命，每22tick补一批，不无限积累。
+            // The continuous textured shell now carries the body; retain only occasional
+            // Cobblemon cinders for depth, rather than maintaining a stacked particle column.
             layers.removeIf(layer -> !layer.storm().isAlive());
-            if (age % 22 == 0 && age < duration - 12) {
-                for (int tier = 0; tier < tiers; tier++) {
-                    for (int arm = 0; arm < arms; arm++) {
-                        ParticleStorm storm = spawn(FIRE, center);
-                        if (storm != null) layers.add(new Layer(storm, tier, arm));
-                    }
-                }
-            }
             // 成形阶段（payload 后 0.35s）：环由 0.4R 弹到 1.0R，亮度 2t 内拉到峰值。
             double form = age < IMPACT_TICKS
                     ? 0.40 + 0.60 * easeOutCubic(age / (double) (IMPACT_TICKS - 1))

@@ -1,6 +1,5 @@
 package com.pkmoba.client;
 
-import com.cobblemon.mod.common.client.entity.PokemonClientDelegate;
 import com.cobblemon.mod.common.client.particle.BedrockParticleOptionsRepository;
 import com.cobblemon.mod.common.client.particle.ParticleStorm;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
@@ -36,24 +35,9 @@ public final class WaterEffects {
     private static final int CANNON_CHANNEL = 4;
     /** 出火后炮管半径从细到满值所用的 tick 数（"先蓄力、再爆发"的出手感）。 */
     private static final int BEAM_RAMP_TICKS = 4;
-    /**
-     * 0.38.5：加农水炮的两个出水口是水箭龟背部的真实炮口（Cobblemon geo 里的
-     * {@code locator_cannon_left} / {@code locator_cannon_right}），不再从嘴部出流。
-     *
-     * <p>候选 key 按"新版带 locator_ 前缀 → 旧版骨骼/定位器名"排序；全拿不到时退回
-     * {@link MouthAnchor#cannonPosition} 的静态炮口偏移（由 geo 骨骼链换算而来）。
-     */
-    private static final String[] CANNON_LEFT_KEYS = {
-            "locator_cannon_left", "cannon_left", "cannon2", "special2"
-    };
-    private static final String[] CANNON_RIGHT_KEYS = {
-            "locator_cannon_right", "cannon_right", "cannon1", "special1"
-    };
-    /** 炮口离脚底的合理高度区间（格），超出说明定位器数据不可信。 */
-    private static final double CANNON_MIN_UP = 0.8;
-    private static final double CANNON_MAX_UP = 4.2;
-    /** 炮口离实体原点最远 6 格，超出说明取到了别的实体/别的骨骼。 */
-    private static final double CANNON_MAX_DISTANCE_SQR = 6.0 * 6.0;
+    // Streaming geometry is deterministic in world space; animation locators must not steer a beam.
+    private static final int JET_SIDES = 16;
+    private static final int MAX_JET_SEGMENTS = 64;
     private static final ResourceLocation FOAM = ResourceLocation.parse("cobblemon:watergun_targetfoam");
     private static final ResourceLocation BURST = ResourceLocation.parse("cobblemon:hydropump_targetburst");
     private static final Map<Key, State> ACTIVE = new HashMap<>();
@@ -128,8 +112,7 @@ public final class WaterEffects {
         if (ticks % 2 == 0) for (var entry : ACTIVE.entrySet()) {
             if (entry.getKey().kind != 4 || !(mc.level.getEntity(entry.getKey().entityId) instanceof PokemonEntity entity)) continue;
             Vec3 dir = direction(entry.getValue().packet);
-            // 0.38.5：雾口跟背部两个真实炮口走（与服务端伤害射线的起点同源）。
-            for (Vec3 muzzle : cannonAnchors(entity)) muzzleMist(mc, muzzle, dir);
+            for (Vec3 muzzle : beamAnchors(entry.getValue().packet)) muzzleMist(mc, muzzle, dir);
         }
         // 0.38.2：加农水炮的两段式节奏（前摇聚水 → 爆发束流）完全在客户端补，
         // 服务端只负责 kind5(前摇)/kind4(束流) 的语义，不改任何判定。
@@ -155,49 +138,39 @@ public final class WaterEffects {
         return new Vec3(-Math.sin(radians), 0, Math.cos(radians));
     }
 
-    /**
-     * 加农水炮的两个出水口（世界坐标，索引 0 = 左炮口、1 = 右炮口）。
-     *
-     * <p>0.38.5：用户要求水炮只能从背部炮口出，所以这里读 Cobblemon 活体骨骼定位器
-     * {@code locator_cannon_left/right}（随动画动），拿不到再退回
-     * {@link MouthAnchor#cannonPosition} 的静态换算值。服务端伤害射线用同一套锚点
-     * （{@code com.pkmoba.combat.MouthAnchor.cannonPosition}），保证"看到的起点"和
-     * "结算的起点"是同一个位置。
-     */
+    /** Cobblemon 1.8 uses cannon2 for the left barrel, cannon1 for the right. */
     private static Vec3[] cannonAnchors(PokemonEntity entity) {
-        Vec3 left = liveLocator(entity, CANNON_LEFT_KEYS);
-        if (left == null) left = MouthAnchor.cannonPosition(entity, true);
-        Vec3 right = liveLocator(entity, CANNON_RIGHT_KEYS);
-        if (right == null) right = MouthAnchor.cannonPosition(entity, false);
-        return new Vec3[]{left, right};
+        return new Vec3[]{liveCannon(entity, true), liveCannon(entity, false)};
     }
 
-    /** 读某个候选 key 的活体定位器；拿不到或数据不合理返回 null。 */
-    private static Vec3 liveLocator(PokemonEntity entity, String[] keys) {
-        try {
-            if (!(entity.getDelegate() instanceof PokemonClientDelegate delegate)) return null;
+    private static Vec3 liveCannon(PokemonEntity entity, boolean left) {
+        if (entity.getDelegate() instanceof com.cobblemon.mod.common.client.entity.PokemonClientDelegate delegate) {
             var states = delegate.getLocatorStates();
-            if (states == null || states.isEmpty()) return null;
-            for (String key : keys) {
+            String[] keys = left ? new String[]{"cannon2", "special2", "locator_cannon_left"}
+                    : new String[]{"cannon1", "special1", "locator_cannon_right"};
+            if (states != null) for (String key : keys) {
                 var locator = states.get(key);
                 if (locator == null) continue;
-                Vec3 origin = locator.getOrigin();
-                if (validCannonAnchor(entity, origin)) return origin;
+                Vec3 pos = locator.getOrigin();
+                if (pos != null && Double.isFinite(pos.x) && Double.isFinite(pos.y)
+                        && Double.isFinite(pos.z) && pos.distanceToSqr(entity.position()) < 100
+                        && pos.y > entity.getY() + 0.2) return pos;
             }
-        } catch (RuntimeException ignored) {
-            // 定位器是可选数据：任何异常都退回静态偏移，不打断渲染。
         }
-        return null;
+        return MouthAnchor.cannonPosition(entity, left);
     }
 
-    private static boolean validCannonAnchor(PokemonEntity entity, Vec3 origin) {
-        if (origin == null || !Double.isFinite(origin.x) || !Double.isFinite(origin.y)
-                || !Double.isFinite(origin.z)) {
-            return false;
-        }
-        double up = origin.y - entity.getY();
-        if (up < CANNON_MIN_UP || up > CANNON_MAX_UP) return false;
-        return origin.distanceToSqr(entity.position()) <= CANNON_MAX_DISTANCE_SQR;
+    /** Only the origins follow animation; the shared endpoint remains server authoritative. */
+    private static Vec3[] beamAnchors(WaterEffectPayload p) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level != null && mc.level.getEntity(p.entityId()) instanceof PokemonEntity entity)
+            return cannonAnchors(entity);
+        Vec3 center = new Vec3(p.x(), p.y(), p.z());
+        return new Vec3[]{center, center};
+    }
+
+    private static Vec3 beamEnd(WaterEffectPayload p) {
+        return new Vec3(p.x(), p.y(), p.z()).add(direction(p).scale(length(p)));
     }
 
     /**
@@ -221,13 +194,7 @@ public final class WaterEffects {
         if (entity == null) return;
         chargeTicks++;
         chargeProgress = Math.max(chargeProgress, Math.min(1.0F, ClientState.getCharge()));
-        Vec3 dir = entityForward(entity);
-        if (chargeDir.lengthSqr() < 1.0E-6 || chargeDir.dot(dir) < -0.2) {
-            chargeDir = dir;
-        } else {
-            Vec3 blended = chargeDir.lerp(dir, 0.25);
-            chargeDir = blended.lengthSqr() < 1.0E-6 ? dir : blended.normalize();
-        }
+        chargeDir = entityForward(entity);
         // 0.38.5：聚水也贴在背部两个炮口上，和后面真正出流的束流起点接得上。
         Vec3[] muzzles = cannonAnchors(entity);
         chargeMuzzleA = muzzles[0];
@@ -290,29 +257,26 @@ public final class WaterEffects {
             if (entry.getKey().kind != 4) continue;
             if (!(mc.level.getEntity(entry.getKey().entityId) instanceof PokemonEntity entity)) continue;
             WaterEffectPayload p = entry.getValue().packet;
-            Vec3 dir = direction(p);
-            double length = length(p);
-            if (length < 1.0) continue;
-            Vec3 right = new Vec3(-dir.z, 0, dir.x).normalize();
-            // 0.38.5：束流起点跟背部两个真实炮口走；中段/末端仍按 payload 的 length 沿 dir 推进。
-            for (Vec3 start : cannonAnchors(entity)) {
+            Vec3 tip = beamEnd(p);
+            if (length(p) < 1.0) continue;
+            // Spray follows the same converging segments as the rendered water surfaces.
+            for (Vec3 start : beamAnchors(p)) {
                 if (start.distanceToSqr(mc.player.position()) > PARTICLE_DISTANCE_SQR) continue;
+                Vec3 delta = tip.subtract(start);
+                Vec3 dir = delta.normalize();
+                Vec3 right = new Vec3(-dir.z, 0, dir.x).normalize();
+                double length = delta.length();
                 Vec3 mid = start.add(dir.scale(length * (0.35 + random.nextDouble() * 0.55)))
                         .add(right.scale((random.nextDouble() - 0.5) * 0.5))
                         .add(0, (random.nextDouble() - 0.5) * 0.5, 0);
-                var mist = mc.particleEngine.createParticle(ParticleTypes.CLOUD,
-                        mid.x, mid.y, mid.z, dir.x * 0.08, 0.01, dir.z * 0.08);
-                if (mist != null) {
-                    mist.setColor(0.75F, 0.92F, 1.0F);
-                    mist.scale(0.65F + random.nextFloat() * 0.4F);
-                    mist.setLifetime(8 + random.nextInt(5));
-                }
-                Vec3 tip = start.add(dir.scale(length));
+                // Tiny detached spray, not smoke clouds obscuring the continuous water surface.
+                mc.level.addParticle(ParticleTypes.SPLASH, mid.x, mid.y, mid.z,
+                        dir.x * 0.35, dir.y * 0.35 + 0.025, dir.z * 0.35);
                 for (int k = 0; k < 2; k++) {
                     mc.level.addParticle(ParticleTypes.SPLASH, tip.x, tip.y, tip.z,
-                            dir.x * 0.05 + (random.nextDouble() - 0.5) * 0.28,
-                            0.18 + random.nextDouble() * 0.16,
-                            dir.z * 0.05 + (random.nextDouble() - 0.5) * 0.28);
+                            -dir.x * 0.12 + (random.nextDouble() - 0.5) * 0.34,
+                            -dir.y * 0.12 + 0.18 + random.nextDouble() * 0.16,
+                            -dir.z * 0.12 + (random.nextDouble() - 0.5) * 0.34);
                 }
             }
         }
@@ -320,18 +284,18 @@ public final class WaterEffects {
 
     private static void muzzleMist(Minecraft mc, Vec3 pos, Vec3 dir) {
         if (mc.player == null || mc.player.distanceToSqr(pos) > 80 * 80) return;
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 1; i++) {
             var random = mc.level.random;
-            Vec3 offset = new Vec3((random.nextDouble() - 0.5) * 0.55,
-                    (random.nextDouble() - 0.5) * 0.42, (random.nextDouble() - 0.5) * 0.55);
+            Vec3 offset = new Vec3((random.nextDouble() - 0.5) * 0.35,
+                    (random.nextDouble() - 0.5) * 0.30, (random.nextDouble() - 0.5) * 0.35);
             Vec3 velocity = dir.scale(0.07).add(offset.scale(0.18));
             Vec3 p = pos.add(dir.scale(0.14)).add(offset);
             var particle = mc.particleEngine.createParticle(net.minecraft.core.particles.ParticleTypes.CLOUD,
                     p.x, p.y, p.z, velocity.x, velocity.y, velocity.z);
             if (particle != null) {
                 particle.setColor(0.78F, 0.93F, 1.0F);
-                particle.scale(0.55F);
-                particle.setLifetime(11 + random.nextInt(5));
+                particle.scale(0.30F);
+                particle.setLifetime(5 + random.nextInt(3));
             }
         }
     }
@@ -392,30 +356,29 @@ public final class WaterEffects {
             if (right.lengthSqr() < 1.0E-6) right = new Vec3(1, 0, 0);
             right = right.normalize();
             if (p.kind() == 4) {
-                double frameTime = ticks + ctx.tickCounter().getGameTimeDeltaPartialTick(false);
-                double blend = state.frameTime < 0 ? 1 : 1 - Math.exp(-Math.max(0, frameTime - state.frameTime) / 0.6);
-                // 0.38.3：束流方向同样逐帧平滑，喷水管不再按 20Hz 阶梯改角度。
-                state.beamDir = state.beamDir == null ? dir : state.beamDir.lerp(dir, blend);
-                if (state.beamDir.lengthSqr() > 1.0E-6) state.beamDir = state.beamDir.normalize();
-                dir = state.beamDir;
-                right = new Vec3(-dir.z, 0, dir.x);
-                if (right.lengthSqr() < 1.0E-6) right = new Vec3(1, 0, 0);
-                right = right.normalize();
-                // 0.38.5：起点改喝水箭龟背部两个真实炮口（活体定位器随施法动画动）；
-                // 每帧 1-exp 平滑照旧，所以骨骼的小抖动不会让水柱跳。
-                Vec3[] muzzles = cannonAnchors(entity);
-                Vec3 a = muzzles[0];
-                Vec3 b = muzzles[1];
-                state.cannonA = state.cannonA == null ? a : state.cannonA.lerp(a, blend);
-                state.cannonB = state.cannonB == null ? b : state.cannonB.lerp(b, blend);
-                state.frameTime = frameTime;
-                a = state.cannonA; b = state.cannonB;
-                // 出火后前几 tick 炮管由细变粗：蓄力憋住 → 喷出去的爆发感。
-                double ramp = Math.min(1.0, Math.max(0.25, (ticks - state.born + 1) / (double) BEAM_RAMP_TICKS));
-                // Two independent full-length cannon streams; server damage and range stay unchanged.
-                double r = 0.30 * ramp;
-                tube(vc, matrix, a.subtract(camera), dir, length(p), r, time, false);
-                tube(vc, matrix, b.subtract(camera), dir, length(p), r, time + 8, false);
+                // Live barrel origins follow the rendered pose; both jets share the network endpoint.
+                Vec3[] muzzles = beamAnchors(p);
+                double ramp = Math.min(1.0, Math.max(0.35,
+                        (ticks + ctx.tickCounter().getGameTimeDeltaPartialTick(false) - state.born + 1)
+                                / BEAM_RAMP_TICKS));
+                double radius = 0.31 * ramp;
+                Vec3 end = beamEnd(p);
+                Vec3 impactAxis = end.subtract(muzzles[0]).normalize();
+                Vec3 impactRight = Math.abs(impactAxis.y) > .95 ? new Vec3(1, 0, 0)
+                        : new Vec3(0, 1, 0).cross(impactAxis).normalize();
+                Vec3 impactUp = impactAxis.cross(impactRight).normalize();
+                // Converging jets finish in a compact, layered pressure crown at the server endpoint.
+                for (int layer = 0; layer < 2; layer++) {
+                    double pulse = (time * .12 + layer * .5) % 1.0;
+                    ring(vc, matrix, end.subtract(camera).add(impactAxis.scale(.02 + layer * .03)),
+                            impactRight, impactUp, .24 + pulse * .48, .07 * (1 - pulse) + .025,
+                            time * .16, (int) (175 * (1 - pulse)));
+                }
+                for (int i = 0; i < muzzles.length; i++) {
+                    Vec3 axis = end.subtract(muzzles[i]);
+                    pressureJet(vc, matrix, muzzles[i].subtract(camera), axis.normalize(),
+                            axis.length(), radius, time + i * 1.7);
+                }
             } else if (p.kind() == 6) {
                 // A readable, modest 0.46-block bubble; visual size does not change server hitboxes.
                 sphere(vc, matrix, pos.subtract(camera), Math.max(0.18, Math.min(0.28, p.radius())));
@@ -501,38 +464,113 @@ public final class WaterEffects {
         return center.add(axis.scale(radius * forward)).add(radial);
     }
 
-    /** Closed, continuous cylindrical surfaces, bright core, turquoise shell and spiral ribbons. */
-    private static void tube(VertexConsumer vc, Matrix4f m, Vec3 start, Vec3 dir,
-                             double length, double radius, double time, boolean details) {
+    /** A solid pressure core, flowing water skin, fast white aeration and a terminal splash crown. */
+    private static void pressureJet(VertexConsumer vc, Matrix4f m, Vec3 start, Vec3 dir,
+                                    double length, double radius, double time) {
         if (length <= 0.01) return;
-        Vec3 right = Math.abs(dir.y) > 0.95 ? new Vec3(1, 0, 0) : new Vec3(0, 1, 0).cross(dir).normalize();
+        Vec3 right = Math.abs(dir.y) > 0.95 ? new Vec3(1, 0, 0)
+                : new Vec3(0, 1, 0).cross(dir).normalize();
         Vec3 up = dir.cross(right).normalize();
+        int segments = Math.min(MAX_JET_SEGMENTS, Math.max(1, (int) Math.ceil(length * 2)));
+        // The axis is perfectly straight. Only the surface radius changes, never the aim/origin.
         for (int layer = 0; layer < 2; layer++) {
-            double r = radius * (layer == 0 ? 0.66 : 1);
-            for (int side = 0; side < 48; side++) {
-                double a = side * Math.PI * 2 / 48, b = (side + 1) * Math.PI * 2 / 48;
-                Vec3 ra = right.scale(Math.cos(a) * r).add(up.scale(Math.sin(a) * r));
-                Vec3 rb = right.scale(Math.cos(b) * r).add(up.scale(Math.sin(b) * r));
-                quad(vc, m, start.add(ra), start.add(rb), start.add(rb).add(dir.scale(length)),
-                        start.add(ra).add(dir.scale(length)), layer == 0 ? 190 : 35,
-                        layer == 0 ? 240 : 165, 255, layer == 0 ? 220 : 125);
-                quad(vc, m, start, start.add(rb), start.add(ra), start, 100, 210, 255, 180);
-                Vec3 end = start.add(dir.scale(length));
-                quad(vc, m, end, end.add(ra), end.add(rb), end, 160, 235, 255, 170);
-            }
-        }
-        if (!details) return;
-        int segments = Math.min(120, Math.max(16, (int) (length * 3)));
-        for (int arm = 0; arm < 1; arm++) {
             for (int i = 0; i < segments; i++) {
-                double t = length * i / segments, next = length * (i + 1) / segments;
-                double a = t * 0.35 - time * 0.12, b = next * 0.35 - time * 0.12;
-                Vec3 c = start.add(dir.scale(t)), d = start.add(dir.scale(next));
-                quad(vc, m, radial(c, right, up, radius * 1.015, a), radial(c, right, up, radius * 1.015, a + 0.11),
-                        radial(d, right, up, radius * 1.015, b + 0.11), radial(d, right, up, radius * 1.015, b),
-                        215, 255, 255, 195);
+                double s = length * i / segments, t = length * (i + 1) / segments;
+                Vec3 a = start.add(dir.scale(s)), b = start.add(dir.scale(t));
+                double ra = jetRadius(radius, s, length, time) * (layer == 0 ? 0.67 : 1);
+                double rb = jetRadius(radius, t, length, time) * (layer == 0 ? 0.67 : 1);
+                for (int side = 0; side < JET_SIDES; side++) {
+                    double u = side * Math.PI * 2 / JET_SIDES;
+                    double v = (side + 1) * Math.PI * 2 / JET_SIDES;
+                    // Continuous UVs along the entire jet, not a new sprite cell per axial segment.
+                    waterQuad(vc, m, radial(a, right, up, ra, u), radial(a, right, up, ra, v),
+                            radial(b, right, up, rb, v), radial(b, right, up, rb, u),
+                            (float) side / JET_SIDES, (float) (side + 1) / JET_SIDES,
+                            (float) (s / length), (float) (t / length),
+                            layer == 0 ? 165 : 48, layer == 0 ? 228 : 171, 255,
+                            layer == 0 ? 215 : 150);
+                }
             }
         }
+        // Thin longitudinal foam filaments travel OUT of the cannons. No orbiting/helix beam axis.
+        for (int strand = 0; strand < 7; strand++) {
+            double angle = strand * Math.PI * 2 / 7;
+            for (int i = 0; i < segments; i++) {
+                double s = length * i / segments, t = length * (i + 1) / segments;
+                double flow = 0.5 + 0.5 * Math.sin(s * 3.6 - time * 2.5 + strand * 2.1);
+                double width = 0.035 + 0.095 * flow;
+                double a = angle + 0.025 * Math.sin(s * 2 - time * 0.8 + strand);
+                double b = angle + 0.025 * Math.sin(t * 2 - time * 0.8 + strand);
+                Vec3 c = start.add(dir.scale(s)), d = start.add(dir.scale(t));
+                double ra = jetRadius(radius, s, length, time) * 1.025;
+                double rb = jetRadius(radius, t, length, time) * 1.025;
+                quad(vc, m, radial(c, right, up, ra, a - width), radial(c, right, up, ra, a + width),
+                        radial(d, right, up, rb, b + width), radial(d, right, up, rb, b - width),
+                        225, 249, 255, (int) (70 + 155 * flow));
+            }
+        }
+        // Sparse elongated flecks make velocity legible even when looking almost down the barrel.
+        for (int fleck = 0; fleck < 12; fleck++) {
+            double s = ((time * 0.9 + fleck * 1.73) % length + length) % length;
+            double t = Math.min(length, s + 0.45 + (fleck % 3) * 0.13);
+            double angle = fleck * 2.39996;
+            double r = jetRadius(radius, s, length, time) * 1.14;
+            Vec3 a = radial(start.add(dir.scale(s)), right, up, r, angle);
+            Vec3 b = radial(start.add(dir.scale(t)), right, up, r, angle);
+            Vec3 width = right.scale(-Math.sin(angle)).add(up.scale(Math.cos(angle))).scale(0.026);
+            quad(vc, m, a.subtract(width), a.add(width), b.add(width), b.subtract(width),
+                    240, 253, 255, 205);
+        }
+        // Tight white nozzle collar: visually pressurised, never a large cloud hiding the model.
+        ring(vc, m, start.add(dir.scale(Math.min(0.10, length * 0.2))), right, up,
+                radius * 0.86, radius * 0.24, time * 0.17, 220);
+        jetImpact(vc, m, start.add(dir.scale(length)), dir, right, up, radius, time);
+    }
+
+    private static double jetRadius(double radius, double along, double length, double time) {
+        double opening = 0.78 + 0.22 * Math.min(1, along / 0.65);
+        double tip = 1 + 0.16 * Math.pow(along / Math.max(0.01, length), 6);
+        return radius * opening * tip * (1 + 0.045 * Math.sin(along * 5.2 - time * 2.7));
+    }
+
+    /** Impact is compact and attached to the network endpoint, not an independently aimed effect. */
+    private static void jetImpact(VertexConsumer vc, Matrix4f m, Vec3 end, Vec3 dir,
+                                  Vec3 right, Vec3 up, double radius, double time) {
+        for (int i = 0; i < 20; i++) {
+            double a = i * Math.PI / 10, b = (i + 1) * Math.PI / 10;
+            double wave = 0.5 + 0.5 * Math.sin(time * 1.8 + i * 2.4);
+            double outer = radius * (1.8 + wave * 0.8);
+            Vec3 innerA = radial(end, right, up, radius * 0.65, a);
+            Vec3 innerB = radial(end, right, up, radius * 0.65, b);
+            Vec3 outerA = radial(end.subtract(dir.scale(0.12 + wave * 0.18)), right, up, outer, a);
+            Vec3 outerB = radial(end.subtract(dir.scale(0.12 + wave * 0.18)), right, up, outer, b);
+            quad(vc, m, innerA, innerB, outerB, outerA, 218, 246, 255, 190);
+            // Broken, bright foam edge; the negative axial component reads as rebounding spray.
+            quad(vc, m, outerA, outerB,
+                    radial(end.subtract(dir.scale(0.42 + wave * 0.25)), right, up, outer * 1.12, b),
+                    radial(end.subtract(dir.scale(0.42 + wave * 0.25)), right, up, outer * 1.12, a),
+                    245, 253, 255, (int) (80 + 100 * wave));
+        }
+        for (int i = 0; i < 10; i++) {
+            double flight = (time * 0.15 + i * 0.137) % 1;
+            double angle = i * 2.39996;
+            Vec3 normal = right.scale(Math.cos(angle)).add(up.scale(Math.sin(angle)));
+            Vec3 p = end.add(normal.scale(radius * (1.2 + flight * 3)))
+                    .subtract(dir.scale(flight * 0.85)).add(0, -flight * flight * 0.32, 0);
+            Vec3 tail = p.subtract(normal.scale(0.12 + flight * 0.10)).add(dir.scale(0.10));
+            Vec3 w = right.scale(0.025 * (1 - flight) + 0.008);
+            quad(vc, m, p.subtract(w), p.add(w), tail.add(w), tail.subtract(w),
+                    235, 251, 255, (int) (210 * (1 - flight)));
+        }
+    }
+
+    private static void waterQuad(VertexConsumer vc, Matrix4f m, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
+                                  float u0, float u1, float v0, float v1,
+                                  int red, int green, int blue, int alpha) {
+        vertex(vc, m, a, u0, v0, red, green, blue, alpha);
+        vertex(vc, m, b, u1, v0, red, green, blue, alpha);
+        vertex(vc, m, c, u1, v1, red, green, blue, alpha);
+        vertex(vc, m, d, u0, v1, red, green, blue, alpha);
     }
 
     private static Vec3 radial(Vec3 center, Vec3 right, Vec3 up, double radius, double angle) {
@@ -609,15 +647,14 @@ public final class WaterEffects {
         long received;
         final long born;
         long lastSplash;
-        Vec3 cannonA, cannonB;
-        /** 逐帧平滑后的束流方向（packet 只有 20Hz，直接用会在水柱上看到角度跳变）。 */
-        Vec3 beamDir;
-        double frameTime = -1;
         State(WaterEffectPayload packet, long expires, long lastSplash) {
             this.packet = this.previous = packet; this.expires = expires; this.lastSplash = lastSplash;
             this.received = this.born = ticks;
         }
         WaterEffectPayload sample(double now) {
+            // The beam packet already IS the server ray. Blending opposite aims can collapse to
+            // zero and fall back to +Z; a second low-pass also makes the jet trail behind the model.
+            if (packet.kind() == 4) return packet;
             double t = Math.max(0, Math.min(1, (now - received) / 1.5));
             WaterEffectPayload a = previous, b = packet;
             Vec3 direction = new Vec3(a.dx(), a.dy(), a.dz()).lerp(new Vec3(b.dx(), b.dy(), b.dz()), t);

@@ -1,6 +1,5 @@
 package com.pkmoba.duel;
 
-import com.pkmoba.item.ModeItems;
 import com.pkmoba.network.MenuOpenPayload;
 import com.pkmoba.network.MenuOpenPayload.MenuKind;
 import net.minecraft.network.chat.Component;
@@ -36,7 +35,8 @@ public final class MenuActions {
                 names.add(other.getGameProfile().getName());
             }
         }
-        List<String> arenas = ArenaStore.get(player.server).names();
+        List<String> arenas = ArenaStore.get(player.server).allArenas().stream()
+                .filter(ArenaStore.Arena::complete).map(arena -> arena.name).toList();
         if (net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.canSend(player, MenuOpenPayload.TYPE)) {
             net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player,
                     new MenuOpenPayload(kind, names, arenas));
@@ -47,6 +47,7 @@ public final class MenuActions {
     public static void handle(ServerPlayer player, com.pkmoba.network.MenuActionPayload payload) {
         String action = payload.action();
         switch (action) {
+            case "quick_bot" -> player.sendSystemMessage(Component.literal("请按 H 选择房间，加入后点击开始对战。"));
             case "CHALLENGE" -> {
                 ServerPlayer target = find(player, payload.argA());
                 if (target == null) {
@@ -78,8 +79,6 @@ public final class MenuActions {
                     player.sendSystemMessage(Component.literal("无法开始：双方必须不同且都不在其他对局中。"));
                 }
             }
-            case "GIVE" -> player.getInventory().add(
-                    new net.minecraft.world.item.ItemStack(ModeItems.BATTLE_MENU));
             default -> player.sendSystemMessage(Component.literal("未知的菜单操作：" + action));
         }
     }

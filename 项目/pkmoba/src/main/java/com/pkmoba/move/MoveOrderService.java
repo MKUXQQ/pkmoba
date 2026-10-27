@@ -43,9 +43,9 @@ public final class MoveOrderService {
      * <p>关键点：这个速度由 {@code entity.move()} 直接驱动，**不再乘** Cobblemon 的
      * {@code MOVEMENT_SPEED} 属性 —— 普通宝可梦的属性值普遍很低，那正是"移动太慢"的根因。
      */
-    private static final double WALK_SPEED = 0.23;
+    private static final double WALK_SPEED = 0.31; // 0.23 * 1.35: responsive dodging speed
     /** 按住疾跑 / 距离较远时的速度（5.6 格/秒）。 */
-    private static final double SPRINT_SPEED = 0.28;
+    private static final double SPRINT_SPEED = 0.38; // 0.28 * 1.35
     /** 单 tick 最大水平位移，防止瞬移（被地形卡住时也不会跳）。 */
     private static final double STEP_CLAMP = 0.5;
     /** 逐 tick 检测前方是否可走：抬升上限（能上一格台阶）。 */
@@ -103,8 +103,6 @@ public final class MoveOrderService {
             ack(player, pos, false);
             return;
         }
-        // A legitimate owner's ground order cancels pursuit even if the destination is rejected.
-        com.pkmoba.combat.BasicAttack.cancel(entity);
         if (!Double.isFinite(pos.x) || !Double.isFinite(pos.y) || !Double.isFinite(pos.z)) {
             ack(player, entity.position(), false);
             return;
@@ -161,8 +159,6 @@ public final class MoveOrderService {
     }
 
     private static void tick(MinecraftServer server) {
-        // Exactly one arbiter owns navigation. Validate attack lifecycle even after removal.
-        com.pkmoba.combat.BasicAttack.tick(server);
         var entities = CharizardManager.getControlledEntities(server);
         // 清理已经不存在的实体指令，避免 UUID 表无限增长
         ORDERS.keySet().removeIf(id -> entities.stream().noneMatch(e -> e.getUUID().equals(id)));
@@ -185,7 +181,6 @@ public final class MoveOrderService {
                 order.lastNavGoal = null;
             }
         }
-        if (com.pkmoba.combat.BasicAttack.hasTarget(entity)) return;
         // 施法中由技能接管位移：原地施法（用户 m02984/m03603："释放技能的时候不能乱动"）。
         // 0.39.5：连排队中的落点也一起丢掉，否则引导结束的下一 tick 会突然继续走，
         // 看起来就像"释放技能的时候宝可梦在乱动"。
@@ -197,6 +192,9 @@ public final class MoveOrderService {
             entity.setDeltaMovement(0.0, entity.getDeltaMovement().y, 0.0);
             return;
         }
+
+        // BotDuelService owns bot navigation; keep its path between AI decisions.
+        if (com.pkmoba.duel.BotDuelService.isBot(entity)) return;
 
         if (order.target == null) {
             if (!entity.getNavigation().isDone()) {
@@ -220,6 +218,7 @@ public final class MoveOrderService {
         // 先试"直线走"：视线通畅且前方地面可站立时完全脱离 A*，
         // 这样点哪就走哪，不会出现"绕一小段再拐回来"的迂回。
         Vec3 flatDir = new Vec3(dx / horizontal, 0, dz / horizontal);
+        faceTowards(entity, flatDir);
         if (straightWalk(entity, order, flatDir, horizontal)) {
             order.lastNavGoal = null;
             return;
@@ -256,11 +255,12 @@ public final class MoveOrderService {
     private static double navigationSpeed(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity) {
         double attr = entity.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED);
         if (attr <= 1.0E-4) {
-            return NAV_SPEED;
+            return NAV_SPEED * com.pkmoba.combat.VenusaurCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.PikachuCombat.movementSpeedMultiplier(entity);
         }
         // 属性单位是"格/秒"，乘 20 得"格/tick"；目标速度除以它即得 modifier。
         double modifier = WALK_SPEED * 20.0 / attr;
-        return net.minecraft.util.Mth.clamp(modifier, 0.8, 3.0);
+        return net.minecraft.util.Mth.clamp(modifier, 0.8, 3.0)
+                * com.pkmoba.combat.VenusaurCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.PikachuCombat.movementSpeedMultiplier(entity);
     }
 
     /**
@@ -269,7 +269,8 @@ public final class MoveOrderService {
     private static boolean straightWalk(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity,
                                         Order order, Vec3 flatDir, double horizontal) {
         // 距离远时用疾跑速度：既不拖沓，也不会因为"一直点远处"而显得比近处慢。
-        double speed = horizontal > 6.0 ? SPRINT_SPEED : WALK_SPEED;
+        double speed = (horizontal > 6.0 ? SPRINT_SPEED : WALK_SPEED)
+                * com.pkmoba.combat.VenusaurCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.PikachuCombat.movementSpeedMultiplier(entity);
         double step = Math.min(horizontal, speed);
         double width = Math.max(0.35, entity.getBbWidth() * 0.5);
         Vec3 probe = new Vec3(flatDir.x * Math.max(step, 0.4), 0, flatDir.z * Math.max(step, 0.4));
@@ -366,6 +367,13 @@ public final class MoveOrderService {
     public static void clear() {
         ORDERS.clear();
         com.pkmoba.combat.FacingService.clear();
+    }
+
+    /** Whether this entity currently has a pending ground-move destination. */
+    public static boolean hasOrder(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity) {
+        if (entity == null) return false;
+        Order order = ORDERS.get(entity.getUUID());
+        return order != null && order.target != null;
     }
 
     /** 只清某一只宝可梦的移动指令（1v1 里另一只不受影响）。 */

@@ -94,6 +94,8 @@ public final class HitFeedback {
     private static boolean initialized;
     /** 上一次做镜头反馈的客户端 tick（同 tick 的多段命中只反馈一次）。 */
     private static long lastCameraTick = Long.MIN_VALUE;
+    private static int lastPikachuStrikeEntity = Integer.MIN_VALUE;
+    private static long lastPikachuStrikeTick = Long.MIN_VALUE;
 
     /** 注册 tick 与 HUD 渲染。由 {@code PkmobaClient.onInitializeClient()} 调用一次。 */
     public static void init() {
@@ -125,7 +127,21 @@ public final class HitFeedback {
         killTicks = 0;
         effectClock = 0;
         lastCameraTick = Long.MIN_VALUE;
+        lastPikachuStrikeEntity = Integer.MIN_VALUE;
+        lastPikachuStrikeTick = Long.MIN_VALUE;
         CombatAudio.reset();
+    }
+
+    /** One camera shake per locally controlled Pikachu R cast, independent of target hits. */
+    public static void onPikachuThunderStrike(int entityId) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || mc.player == null || entityId != ClientState.getCharizardId()) return;
+        long now = mc.level.getGameTime();
+        if (lastPikachuStrikeEntity == entityId && now - lastPikachuStrikeTick < 100) return;
+        lastPikachuStrikeEntity = entityId;
+        lastPikachuStrikeTick = now;
+        addShake(EffectPayload.Power.ULTIMATE, Vec3.ZERO);
+        beginHitstop(EffectPayload.Power.HEAVY);
     }
 
     /**
@@ -166,7 +182,11 @@ public final class HitFeedback {
                 // m04707：用户明确"只能大招才有屏幕特效，其他都没有"。
                 // 所以震屏 + 顿帧只在 ULTIMATE 命中时生效；普攻/普通技能/击杀一律不动屏幕。
                 // 水箭龟 Q（加农水炮）与 E（冲浪）走普通伤害通道，天然不会进这里。
-                if (power == EffectPayload.Power.ULTIMATE) {
+                // Electric thunder has its own deduped landing cue, even when it misses.
+                boolean pikachuThunder = mc.level.getEntity(ClientState.getCharizardId())
+                        instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity controlled
+                        && Skill.isPikachu(controlled);
+                if (power == EffectPayload.Power.ULTIMATE && !pikachuThunder) {
                     addShake(EffectPayload.Power.ULTIMATE, dir);
                     beginHitstop(EffectPayload.Power.HEAVY);
                 }
@@ -348,15 +368,10 @@ public final class HitFeedback {
         CombatAudio.tick(mc);
     }
 
-    /** R 大招：喷火龙 channel 4（蓄力 + 引导）时推镜 + 色偏，结束平滑恢复。 */
+    /** All three R skills share a charge push-in; only the outer vignette is tinted. */
     private static void updateUlt(Minecraft mc, boolean frozen) {
-        boolean ulting = false;
-        if (ClientState.isSkillStateReady() && ClientState.getChannel() == 4 && mc.level != null) {
-            Entity controlled = mc.level.getEntity(ClientState.getCharizardId());
-            // 水箭龟的 channel 4 是加农水炮（由 WaterEffects 表现），这里只接管喷火龙大字爆
-            ulting = controlled instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon
-                    && !Skill.isBlastoise(pokemon);
-        }
+        boolean ulting = ClientState.isSkillStateReady() && mc.level != null
+                && isUltimateChannel(ClientState.getChannel());
         ultActive = ulting;
         if (ulting) {
             float charge = Math.max(0.0F, Math.min(1.0F, ClientState.getCharge()));
@@ -457,11 +472,8 @@ public final class HitFeedback {
             int alpha = (int) Math.min(70.0F, 34.0F * flashStrength * k + 10.0F);
             graphics.fill(0, 0, w, h, (alpha << 24) | (flashColor & 0xFFFFFF));
         }
-        // R 大招色偏：暖橙，透明度上限 16%，不糊画面
-        if (ultTint > 0.005F) {
-            int alpha = (int) Math.min(255.0F, ultTint * 255.0F);
-            graphics.fill(0, 0, w, h, (alpha << 24) | 0x8A2B06);
-        }
+        // Keep the playfield readable: ultimate color stays at the edges.
+
         // 蓄力感（0.39.2 用户要求"蓄力时屏幕要有蓄力的感觉"）：
         // 用贴边的暗角带 + 随蓄力加深的内缩，不用整屏色块（用户明确讨厌全屏覆盖色）。
         drawChargeVignette(graphics, mc, w, h);
@@ -506,7 +518,8 @@ public final class HitFeedback {
             return;
         }
         // 蓄力颜色：喷火龙偏暖橙、水箭龟偏青蓝；两种都压得很暗，只做"压边"不做"盖屏"。
-        int rgb = Skill.isBlastoise(SkillKeys.controllingSpeciesId()) ? 0x0B3A4E : 0x3A1204;
+        String species = SkillKeys.controllingSpeciesId();
+        int rgb = Skill.isVenusaur(species) ? 0x30113E : Skill.isBlastoise(species) ? 0x0B3A4E : 0x3A1204;
         int maxAlpha = (int) (150.0F * charge);
         // 呼吸：越接近满蓄力脉动越快，给"能量聚满"的节奏感。
         double phase = (System.nanoTime() / 1.0E9) * (0.35F + 0.45F * charge) * 6.2831853
@@ -544,8 +557,12 @@ public final class HitFeedback {
         if (channel <= 0) {
             return false;
         }
-        boolean water = Skill.isBlastoise(SkillKeys.controllingSpeciesId());
-        return water ? channel == BlastoiseCombat.CHANNEL_SPOUT : channel == CHARIZARD_ULT_CHANNEL;
+        String species = SkillKeys.controllingSpeciesId();
+        if (Skill.isPikachu(species)) return channel == 14;
+        if (Skill.isVenusaur(species)) return channel == 10;
+        if (Skill.isBlastoise(species)) return channel == BlastoiseCombat.CHANNEL_SPOUT;
+        return ("cobblemon:charizard".equals(species) || "charizard".equals(species))
+                && channel == CHARIZARD_ULT_CHANNEL;
     }
 
     private static boolean finite(Vec3 v) {

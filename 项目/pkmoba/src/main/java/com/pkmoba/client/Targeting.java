@@ -36,42 +36,9 @@ public final class Targeting {
         return selected;
     }
 
-    /**
-     * 普攻判定半径（格）：喷火龙 {@link BasicAttack#RANGE}、水箭龟 {@link BasicAttack#WATER_RANGE}。
-     *
-     * <p>0.38.5：半径的唯一来源移到 {@link BasicAttack#rangeFor} —— 服务端的命中判定与客户端的
-     * 白色范围圈必须读同一个数，否则"圈画到哪、伤害打到哪"就会对不上。
-     */
-    public static double basicRangeRadius(LivingEntity self) {
-        return BasicAttack.rangeFor(self);
-    }
-
-    private static double basicRangeSquared(LivingEntity self) {
-        double radius = basicRangeRadius(self);
-        return radius * radius;
-    }
-
     /** 光标当前锁定的目标（与左键普攻选中走同一套拾取）。 */
     public static LivingEntity hoveredTarget(Minecraft mc) {
         return pick(mc);
-    }
-
-    /**
-     * 是否已经有可用目标进入普攻判定范围（"交战中"）。
-     *
-     * <p>白色范围圈据此在"玩家锁定目标"之外补一个"已经在打"的显示条件：
-     * 光标移开但敌人仍贴身时圈不消失，走出范围 / 目标失效则立刻消失。
-     */
-    public static boolean hasEngagedTarget(Minecraft mc, LivingEntity self, double radius) {
-        if (mc.level == null || self == null) return false;
-        double rangeSquared = radius * radius;
-        for (LivingEntity candidate : mc.level.getEntitiesOfClass(LivingEntity.class,
-                self.getBoundingBox().inflate(radius + 1.0), e -> BasicAttack.validTarget(e, self))) {
-            if (BasicAttack.boxDistanceSquared(self.getBoundingBox(), candidate.getBoundingBox()) <= rangeSquared) {
-                return true;
-            }
-        }
-        return false;
     }
 
     public static boolean covered(Minecraft mc, LivingEntity target) {
@@ -84,15 +51,41 @@ public final class Targeting {
         Vec3 aim = AimRay.aimPoint(mc);
         Vec3 origin = self.position();
         Vec3 eye = self.getEyePosition();
+        if (self instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon
+                && com.pkmoba.combat.Skill.isVenusaur(pokemon) && skill >= 0) {
+            return venusaurCovered(mc, pokemon, target, skill, aim, origin);
+        }
+        if (self instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon
+                && com.pkmoba.combat.Skill.isPikachu(pokemon) && skill >= 0) {
+            if (!BasicAttack.clearMeleeLine(self, target)) return false;
+            Vec3 direction = new Vec3(aim.x - origin.x, 0, aim.z - origin.z).normalize();
+            Vec3 relative = target.getBoundingBox().getCenter().subtract(origin);
+            if (skill == 0 || skill == 2) {
+                double forward = relative.dot(direction);
+                double width = skill == 0 ? 0.5 : 0.7;
+                return forward >= 0 && forward <= (skill == 0 ? com.pkmoba.combat.PikachuCombat.Q_RANGE : com.pkmoba.combat.PikachuCombat.E_RANGE)
+                        && relative.subtract(direction.scale(forward)).horizontalDistanceSqr()
+                        <= Math.pow(width + target.getBbWidth() * 0.5, 2);
+            }
+            if (skill == 1) {
+                double travel = com.pkmoba.combat.PikachuCombat.wTravelDistance(
+                        new Vec3(aim.x - origin.x, 0, aim.z - origin.z).length());
+                Vec3 intended = origin.add(direction.scale(travel));
+                Vec3 endpoint = com.pkmoba.combat.PikachuCombat.previewGround(self, intended);
+                double radius = com.pkmoba.combat.PikachuCombat.W_RADIUS + target.getBbWidth() * 0.5;
+                return target.position().subtract(endpoint).horizontalDistanceSqr() <= radius * radius;
+            }
+            double travel = Math.min(com.pkmoba.combat.PikachuCombat.R_RANGE,
+                    new Vec3(aim.x - origin.x, 0, aim.z - origin.z).length());
+            Vec3 requested = origin.add(direction.scale(travel));
+            Vec3 center = com.pkmoba.combat.PikachuCombat.previewGround(self, requested);
+            return target.position().subtract(center).horizontalDistanceSqr()
+                    <= Math.pow(com.pkmoba.combat.PikachuCombat.R_RADIUS + target.getBbWidth() * 0.5, 2);
+        }
         if (blastoise && skill >= 0) {
             return blastoiseCovered(mc, self, target, skill, aim, origin, eye);
         }
-        if (skill < 0) {
-            return ClientState.getChannel() == 0
-                    && BasicAttack.boxDistanceSquared(self.getBoundingBox(), target.getBoundingBox())
-                            <= basicRangeSquared(self)
-                    && BasicAttack.clearMeleeLine(self, target);
-        }
+        if (skill < 0) return false;
         // Never advertise a target behind solid terrain as hittable.
         if (!BasicAttack.clearMeleeLine(self, target)) return false;
         if (skill == 0) {
@@ -135,22 +128,32 @@ public final class Targeting {
             return false;
         }
         if (skill == 3) {
-            Vec3 delta = aim.subtract(eye);
-            Vec3 direction = new Vec3(delta.x, delta.y * 0.25, delta.z);
-            direction = direction.lengthSqr() < 1.0E-4 ? new Vec3(0, 0, 1) : direction.normalize();
-            Vec3 launch = eye.add(direction);
+            Vec3 flat = aim.subtract(origin).multiply(1, 0, 1);
+            flat = flat.lengthSqr() < 1.0E-4 ? new Vec3(0, 0, 1) : flat.normalize();
+            Vec3 launch = self instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon
+                    ? com.pkmoba.combat.CharizardCombat.mouthPosition(pokemon, flat, 0.55, 0.22) : eye;
+            Vec3 delta = aim.add(0, 0.45, 0).subtract(launch);
+            Vec3 direction = delta.lengthSqr() < 1.0E-4 ? flat : delta.normalize();
             Vec3 previous = launch;
             for (int step = 1; step <= 34; step++) {
                 double travel = step * 0.6;
                 Vec3 point = launch.add(direction.scale(travel));
                 if (!BasicAttack.clearLine(mc.level, self, previous, point)) return false;
-                double radius = 3.0 - 2.0 * Math.min(1, travel / 20.0);
-                // A nearer body intercepts the projectile; do not paint entities behind it red.
+                double radius = 3.0 - 2.0 * Math.min(1, (travel - 0.6) / 20.0);
+                Vec3 contact = null;
+                double nearest = Double.POSITIVE_INFINITY;
                 for (LivingEntity candidate : mc.level.getEntitiesOfClass(LivingEntity.class,
-                        new AABB(point, point).inflate(radius + 1), e -> BasicAttack.validTarget(e, self))) {
-                    if (candidate.getBoundingBox().inflate(radius).contains(point)) {
-                        return target.getBoundingBox().intersects(new AABB(point, point).inflate(radius));
+                        new AABB(previous, point).inflate(2.4), e -> BasicAttack.validTarget(e, self))) {
+                    AABB body = candidate.getBoundingBox().inflate(0.9);
+                    Vec3 hit = body.contains(previous) ? previous : body.clip(previous, point).orElse(null);
+                    if (hit != null && hit.distanceToSqr(previous) < nearest) {
+                        nearest = hit.distanceToSqr(previous);
+                        contact = hit;
                     }
+                }
+                if (contact != null) {
+                    return BasicAttack.closestPoint(target.getBoundingBox(), contact).distanceTo(contact) <= radius
+                            && BasicAttack.clearLine(mc.level, self, contact, target.getBoundingBox().getCenter());
                 }
                 previous = point;
             }
@@ -158,11 +161,52 @@ public final class Targeting {
         return false;
     }
 
-    /**
-     * 0.38 水箭龟四技能预览：Q 直线水炮胶囊、W 旋转近身环、E 冲浪直线推进、R 喷水地面扇形。
-     *
-     * <p>只回答"这个目标是否落在技能覆盖范围内"，用于选中框红/灰提示；真实命中判定仍以服务端为准。
-     */
+    /** Mirrors VenusaurCombat: vine cone, grounded fields and terrain-clipped solar beam. */
+    private static boolean venusaurCovered(Minecraft mc, com.cobblemon.mod.common.entity.pokemon.PokemonEntity self, LivingEntity target, int skill,
+                                           Vec3 aim, Vec3 origin) {
+        if (mc.level == null) return false;
+        Vec3 flower = com.pkmoba.combat.VenusaurAnchor.position(self);
+        Vec3 direction = com.pkmoba.combat.CharizardCombat.aimDirection(self, aim);
+        if (skill == 0) {
+            Vec3 end = flower.add(direction.scale(com.pkmoba.combat.VenusaurCombat.Q_RANGE));
+            AABB body = target.getBoundingBox().inflate(com.pkmoba.combat.VenusaurCombat.Q_RADIUS);
+            return (body.contains(flower) || body.clip(flower, end).isPresent())
+                    && BasicAttack.clearLine(mc.level, self, flower, target.getBoundingBox().getCenter());
+        }
+        if (skill == 2) {
+            Vec3 intended = flower.add(direction.scale(com.pkmoba.combat.VenusaurCombat.E_RANGE));
+            HitResult hit = mc.level.clip(new net.minecraft.world.level.ClipContext(flower, intended,
+                    net.minecraft.world.level.ClipContext.Block.COLLIDER,
+                    net.minecraft.world.level.ClipContext.Fluid.NONE, self));
+            Vec3 end = hit.getType() == HitResult.Type.MISS ? intended : hit.getLocation();
+            AABB body = target.getBoundingBox().inflate(com.pkmoba.combat.VenusaurCombat.E_RADIUS);
+            return body.contains(flower) || body.clip(flower, end).isPresent();
+        }
+        if (skill == 1 || skill == 3) {
+            double range = skill == 1 ? 16 : 15;
+            double radius = skill == 1 ? 2.4 : com.pkmoba.combat.VenusaurCombat.R_RADIUS;
+            Vec3 delta = aim.subtract(origin).multiply(1, 0, 1);
+            if (delta.lengthSqr() > range * range) delta = delta.normalize().scale(range);
+            Vec3 center = origin.add(delta);
+            // Match the synchronized legacy circle when enforced. Saved polygon vertices
+            // are not in this payload, so polygon-edge previews remain approximate.
+            double arenaRadius = Math.max(0, ClientState.getArenaRadius() - 1.0);
+            if (arenaRadius > 0 && ClientState.getArenaDist() < 999.0F) {
+                Vec3 arenaCenter = new Vec3(ClientState.getArenaX(), center.y, ClientState.getArenaZ());
+                Vec3 fromCenter = center.subtract(arenaCenter).multiply(1, 0, 1);
+                if (fromCenter.lengthSqr() > arenaRadius * arenaRadius) center = arenaCenter.add(fromCenter.normalize().scale(arenaRadius));
+            }
+            HitResult ground = mc.level.clip(new net.minecraft.world.level.ClipContext(center.add(0, 3, 0), center.add(0, -6, 0),
+                    net.minecraft.world.level.ClipContext.Block.COLLIDER,
+                    net.minecraft.world.level.ClipContext.Fluid.NONE, self));
+            if (ground.getType() != HitResult.Type.MISS) center = ground.getLocation().add(0, 0.03, 0);
+            double dx = target.getX() - center.x, dz = target.getZ() - center.z;
+            return dx * dx + dz * dz <= radius * radius && Math.abs(target.getY() - center.y) <= 3;
+        }
+        return false;
+    }
+
+    /** Blastoise Q cannon, W spin, E surf and R spout coverage preview. */
     private static boolean blastoiseCovered(Minecraft mc, LivingEntity self, LivingEntity target, int skill,
                                             Vec3 aim, Vec3 origin, Vec3 eye) {
         // 隔墙的目标一律不发红，和服务端普攻/技能的视线检查保持一致。

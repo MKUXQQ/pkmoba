@@ -92,6 +92,7 @@ public final class SkillRangeRenderer {
 
     private static void draw(WorldRenderContext context, Minecraft mc, LivingEntity self, int slot) {
         boolean blastoise = isBlastoise(self);
+        boolean venusaur = isVenusaur(self);
         Vec3 origin = self.position();
         Vec3 aim = aimPoint(mc, self);
         Vec3 flat = new Vec3(aim.x - origin.x, 0.0, aim.z - origin.z);
@@ -106,12 +107,38 @@ public final class SkillRangeRenderer {
                 -context.camera().getPosition().z);
         PoseStack.Pose pose = poseStack.last();
 
-        if (blastoise) {
+        if (self instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon && com.pkmoba.combat.Skill.isPikachu(pokemon)) {
             switch (slot) {
-                case 0 -> rect(mc, context, pose, origin, flat, 16.0, 1.6);
-                case 1 -> disc(context, mc, pose, origin, 3.0);
-                case 2 -> rect(mc, context, pose, origin, flat, 6.0, 2.0);
-                case 3 -> rect(mc, context, pose, origin, flat, 14.0, 0.9);
+                case 0 -> rect(mc, context, pose, origin, flat, com.pkmoba.combat.PikachuCombat.Q_RANGE, 0.5);
+                case 1 -> {
+                    double travel = com.pkmoba.combat.PikachuCombat.wTravelDistance(horizontalDistance(origin, aim));
+                    Vec3 endpoint = origin.add(flat.scale(travel));
+                    endpoint = com.pkmoba.combat.PikachuCombat.previewGround(pokemon, endpoint);
+                    disc(context, mc, pose, endpoint, com.pkmoba.combat.PikachuCombat.W_RADIUS);
+                }
+                case 2 -> rect(mc, context, pose, origin, flat, com.pkmoba.combat.PikachuCombat.E_RANGE, 0.7);
+                case 3 -> {
+                    double travel = Math.min(com.pkmoba.combat.PikachuCombat.R_RANGE, horizontalDistance(origin, aim));
+                    Vec3 center = origin.add(flat.scale(travel));
+                    center = com.pkmoba.combat.PikachuCombat.previewGround(pokemon, center);
+                    disc(context, mc, pose, center, com.pkmoba.combat.PikachuCombat.R_RADIUS);
+                }
+                default -> { }
+            }
+        } else if (venusaur) {
+            switch (slot) {
+                case 0 -> rect(mc, context, pose, origin, flat, com.pkmoba.combat.VenusaurCombat.Q_RANGE, com.pkmoba.combat.VenusaurCombat.Q_RADIUS);
+                case 1 -> disc(context, mc, pose, origin, com.pkmoba.combat.VenusaurCombat.W_RANGE);
+                case 2 -> rect(mc, context, pose, origin, flat, com.pkmoba.combat.VenusaurCombat.E_RANGE, com.pkmoba.combat.VenusaurCombat.E_RADIUS);
+                case 3 -> disc(context, mc, pose, origin.add(flat.scale(Math.min(com.pkmoba.combat.VenusaurCombat.R_RANGE, horizontalDistance(origin, aim)))), com.pkmoba.combat.VenusaurCombat.R_RADIUS);
+                default -> { }
+            }
+        } else if (blastoise) {
+            switch (slot) {
+                case 0 -> rect(mc, context, pose, origin, flat, 16.0, 0.9);
+                case 1 -> disc(context, mc, pose, origin, 2.0);
+                case 2 -> rect(mc, context, pose, origin, flat, 6.16, 1.2);
+                case 3 -> disc(context, mc, pose, origin, 6.0);
                 default -> { }
             }
         } else {
@@ -198,6 +225,15 @@ public final class SkillRangeRenderer {
                 .setOverlay(OverlayTexture.NO_OVERLAY)
                 .setLight(LightTexture.FULL_BRIGHT)
                 .setNormal(0.0F, 1.0F, 0.0F);
+    }
+
+    private static boolean isVenusaur(LivingEntity entity) {
+        try {
+            var pokemon = ((com.cobblemon.mod.common.entity.pokemon.PokemonEntity) entity).getPokemon();
+            return "cobblemon:venusaur".equals(pokemon.getSpecies().getResourceIdentifier().toString());
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private static boolean isBlastoise(LivingEntity entity) {

@@ -104,7 +104,7 @@ public final class PlayerLockService {
                 else player.displayClientMessage(net.minecraft.network.chat.Component.literal("未找到安全返回位置，已解除锁定。"), false);
             }
         }
-        player.setNoGravity(lock.noGravity());
+        player.setNoGravity(false);
         player.setInvulnerable(lock.invulnerable());
         player.getAbilities().flying = lock.flying();
         player.getAbilities().mayfly = lock.mayfly();
@@ -118,8 +118,7 @@ public final class PlayerLockService {
     public static void recoverInactive(ServerPlayer player, boolean explicitExit) {
         if (isLocked(player) || readSnapshot(player) != null) {
             unlock(player, true);
-        } else if (explicitExit && !player.isCreative() && !player.isSpectator()
-                && !player.getAbilities().mayfly && player.isNoGravity()) {
+        } else if (explicitExit && !player.isSpectator() && player.isNoGravity()) {
             player.setNoGravity(false);
             player.setInvulnerable(false);
             player.getAbilities().flying = false;
@@ -159,7 +158,7 @@ public final class PlayerLockService {
     }
 
     private static Vec3 findReturn(ServerPlayer player, Lock lock) {
-        boolean allowAir = lock.flying() || lock.noGravity();
+        boolean allowAir = lock.flying() && (player.isCreative() || player.isSpectator());
         if (safe(player.serverLevel(), player, lock.origin(), !allowAir)) return lock.origin();
         return findNearby(player, lock.origin(), 8, allowAir);
     }
@@ -208,7 +207,19 @@ public final class PlayerLockService {
      * </ul>
      */
     private static Vec3 bodyAnchor(ServerPlayer player, Entity controlled) {
-        Vec3 base = controlled.position();
+        Vec3 raw = controlled.position();
+        double stableY = raw.y;
+        // Anchor the player to the collision ground when the Pokemon is grounded. Using the
+        // animated entity Y directly makes gravity/step correction move the player up and down.
+        if (controlled.level() instanceof ServerLevel level
+                && !controlled.isNoGravity()) {
+            double ground = com.pkmoba.combat.CharizardCombat.groundBelow(level,
+                    (com.cobblemon.mod.common.entity.pokemon.PokemonEntity) controlled, raw);
+            if (Double.isFinite(ground) && Math.abs(raw.y - ground) <= 1.1) {
+                stableY = ground + 0.02;
+            }
+        }
+        Vec3 base = new Vec3(raw.x, stableY, raw.z);
         float yaw = controlled.getYRot() * ((float) Math.PI / 180.0F);
         // 朝向向量（MC：yaw=0 指向 +Z）与它的右手向量。
         double fx = -Math.sin(yaw), fz = Math.cos(yaw);

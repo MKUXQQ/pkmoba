@@ -32,7 +32,7 @@ import java.util.List;
  * <p>为什么放在世界渲染里而不是 HUD：血条要长在目标头顶、伤害数字要长在命中点，
  * 两者都必须跟着世界坐标和相机走；而且 HUD 层没有相机矩阵，做世界→屏幕投影反而要自己算一遍。
  * 这里直接用 {@code WorldRenderEvents.AFTER_TRANSLUCENT} 的位姿矩阵，跟
- * {@link AttackRangeRenderer} 同一套坐标约定（先 {@code translate(-camera)} 再做相机相对坐标）。
+ * {@link SkillRangeRenderer} 同一套坐标约定（先 {@code translate(-camera)} 再做相机相对坐标）。
  *
  * <p><b>伤害数字的真实性</b>：数字只来自服务端 {@code CombatDamage.apply} 在
  * {@code hurt()} 真正被接受之后发的 {@code pkmoba:hit/...} 包，包内 {@code /d<数值>} 段就是

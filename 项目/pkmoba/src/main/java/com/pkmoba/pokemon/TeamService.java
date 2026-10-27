@@ -179,12 +179,19 @@ public final class TeamService {
      * @return 成功返回 true
      */
     public static boolean choose(ServerPlayer player, String rawSpecies) {
+        if (!com.pkmoba.duel.DuelManager.canUseSwitchZone(player, null)) return false;
         ResourceLocation id = SpeciesRegistry.parse(rawSpecies);
         if (id == null) {
             player.sendSystemMessage(Component.literal("无法识别的宝可梦：" + rawSpecies));
             return false;
         }
         MinecraftServer server = player.server;
+        PokemonEntity current = CharizardManager.getControlled(player);
+        if (com.pkmoba.duel.DuelManager.inMatch(player) && current != null && current.isAlive()
+                && !id.equals(current.getPokemon().getSpecies().getResourceIdentifier())) {
+            player.displayClientMessage(Component.literal("对战中请先将当前宝可梦移入换宠区，按 X 收回后再选择。"), true);
+            return false;
+        }
         PlayerProfile profile = profile(server, player.getUUID());
         String species = id.toString();
 
@@ -232,6 +239,7 @@ public final class TeamService {
         }
         profile.team.add(species);
         profile.fainted.remove(species);
+        profile.health.remove(species);
         ProfileStore.get(player.server).setDirty();
         player.sendSystemMessage(Component.literal("已添加宝可梦：" + SpeciesRegistry.displayName(id)
                 + "（队伍共 " + profile.team.size() + " 只）"));
@@ -268,11 +276,62 @@ public final class TeamService {
         return spawnSpecies(player, next, pos);
     }
 
+    /** 收回、离线、入场清场共用：保存实体的真实血量，避免重新召唤免费治疗。 */
+    public static void rememberHealth(ServerPlayer player, PokemonEntity entity) {
+        if (player == null || entity == null) return;
+        String species = speciesOf(entity);
+        PlayerProfile profile = profile(player.server, player.getUUID());
+        if (!profile.team.contains(species)) return;
+        float hp = Math.max(0.0F, entity.getHealth());
+        if (!Float.isFinite(hp)) return;
+        profile.health.put(species, hp);
+        if (hp <= 0) profile.markFainted(species);
+        ProfileStore.get(player.server).setDirty();
+    }
+
+    private static void restoreHealth(ServerPlayer player, PokemonEntity entity) {
+        PlayerProfile profile = profile(player.server, player.getUUID());
+        float designMax = com.pkmoba.combat.CharizardCombat.maxHpFor(entity);
+        Float saved = profile.health.get(speciesOf(entity));
+        float health = saved != null && Float.isFinite(saved) ? Math.max(0, Math.min(saved, designMax)) : designMax;
+        com.pkmoba.combat.PokemonHp.setHealth(entity, designMax, health);
+    }
+
+    /** Reset all owned roster members for a fresh match, including any deployed entities. */
+    public static void healPartyForBattle(ServerPlayer player) {
+        if (player == null) return;
+        PlayerProfile profile = profile(player.server, player.getUUID());
+        for (String species : profile.team) {
+            profile.fainted.remove(species);
+            profile.health.put(species, com.pkmoba.combat.CharizardCombat.maxHpFor(species));
+        }
+        for (PokemonEntity entity : CharizardManager.getActiveList(player)) {
+            float max = com.pkmoba.combat.CharizardCombat.maxHpFor(entity);
+            com.pkmoba.combat.PokemonHp.healToFull(entity, max);
+        }
+        ProfileStore.get(player.server).setDirty();
+        sendTeamState(player);
+    }
+
+
     /** 直接生成指定物种并登记为受控实体（内部用，调用方自行保证合法）。 */
     @Nullable
     public static PokemonEntity spawnSpecies(ServerPlayer player, String species, Vec3 pos) {
+        if (!com.pkmoba.duel.DuelManager.canUseSwitchZone(player, pos)) return null;
         ResourceLocation id = ResourceLocation.tryParse(species);
         if (id == null || !SpeciesRegistry.contains(id)) return null;
+        PlayerProfile savedProfile = profile(player.server, player.getUUID());
+        CharizardManager.getActiveList(player); // Persist any death before checking summon eligibility.
+        Float storedHp = savedProfile.health.get(id.toString());
+        if (storedHp != null && storedHp <= 0) savedProfile.markFainted(id.toString());
+        if (!savedProfile.team.contains(id.toString()) || savedProfile.fainted.contains(id.toString())) {
+            player.displayClientMessage(Component.literal("这只宝可梦已倒下，请先治疗或使用 /mo revive。"), true);
+            return null;
+        }
+        if (com.pkmoba.duel.DuelManager.inMatch(player) && CharizardManager.getControlled(player) != null) {
+            player.displayClientMessage(Component.literal("对战中只能有一只宝可梦在场，请先到换宠区收回。"), true);
+            return null;
+        }
         // 0.38：不再"先清掉旧实体"。多只可以同时在场，新召唤的这只追加登记并设为选中，
         // 之前那只继续留在场上按自己的状态行动（C 键可以再收回来）。
         ServerLevel level = player.serverLevel();
@@ -282,6 +341,7 @@ public final class TeamService {
             sendTeamState(player);
             return null;
         }
+        restoreHealth(player, entity);
         com.pkmoba.combat.RecallBeam.sendOut(level, entity);
         CharizardManager.registerControlled(player.getUUID(), entity);
         CharizardManager.broadcastSync(player.server);
@@ -313,6 +373,7 @@ public final class TeamService {
             }
         }
         if (field.size() > 1) {
+            if (!com.pkmoba.duel.DuelManager.canRecallForSwitch(player, CharizardManager.getControlled(player))) return null;
             PokemonEntity next = CharizardManager.selectNext(player);
             if (next != null) {
                 syncActiveSpeciesTo(player, next);
@@ -322,7 +383,10 @@ public final class TeamService {
             }
             return next;
         }
-        if (recall(player)) return null;
+        if (!field.isEmpty()) {
+            recall(player);
+            return null;
+        }
         PlayerProfile profile = profile(player.server, player.getUUID());
         if (profile.team.isEmpty()) {
             player.sendSystemMessage(Component.literal(
@@ -482,6 +546,7 @@ public final class TeamService {
         CharizardManager.discardAllControlled(player);
         profile.team.clear();
         profile.fainted.clear();
+        profile.health.clear();
         profile.activeIndex = 0;
         ProfileStore.get(player.server).setDirty();
         CharizardManager.broadcastSync(player.server);
@@ -498,13 +563,19 @@ public final class TeamService {
     public static boolean recall(ServerPlayer player) {
         PokemonEntity current = CharizardManager.getControlled(player);
         if (current == null) return false;
+        if (!com.pkmoba.duel.DuelManager.canRecallForSwitch(player, current)) return false;
+        rememberHealth(player, current);
         String species = speciesOf(current);
         boolean alive = current.isAlive();
         if (alive) lockRecalled(player, species);
         PlayerProfile profile = profile(player.server, player.getUUID());
         if (!alive) profile.markFainted(species);
         // 0.38：只收回"选中的这一只"；同玩家场上其它宝可梦继续保留、各自行动。
-        CharizardManager.discardControlled(player);
+        com.pkmoba.combat.CharizardCombat.reset(current);
+        com.pkmoba.move.MoveOrderService.cancelPending(current);
+        CharizardManager.unregisterControlled(player, current);
+        com.pkmoba.combat.RecallBeam.recall(player.serverLevel(), current, player.getUUID());
+        CharizardManager.broadcastSync(player.server);
         // 选中已经自动落到剩下的某一只上：把队伍的"上场"同步过去，别让 HUD 还显示刚收回的那只。
         syncActiveSpeciesTo(player, CharizardManager.getControlled(player));
         ProfileStore.get(player.server).setDirty();
@@ -587,6 +658,10 @@ public final class TeamService {
             existing = null;
         }
         if (existing != null) {
+            if (com.pkmoba.duel.DuelManager.inMatch(player)) {
+                player.displayClientMessage(Component.literal("对战中不能重新放置场上宝可梦，请先到换宠区收回。"), true);
+                return null;
+            }
             // 这个物种已经在场上：挪过去而不是再生成一只，并设为当前操控的那只。
             existing.getNavigation().stop();
             existing.setDeltaMovement(Vec3.ZERO);
@@ -638,6 +713,10 @@ public final class TeamService {
             existing = null;
         }
         if (existing != null) {
+            if (com.pkmoba.duel.DuelManager.inMatch(player)) {
+                player.displayClientMessage(Component.literal("对战中不能重新放置场上宝可梦，请先到换宠区收回。"), true);
+                return null;
+            }
             // 这个物种已经在场上：挪过去而不是再生成一只，并设为当前操控的那只。
             existing.getNavigation().stop();
             existing.setDeltaMovement(Vec3.ZERO);
@@ -674,13 +753,31 @@ public final class TeamService {
         return null;
     }
 
-    /** 复活：清空阵亡记录，不清队伍顺序。 */
+    /** Revive the entire party and fully heal both stored and currently deployed Pokémon. */
     public static void revive(ServerPlayer player) {
         PlayerProfile profile = profile(player.server, player.getUUID());
         profile.reviveAll();
+        for (String species : profile.team) {
+            profile.fainted.remove(species);
+            profile.health.put(species, com.pkmoba.combat.CharizardCombat.maxHpFor(species));
+        }
+        java.util.Set<PokemonEntity> deployed = new java.util.LinkedHashSet<>(CharizardManager.getActiveList(player));
+        PokemonEntity selected = CharizardManager.getControlled(player);
+        if (selected != null) deployed.add(selected);
+        for (PokemonEntity entity : deployed) {
+            if (entity.isRemoved()) continue;
+            float maximum = com.pkmoba.combat.CharizardCombat.maxHpFor(entity);
+            com.pkmoba.combat.PokemonHp.healToFull(entity, maximum);
+            profile.health.put(speciesOf(entity), maximum);
+        }
+        // The official Cobblemon party is separate from the PKMOBA roster.
+        var party = com.cobblemon.mod.common.Cobblemon.INSTANCE.getStorage().getParty(player);
+        party.heal();
+        party.sendTo(player);
         ProfileStore.get(player.server).setDirty();
-        player.sendSystemMessage(Component.literal("你的宝可梦已全部复活。"));
         sendTeamState(player);
+        com.pkmoba.combat.CharizardCombat.syncPlayer(player);
+        player.sendSystemMessage(Component.literal("你的宝可梦已全部复活并恢复全部血量。"));
     }
 
     public static boolean isActive(ServerPlayer player, PokemonEntity entity) {
@@ -692,7 +789,7 @@ public final class TeamService {
     public static void markDead(ServerPlayer player, PokemonEntity entity) {
         PlayerProfile profile = profile(player.server, player.getUUID());
         String deadSpecies = speciesOf(entity);
-        if (profile.fainted.contains(deadSpecies) && !CharizardManager.getActiveList(player).contains(entity)) {
+        if (profile.fainted.contains(deadSpecies) && entity.isRemoved()) {
             // 同一只已经处理过（对局流程与 syncAll 兜底都会调到这里）：直接返回，别重复刷消息/发包。
             return;
         }
@@ -700,7 +797,7 @@ public final class TeamService {
         // 0.38：只摘掉倒下的这一只；如果它正好是选中的那只，选中会自动落到剩下的某一只上。
         CharizardManager.unregisterControlled(player, entity);
         // 原版宝可梦的召回效果：红光 + 红环 + 召回音效，播完再把实体移除（用户 m04110）。
-        com.pkmoba.combat.RecallBeam.recall((net.minecraft.server.level.ServerLevel) entity.level(), entity);
+        com.pkmoba.combat.RecallBeam.recall((net.minecraft.server.level.ServerLevel) entity.level(), entity, player.getUUID());
         syncActiveSpeciesTo(player, CharizardManager.getControlled(player));
         // 0.39.4：场上已经没有活着的宝可梦、但队伍里还有能上的，就把"准备上场"的那只挪过去。
         // 以前这里停在倒下的那一只上：HUD 永远显示 0 血，按 C 也像是"切不动"。

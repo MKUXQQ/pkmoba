@@ -115,7 +115,7 @@ public final class StormEffects {
                 it.remove();
                 continue;
             }
-            spawnParticles(mc.level, caster, storm, (float) age);
+            if (age % 4L == 0L) spawnParticles(mc.level, caster, storm, (float) age);
         }
     }
 
@@ -126,14 +126,14 @@ public final class StormEffects {
         if (t < CHARGE_TICKS) {
             // 蓄力：脚下水面旋转 + 四道水纹外扩
             float progress = t / (float) CHARGE_TICKS;
-            for (int i = 0; i < 6; i++) {
+            for (int i = 0; i < 3; i++) {
                 double a = t * 0.35 + i * Math.PI / 3.0;
                 double d = 0.5 + 1.9 * progress;
                 level.addParticle(ParticleTypes.SPLASH,
                         c.x + Math.cos(a) * d, c.y + 0.1, c.z + Math.sin(a) * d,
                         -Math.sin(a) * 0.05, 0.05, Math.cos(a) * 0.05);
             }
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 2; i++) {
                 double a = t * 0.5 + i * Math.PI / 2.0;
                 double d = 1.2 + radius * progress;
                 level.addParticle(ParticleTypes.BUBBLE_COLUMN_UP,
@@ -143,7 +143,7 @@ public final class StormEffects {
         }
         if (t > COLLAPSE_START + COLLAPSE_TICKS) {
             // 恢复：雾气散开
-            for (int i = 0; i < 8; i++) {
+            for (int i = 0; i < 4; i++) {
                 double a = rnd.nextDouble() * Math.PI * 2.0;
                 double d = radius * (0.3 + 0.7 * rnd.nextDouble());
                 level.addParticle(ParticleTypes.CLOUD,
@@ -155,7 +155,7 @@ public final class StormEffects {
         if (t >= COLLAPSE_START) {
             // 收束：向心汇聚 + 白浪
             float p = (t - COLLAPSE_START) / (float) COLLAPSE_TICKS;
-            for (int i = 0; i < 18; i++) {
+            for (int i = 0; i < 8; i++) {
                 double a = rnd.nextDouble() * Math.PI * 2.0;
                 double d = radius * (1.0 - p * 0.85) * (0.6 + 0.5 * rnd.nextDouble());
                 level.addParticle(ParticleTypes.SPLASH,
@@ -163,7 +163,7 @@ public final class StormEffects {
                         c.z + Math.sin(a) * d,
                         -Math.cos(a) * 0.18, 0.12, -Math.sin(a) * 0.18);
             }
-            for (int i = 0; i < 10; i++) {
+            for (int i = 0; i < 5; i++) {
                 double a = rnd.nextDouble() * Math.PI * 2.0;
                 double d = radius * (0.9 - p * 0.2);
                 level.addParticle(ParticleTypes.CLOUD,
@@ -179,7 +179,7 @@ public final class StormEffects {
                     c.x + Math.cos(a) * d, c.y + 0.15, c.z + Math.sin(a) * d,
                     0, 0.22, 0);
         }
-        for (int i = 0; i < 14; i++) {
+        for (int i = 0; i < 6; i++) {
             double a = rnd.nextDouble() * Math.PI * 2.0;
             double d = radius * (0.55 + 0.45 * rnd.nextDouble());
             level.addParticle(ParticleTypes.BUBBLE_COLUMN_UP,
@@ -189,16 +189,16 @@ public final class StormEffects {
         if (pulse >= 0 && pulse < BLADES) {
             float p = ((t - STORM_START) - pulse * PULSE_INTERVAL) / (float) PULSE_INTERVAL;
             double d = radius * (0.25 + 0.75 * p);
-            for (int i = 0; i < 16; i++) {
-                double a = Math.PI * 2.0 * i / 16.0;
+            for (int i = 0; i < 8; i++) {
+                double a = Math.PI * 2.0 * i / 8.0;
                 level.addParticle(ParticleTypes.SPLASH,
                         c.x + Math.cos(a) * d, c.y + 0.12, c.z + Math.sin(a) * d,
                         Math.cos(a) * 0.16, 0.05, Math.sin(a) * 0.16);
             }
         }
         if (t >= CHARGE_TICKS && t < STORM_START) {
-            // 起浪：水柱从 0 升到最高，水花特别密
-            for (int i = 0; i < 24; i++) {
+            // 起浪：水柱网格承担主体体积，少量水花强调破水瞬间。
+            for (int i = 0; i < 8; i++) {
                 double a = rnd.nextDouble() * Math.PI * 2.0;
                 double d = radius * 0.78 * (0.6 + 0.4 * rnd.nextDouble());
                 level.addParticle(ParticleTypes.SPLASH,

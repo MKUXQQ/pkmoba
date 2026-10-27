@@ -29,6 +29,8 @@ BORDER_IN = (243, 226, 190)
 SPECIES = {
     "charizard": 6,
     "blastoise": 9,
+    "venusaur": 3,
+    "pikachu": 25,
 }
 
 ART = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/{}.png"
@@ -44,13 +46,18 @@ def download(dex: int) -> bytes | None:
         return None
 
 
-def crop_head(img: Image.Image) -> Image.Image:
-    """从全身图里裁出头部区域，缩放成正方形。"""
+def crop_head(img: Image.Image, name: str = "") -> Image.Image:
+    """裁成头像；妙蛙花保留完整构图，避免顶部花朵挤掉脸部。"""
     img = img.convert("RGBA")
     bbox = img.getbbox()
     if bbox:
         img = img.crop(bbox)
     w, h = img.size
+    if name in {"venusaur", "pikachu"}:
+        side = max(w, h)
+        square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        square.paste(img, ((side - w) // 2, (side - h) // 2))
+        return square.resize((SIZE, SIZE), Image.LANCZOS)
     # 顶部 62% 通常是头/上半身，再取其中居中的正方形
     head_h = max(1, int(h * 0.62))
     head = img.crop((0, 0, w, head_h))
@@ -94,11 +101,15 @@ def main() -> None:
         if data:
             raw = Image.open(io.BytesIO(data))
             raw.save(RAW / f"{dex}.png")
-            head = crop_head(raw)
+            head = crop_head(raw, name)
             head = head.filter(ImageFilter.SMOOTH)
             sources.append((name, ART.format(dex)))
             print(f"{name}: 使用官方绘图 {ART.format(dex)}")
         else:
+            if (OUT / f"{name}.png").exists():
+                print(f"{name}: 下载失败，保留现有头像")
+                sources.append((name, "保留现有头像"))
+                continue
             head = fallback(name)
             sources.append((name, "本地生成的兜底像素头像"))
             print(f"{name}: 使用兜底头像")

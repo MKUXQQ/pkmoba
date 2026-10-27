@@ -5,10 +5,15 @@
   "minVersion": "0.8",
   "refmap": "pkmoba-refmap.json",
   "mixins": [
-    "PokemonMaxHealthMixin"
+    "PokemonMaxHealthMixin",
+    "PokemonDesignHealthCurveMixin",
+    "ControlledPokemonAttackBlockMixin",
+    "ControlledPokemonDamageGateMixin",
+    "PokemonSkillInvulnerabilityMixin"
   ],
   "client": [
     "CameraMixin",
+    "GodViewSoundListenerMixin",
     "MouseHandlerMixin",
     "KeyboardInputMixin",
     "KeyMappingMixin",
@@ -16,7 +21,9 @@
     "StarterOverlayMixin",
     "PlayerRendererMixin",
     "BlastoiseSpinPoseMixin",
-    "PokemonNameHiderMixin"
+    "PokemonNameHiderMixin",
+    "PokemonRecallRenderMixin",
+    "PokemonSendOutParticleMixin"
   ],
   "injectors": {
     "defaultRequire": 0

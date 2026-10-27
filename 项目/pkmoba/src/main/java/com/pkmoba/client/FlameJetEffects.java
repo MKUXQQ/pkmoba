@@ -119,7 +119,46 @@ public final class FlameJetEffects {
         initialized = true;
         ClientTickEvents.END_CLIENT_TICK.register(FlameJetEffects::tick);
         WorldRenderEvents.START.register(FlameJetEffects::smoothAimPerFrame);
+        WorldRenderEvents.AFTER_TRANSLUCENT.register(FlameJetEffects::renderChargeHalo);
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> reset());
+    }
+
+    private static void renderChargeHalo(WorldRenderContext ctx) {
+        Minecraft mc = Minecraft.getInstance();
+        PokemonEntity entity = controlled(mc);
+        if (entity == null || ctx.matrixStack() == null || ctx.consumers() == null) return;
+        boolean ultimate = ClientState.getChannel() == GLYPH_CHANNEL;
+        if (!ultimate && (ClientState.getChannel() != 1 || firing)) return;
+        double progress = Math.max(.08, Math.min(1, ultimate ? ClientState.getCharge()
+                : channelTicks / (double) WINDUP_TICKS));
+        var texture = net.minecraft.resources.ResourceLocation.fromNamespaceAndPath("pkmoba",
+                "textures/effect/fire_vortex_veil.png");
+        var vertices = ctx.consumers().getBuffer(net.minecraft.client.renderer.RenderType.entityTranslucentEmissive(texture));
+        var matrix = ctx.matrixStack().last().pose();
+        Vec3 center = mouthEgress().add(aimDir.scale(.16)).subtract(ctx.camera().getPosition());
+        Vec3 axis = aimDir.lengthSqr() < 1e-5 ? new Vec3(0, 0, 1) : aimDir;
+        Vec3 right = new Vec3(0, 1, 0).cross(axis).normalize(), up = axis.cross(right).normalize();
+        double time = entity.tickCount + ctx.tickCounter().getGameTimeDeltaPartialTick(false);
+        for (int layer = 0; layer < 2; layer++) {
+            double radius = (.20 + progress * (ultimate ? .55 : .27)) * (1 + layer * .4);
+            double width = .025 + progress * .025;
+            for (int i = 0; i < 32; i++) {
+                double a = i * Math.PI * 2 / 32 + time * .06 * (layer == 0 ? 1 : -1);
+                double b = a + Math.PI * 2 / 32;
+                Vec3 ra = right.scale(Math.cos(a)).add(up.scale(Math.sin(a)));
+                Vec3 rb = right.scale(Math.cos(b)).add(up.scale(Math.sin(b)));
+                Vec3[] corners = {center.add(ra.scale(radius - width)), center.add(rb.scale(radius - width)),
+                        center.add(rb.scale(radius + width)), center.add(ra.scale(radius + width))};
+                for (int k = 0; k < 4; k++) {
+                    Vec3 p = corners[k];
+                    vertices.addVertex(matrix, (float)p.x, (float)p.y, (float)p.z)
+                            .setColor(255, layer == 0 ? 218 : 137, 67, (int)(185 * progress))
+                            .setUv(k == 0 || k == 3 ? 0 : 1, k < 2 ? .2F : .8F)
+                            .setOverlay(net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY)
+                            .setLight(net.minecraft.client.renderer.LightTexture.FULL_BRIGHT).setNormal(0, 1, 0);
+                }
+            }
+        }
     }
 
     private static void reset() {
@@ -138,7 +177,9 @@ public final class FlameJetEffects {
         if (mc.level == null) return null;
         int id = ClientState.getCharizardId();
         if (id < 0) return null;
-        return mc.level.getEntity(id) instanceof PokemonEntity pokemon ? pokemon : null;
+        return mc.level.getEntity(id) instanceof PokemonEntity pokemon
+                && "cobblemon:charizard".equals(pokemon.getPokemon().getSpecies().getResourceIdentifier().toString())
+                ? pokemon : null;
     }
 
     /**
@@ -199,7 +240,7 @@ public final class FlameJetEffects {
 
         // ---- R「大字爆」蓄力（channel 4）：水箭龟 Q 加农水炮也用 4，按物种排他 ----
         boolean glyphCharging = !channelOne && ClientState.getChannel() == GLYPH_CHANNEL
-                && !Skill.isBlastoise(entity);
+                && "cobblemon:charizard".equals(entity.getPokemon().getSpecies().getResourceIdentifier().toString());
         if (glyphCharging) {
             glyphTicks++;
             spawnGlyphCharge(mc, entity);
@@ -392,12 +433,25 @@ public final class FlameJetEffects {
         var level = mc.level;
         if (level == null || !(level.getEntity(p.entityId()) instanceof PokemonEntity entity)) return;
         // 引导已经结束：任何迟到的 payload 都不再生成粒子，只允许 tick() 里那 3 tick 余焰。
-        if (ClientState.getChannel() != 1) return;
+        boolean local = p.entityId() == ClientState.getCharizardId();
+        if (local && ClientState.getChannel() != 1) return;
         Vec3 serverOrigin = new Vec3(p.x(), p.y(), p.z());
         Vec3 serverDir = new Vec3(p.dx(), p.dy(), p.dz());
         if (!finite(serverOrigin) || !finite(serverDir) || !Double.isFinite(p.length())
                 || serverDir.lengthSqr() < 1.0E-8) return;
 
+        if (!local) {
+            Vec3 dir = serverDir.normalize();
+            Vec3 origin = resolveOrigin(entity, serverOrigin, dir);
+            double length = Math.max(.35, Math.min(FlameJetGeometry.RANGE, p.length()));
+            Vec3 right = new Vec3(0, 1, 0).cross(dir).normalize();
+            for (int i = 0; i < 42; i++) {
+                double distance = length * level.random.nextDouble();
+                Vec3 point = origin.add(dir.scale(distance)).add(right.scale((level.random.nextDouble() - .5) * (.3 + distance * .12)));
+                if (clear(mc, point)) puff(mc, point, dir.scale(.07), .8F + level.random.nextFloat() * .5F, 5 + level.random.nextInt(4));
+            }
+            return;
+        }
         boolean firstFrame = !firing;
         firing = true;
         sincePayload = 0;

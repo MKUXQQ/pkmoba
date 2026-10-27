@@ -6,7 +6,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * 换宝可梦的轻量客户端表现：收回/登场的粒子、头像淡入，以及"下一只"预览的高亮脉冲。
+ * 换宝可梦的轻量客户端表现：收回粒子、头像淡入，以及"下一只"预览的高亮脉冲。
  *
  * <p>这里<b>只做表现</b>：不锁输入、不阻塞主线程、不参与任何胜负或存在性判定。
  * 服务端的实体清理与队伍状态仍由 {@link com.pkmoba.pokemon.TeamService} 负责，
@@ -69,7 +69,7 @@ public final class SwitchFx {
     }
 
     /**
-     * 每客户端 tick 调用：观察受控实体 id 的变化，在"收回"与"登场"两侧各撒一圈轻量粒子。
+     * 每客户端 tick 调用：观察受控实体 id 的变化，更新登场头像并保留收回粒子。
      *
      * <p>用 id 变化当信号即可，不需要服务端额外发包。
      */
@@ -84,7 +84,6 @@ public final class SwitchFx {
             Entity entity = mc.level.getEntity(id);
             if (entity != null) {
                 if (id != lastEntityId) {
-                    summonBurst(mc, entity);
                     entranceAt = System.currentTimeMillis();
                 }
                 lastEntityPos = entity.position().add(0, entity.getBbHeight() * 0.5, 0);
@@ -96,21 +95,6 @@ public final class SwitchFx {
         lastEntityId = id;
     }
 
-    private static void summonBurst(Minecraft mc, Entity entity) {
-        Vec3 base = entity.position().add(0, entity.getBbHeight() * 0.5, 0);
-        boolean water = isWater(entity);
-        for (int i = 0; i < 14; i++) {
-            double angle = i * (Math.PI * 2 / 14);
-            double radius = 0.55;
-            double x = base.x + Math.cos(angle) * radius;
-            double z = base.z + Math.sin(angle) * radius;
-            double y = base.y - entity.getBbHeight() * 0.3 + (i % 3) * 0.15;
-            mc.level.addParticle(water ? ParticleTypes.SPLASH : ParticleTypes.FLAME, x, y, z,
-                    -Math.cos(angle) * 0.08, 0.06, -Math.sin(angle) * 0.08);
-        }
-        mc.level.addParticle(ParticleTypes.CLOUD, base.x, base.y, base.z, 0, 0.04, 0);
-    }
-
     private static void recallBurst(Minecraft mc, Vec3 base) {
         for (int i = 0; i < 12; i++) {
             double angle = i * (Math.PI * 2 / 12);
@@ -120,14 +104,6 @@ public final class SwitchFx {
             mc.level.addParticle(ParticleTypes.CLOUD, x, base.y, z,
                     -Math.cos(angle) * 0.12, 0.05, -Math.sin(angle) * 0.12);
         }
-    }
-
-    private static boolean isWater(Entity entity) {
-        if (!(entity instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon)) {
-            return false;
-        }
-        String path = pokemon.getPokemon().getSpecies().getResourceIdentifier().getPath();
-        return "blastoise".equals(path);
     }
 
     /** 断线/退出对局时清掉临时状态，避免残留高亮。 */

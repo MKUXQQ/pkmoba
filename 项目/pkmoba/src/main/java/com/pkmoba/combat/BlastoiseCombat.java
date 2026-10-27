@@ -79,7 +79,7 @@ public final class BlastoiseCombat {
     /** 起手蓄力（前摇）tick 数，期间定身可转向、不放伤害。 */
     private static final int CANNON_CHARGE_TICKS = 14;
     /** 每一跳的伤害（5 跳 × 5 = 25）。 */
-    private static final float CANNON_TICK_DAMAGE = 5.0F;
+    private static final float CANNON_TICK_DAMAGE = 7.0F;
     /** 整段引导时长（蓄力 + 输出 + 收尾）。 */
     private static final int CANNON_TICKS = 54;
     /** 两跳之间的间隔（tick 14/22/30/38/46 各结算一次）。 */
@@ -107,7 +107,7 @@ public final class BlastoiseCombat {
     /** 伤害跳间隔：每 10 tick 1 点，共 8 点。 */
     private static final int SPIN_DAMAGE_INTERVAL = 10;
     /** 每跳伤害（每目标 5 跳 × 2 = 10）。 */
-    private static final float SPIN_TICK_DAMAGE = 2.0F;
+    private static final float SPIN_TICK_DAMAGE = 4.0F;
     /** 旋转期间受到的伤害减免：只减伤，不免控、不无敌、不位移。 */
     public static final float SPIN_DAMAGE_REDUCTION = 0.20F;
     /** 旋转判定体积（水平 1.3 / 垂直 0.6 / 水平 1.3）。 */
@@ -172,8 +172,9 @@ public final class BlastoiseCombat {
     private static final float SURF_SPLASH_HALF_ANGLE_DEG = 60.0F;
 
     // ============================================================ R 喷水
-    /** 前摇（定身锁向、炮口聚水 + 地面扇形 telegraph）。 */
-    private static final int SPOUT_WINDUP_TICKS = 12;
+    /** R 的模型锁定时长：蓄力、破水和短暂收势。 */
+    private static final int SPOUT_WINDUP_TICKS = BlastoiseCombat.STORM_CHARGE_TICKS
+            + BlastoiseCombat.STORM_RISE_TICKS + 6;
     /** 降雨持续时间（前摇结束后的独立结算段）。 */
     private static final int SPOUT_DURATION_TICKS = 24;
     /** 阶段 2/6：地下水流传导（0.2s），只出水纹、不结算伤害。 */
@@ -234,8 +235,8 @@ public final class BlastoiseCombat {
     private static final int STORM_TOTAL_TICKS = STORM_CHARGE_TICKS + STORM_RISE_TICKS
             + STORM_BODY_TICKS + STORM_COLLAPSE_TICKS + STORM_RECOVER_TICKS;
     private static final int STORM_PULSE_INTERVAL = 8;
-    private static final float STORM_PULSE_DAMAGE = 4.0F;
-    private static final float STORM_BURST_DAMAGE = 10.0F;
+    private static final float STORM_PULSE_DAMAGE = 5.0F;
+    private static final float STORM_BURST_DAMAGE = 18.0F;
     private static final double STORM_KNOCKBACK = 0.45;
 
     // ============================================================ 资源 / 冷却
@@ -274,12 +275,46 @@ public final class BlastoiseCombat {
     // ================================================================ 对外入口
 
     public static void cast(ServerPlayer player, PokemonEntity entity, Skill skill, Vec3 aim) {
-        if (entity == null || !entity.isAlive() || entity.isRemoved()) return;
-        if (player == null || !player.isAlive() || player.isSpectator() || !ServerGodMode.isActive(player)
-                || !player.getUUID().equals(CharizardManager.getControlledOwner(entity))
-                || !player.level().dimension().equals(entity.level().dimension())) return;
-        if (!(entity.level() instanceof ServerLevel level)) return;
-        state(entity).castCore(entity, level, skill, aim);
+        if (!authorized(player, entity)) return;
+        castCore(entity, skill, aim);
+    }
+
+    public static boolean canCastForBot(PokemonEntity entity, Skill skill) {
+        if (entity == null || skill == null || !entity.isAlive() || entity.isRemoved()
+                || !com.pkmoba.duel.BotDuelService.isBot(entity)) return false;
+        // Spawn/reset intentionally drops cached states; eligibility must initialize the same
+        // state castCore/tick use instead of permanently rejecting a fresh bot.
+        State state = state(entity);
+        int slot = skill.ordinal();
+        return (state.channel == 0 || state.channel == CHANNEL_SPIN && skill != Skill.W)
+                && state.cooldowns[slot] <= 0 && state.points >= Skill.cost(entity, slot);
+    }
+
+    public static void castForBot(PokemonEntity entity, Skill skill, Vec3 aim) {
+        if (entity == null || aim == null || !com.pkmoba.duel.BotDuelService.isBot(entity)) return;
+        ServerPlayer actor = com.pkmoba.duel.BotDuelService.actor(CharizardManager.getControlledOwner(entity));
+        if (!authorized(actor, entity)) return;
+        castCore(entity, skill, aim);
+    }
+
+    private static boolean authorizedActor(ServerPlayer player, PokemonEntity entity) {
+        if (player == null || entity == null
+                || !player.getUUID().equals(CharizardManager.getControlledOwner(entity))) return false;
+        if (com.pkmoba.duel.BotDuelService.isBot(entity)) {
+            return player == com.pkmoba.duel.BotDuelService.actor(player.getUUID());
+        }
+        return ServerGodMode.isActive(player);
+    }
+
+    private static boolean authorized(ServerPlayer player, PokemonEntity entity) {
+        return entity != null && entity.isAlive() && !entity.isRemoved() && player != null
+                && player.isAlive() && !player.isSpectator() && authorizedActor(player, entity)
+                && player.getUUID().equals(CharizardManager.getControlledOwner(entity))
+                && player.level().dimension().equals(entity.level().dimension());
+    }
+
+    private static void castCore(PokemonEntity entity, Skill skill, Vec3 aim) {
+        if (entity.level() instanceof ServerLevel level) state(entity).castCore(entity, level, skill, aim);
     }
 
     /** 鼠标瞄准点更新：只有 Q 的引导期会跟随（E/R 起手锁向，W 不需要方向）。 */
@@ -302,7 +337,8 @@ public final class BlastoiseCombat {
     }
 
     public static void syncHud(ServerPlayer player, PokemonEntity entity) {
-        if (entity != null && ServerPlayNetworking.canSend(player, SkillStatePayload.TYPE)) {
+        if (player != null && player.connection != null && entity != null
+                && ServerPlayNetworking.canSend(player, SkillStatePayload.TYPE)) {
             state(entity).syncHud(player);
         }
     }
@@ -310,6 +346,21 @@ public final class BlastoiseCombat {
     public static void reset(PokemonEntity entity) {
         State state = entity == null ? null : STATES.remove(entity.getUUID());
         if (state != null) state.reset();
+    }
+
+    public static int cooldown(PokemonEntity entity, int slot) {
+        State state = entity == null ? null : STATES.get(entity.getUUID());
+        return state == null || slot < 0 || slot >= state.cooldowns.length ? 0 : state.cooldowns[slot];
+    }
+
+    public static int channel(PokemonEntity entity) {
+        State state = entity == null ? null : STATES.get(entity.getUUID());
+        return state == null ? 0 : state.channel;
+    }
+
+    public static void clearTransient(PokemonEntity entity) {
+        State state = entity == null ? null : STATES.get(entity.getUUID());
+        if (state != null) state.clearTransient();
     }
 
     public static void resetAll() {
@@ -400,6 +451,13 @@ public final class BlastoiseCombat {
         }
 
         private void reset() {
+            clearTransient();
+            java.util.Arrays.fill(cooldowns, 0);
+            points = MAX_POINTS;
+            age = 0;
+        }
+
+        private void clearTransient() {
             if (entity.level() instanceof ServerLevel level) {
                 visual(level, entity, 0, entity.position(), Vec3.ZERO, 0, 0);
                 // durationTicks = 0：通知客户端立即结束这轮降雨（死亡/换人/对局结束）。
@@ -408,7 +466,7 @@ public final class BlastoiseCombat {
                             spout.origin.x, spout.origin.y, spout.origin.z, spout.yaw(),
                             SPOUT_HALF_ANGLE_DEG, (float) SPOUT_LENGTH, 0, spout.seed));
                 }
-                broadcastStorm(level, entity, 0);
+                broadcastStorm(level, entity, 0, 0L);
                 if (channel != 0) {
                     entity.getNavigation().stop();
                     entity.setDeltaMovement(0, entity.getDeltaMovement().y, 0);
@@ -418,9 +476,6 @@ public final class BlastoiseCombat {
             storms.clear();
             surfHits.clear();
             surfBurstHits.clear();
-            java.util.Arrays.fill(cooldowns, 0);
-            points = MAX_POINTS;
-            age = 0;
             channel = 0;
             skillTicks = 0;
             aimPoint = null;
@@ -458,7 +513,7 @@ public final class BlastoiseCombat {
 
         private void updateAim(PokemonEntity entity, Vec3 aim) {
             // Q 引导要能微调炮口方向；W 旋转位移时也允许用鼠标控制转向。
-            if (channel != CHANNEL_CANNON && channel != CHANNEL_SPIN) return;
+            if (channel != CHANNEL_CANNON && channel != CHANNEL_SPIN && channel != CHANNEL_SPOUT) return;
             if (!validAim(entity, aim)) return;
             aimPoint = aim;
         }
@@ -482,7 +537,6 @@ public final class BlastoiseCombat {
             int cost = Skill.cost(entity, slot);
             if (cooldowns[slot] > 0 || points < cost) return;
             Vec3 dir = direction(entity, aim);
-            BasicAttack.interruptSwing(entity);
             points -= cost;
             cooldowns[slot] = cooldownTicks(slot);
             aimPoint = validAim(entity, aim) ? aim : null;
@@ -494,9 +548,9 @@ public final class BlastoiseCombat {
             switch (skill) {
                 case Q -> {
                     channel = CHANNEL_CANNON;
-                    cannonFocus = findCannonFocus(level, entity);
+                    // 水炮不自动锁敌，也不播放会扭动炮口的一次性 special 动作。
+                    MoveOrderService.cancelPending(entity);
                     holdPosition(entity);
-                    animate(entity, ANIM_SPECIAL);
                 }
                 case W -> {
                     channel = CHANNEL_SPIN;
@@ -509,12 +563,15 @@ public final class BlastoiseCombat {
                 }
                 case R -> {
                     channel = CHANNEL_SPOUT;
-                    // 0.39：大招是定身施法，起手就把排队中的地面指令丢掉。
-                    // 否则玩家"先右键点地、再按 R"，引导结束的下一 tick 会朝旧点位继续走
-                    // （用户反馈的"释放大招后仍然向指定点位移动"）。
+                    // R keeps its cast channel through the storm's charge and rise; this keeps
+                    // the model braced until the actual water columns break the surface.
                     com.pkmoba.move.MoveOrderService.cancelPending(entity);
                     holdPosition(entity);
                     animate(entity, ANIM_SPECIAL);
+                    long seed = entity.getRandom().nextLong();
+                    storms.add(new Storm(seed));
+                    broadcastStorm(level, entity, STORM_TOTAL_TICKS, seed);
+                    splashSound(level, entity.position());
                 }
             }
             // 音效起点与出流起点同源：加农水炮的发射声从两个炮口之间发出，
@@ -542,22 +599,15 @@ public final class BlastoiseCombat {
         // ---- Q 加农水炮 ----
 
         private void tickCannon(ServerLevel level, PokemonEntity entity) {
-            BasicAttack.interruptSwing(entity);
             holdPosition(entity);
-            // m04660：施法期间"钉死"——不开炮口乱转、不追加位移。
-            // 方向基准只用起手时锁定的 lockedDir（鼠标点的那一下），
-            // 锁到敌人时最多向敌人偏 90°（绝不越过背身、不会因为目标跑到身后而整只打转）。
-            // 用户 m05076：水炮改回「直接跟随鼠标」——不再锁敌、不再有 160° 条件。
-            // 客户端每 2 tick 推上来的瞄准点（channelAim）就是唯一方向源，模型平滑转向它，
-            // 束流仍沿模型正前方出，所以看得见的方向和打出去的方向永远一致。
-            Vec3 steer = CharizardCombat.aimDirection(entity, aimPoint);
-            if (steer.lengthSqr() < 1.0E-8) {
-                steer = CharizardCombat.modelForward(entity);
-            }
-            FacingService.request(entity, FacingService.Priority.CHANNEL, steer,
-                    CANNON_TURN_DEG_PER_TICK);
-            Vec3 forward = CharizardCombat.modelForward(entity);
-            Vec3 right = right(forward);
+            // 只从鼠标方向驱动一次整身转向；不锁敌，不让行走/普攻再争夺朝向。
+            Vec3 steer = aimPoint == null ? CharizardCombat.modelForward(entity)
+                    : CharizardCombat.aimDirection(entity, aimPoint);
+            FacingService.snap(entity, FacingService.Priority.CHANNEL, steer);
+            Vec3 mid = cannonMuzzle(entity, true).lerp(cannonMuzzle(entity, false), 0.5);
+            // 炮口到鼠标落点的三维方向直接用于伤害和视觉，不等待模型插值追上。
+            Vec3 toAim = aimPoint == null ? steer : aimPoint.subtract(mid);
+            Vec3 forward = toAim.lengthSqr() < 0.04 ? steer : toAim.normalize();
             if (skillTicks < CANNON_CHARGE_TICKS) {
                 if (skillTicks % 2 == 0) {
                     visual(level, entity, 5, cannonMuzzle(entity, true), forward, 0, 0.6);
@@ -570,18 +620,23 @@ public final class BlastoiseCombat {
                 float damage = pulse ? CANNON_TICK_DAMAGE : 0.0F;
                 // 两束共用 claimed：同一次脉冲里同一个目标只结算一次，保持"5 跳 × 5 点 = 25"的原预算。
                 Set<UUID> claimed = new HashSet<>();
-                // 两条光束都严格沿模型正前方：从两个炮口"直直出去"，保持平行、不汇聚。
-                Vec3 dirLeft = forward;
-                Vec3 dirRight = forward;
-                double lengthLeft = cannonBeam(level, entity, dirLeft, true, damage, claimed);
-                double lengthRight = cannonBeam(level, entity, dirRight, false, damage, claimed);
-                // 视觉包按 (entityId, kind) 去重，两束各发一个会互相覆盖；客户端本来就按活体
-                // 定位器自己算左右两个炮口，所以这里只发一条"总束流"：起点取两炮口中点、
-                // 长度取两束中较长者（被墙截断的那一束不会把另一束也截短）。
-                if (skillTicks % 4 == 0) {
-                    Vec3 mid = cannonMuzzle(entity, true).lerp(cannonMuzzle(entity, false), 0.5);
-                    visual(level, entity, 4, mid, forward, Math.max(lengthLeft, lengthRight), CANNON_RADIUS);
+                // Both barrels converge on one mouse-directed point. Never extend a barrel ray
+                // past that point, otherwise the two jets cross and separate again.
+                double reach = aimPoint == null ? CANNON_RANGE
+                        : Math.max(0.75, Math.min(CANNON_RANGE, toAim.length()));
+                Vec3 end = clip(level, entity, mid, mid.add(forward.scale(reach)));
+                // Stop the entire paired stream at the nearest obstruction seen by either barrel.
+                double fraction = 1.0;
+                for (boolean left : new boolean[]{true, false}) {
+                    Vec3 origin = cannonMuzzle(entity, left);
+                    double full = origin.distanceTo(end);
+                    if (full > 0.001) fraction = Math.min(fraction,
+                            origin.distanceTo(clip(level, entity, origin, end)) / full);
                 }
+                end = mid.lerp(end, fraction);
+                cannonBeam(level, entity, end, true, damage, claimed);
+                cannonBeam(level, entity, end, false, damage, claimed);
+                visual(level, entity, 4, mid, forward, mid.distanceTo(end), CANNON_RADIUS);
             }
             skillTicks++;
             if (skillTicks >= CANNON_TICKS) endChannel(level, entity);
@@ -615,16 +670,16 @@ public final class BlastoiseCombat {
         }
 
         /**
-         * 单条炮口束流：起点是该炮口，方向由调用方给出（模型正前方 + 外扩），
-         * clip 到 16 格，命中体积按半径膨胀判定。伤害与特效都用<b>同一个起点、同一条射线</b>。
+         * 单条炮口束流：起点是该炮口，终点是两束共用的鼠标落点（最多 16 格）。
+         * 每束独立裁剪墙体，命中体积按半径膨胀；客户端从活体炮口连接同一个终点。
          *
          * @return 这一束实际打到的长度（被墙截断时 &lt; {@link #CANNON_RANGE}），供调用方合并视觉长度
          */
-        private double cannonBeam(ServerLevel level, PokemonEntity entity, Vec3 dir, boolean left,
+        private double cannonBeam(ServerLevel level, PokemonEntity entity, Vec3 sharedEnd, boolean left,
                                   float damage, Set<UUID> claimed) {
-            Vec3 unit = dir.lengthSqr() > 1.0E-8 ? dir.normalize() : dir;
             Vec3 from = cannonMuzzle(entity, left);
-            Vec3 end = clip(level, entity, from, from.add(unit.scale(CANNON_RANGE)));
+            Vec3 unit = sharedEnd.subtract(from).normalize();
+            Vec3 end = clip(level, entity, from, sharedEnd);
             double reach = from.distanceTo(end);
             if (damage <= 0) return reach;
             for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class,
@@ -675,7 +730,6 @@ public final class BlastoiseCombat {
         // ---- W 高速旋转 ----
 
         private void tickSpin(ServerLevel level, PokemonEntity entity) {
-            BasicAttack.interruptSwing(entity);
             // W 允许缓慢移动（MoveOrderService 指令照常生效），但绝不自己造位移冲刺：
             // 用户明确要求"旋转不能变成位移冲刺"，所以这里没有任何 entity.move。
             damageSpin(level, entity);
@@ -719,7 +773,6 @@ public final class BlastoiseCombat {
         // ---- E 冲浪术 ----
 
         private void tickSurf(ServerLevel level, PokemonEntity entity) {
-            BasicAttack.interruptSwing(entity);
             entity.getNavigation().stop();
             if (lockedDir.lengthSqr() < 1.0E-8) lockedDir = CharizardCombat.modelForward(entity);
             // 阶段 1/2：蓄水起手 + 浪头形成 —— 原地不动，只出水纹、气泡和前方向上涌的浪头。
@@ -937,7 +990,6 @@ public final class BlastoiseCombat {
         // ---- R 喷水 ----
 
         private void tickSpoutWindup(ServerLevel level, PokemonEntity entity) {
-            BasicAttack.interruptSwing(entity);
             holdPosition(entity);
             // 阶段 1/6 蓄力：原地不动，但可以调整朝向（鼠标带动模型缓慢转向）；
             // 只有"喷发瞬间"才把方向锁死 —— 对应水箭龟.txt「可调整朝向 / 喷发时锁方向」。
@@ -997,11 +1049,12 @@ public final class BlastoiseCombat {
 
         /** Windup finished: start a 3.8s vortex; the pacing lives inside {@link Storm}. */
         private void releaseStorm(ServerLevel level, PokemonEntity entity) {
-            double seed = entity.getRandom().nextDouble();
-            storms.add(new Storm(seed));
-            broadcastStorm(level, entity, STORM_TOTAL_TICKS);
-            splashSound(level, entity.position());
+            // The storm has been running visually during charge/rise; this is the release impact.
             water(level, entity.position(), 26, 0.7);
+            splashSound(level, entity.position());
+            if (com.pkmoba.duel.BotDuelService.isBot(entity))
+                com.pkmoba.PkmobaMod.LOGGER.info("[pkmoba-bot] release skill=waterR source={} tick={} activeStorms={}",
+                        entity.getId(), entity.tickCount, storms.size());
             endChannel(level, entity);
         }
 
@@ -1011,9 +1064,9 @@ public final class BlastoiseCombat {
             }
         }
 
-        private void broadcastStorm(ServerLevel level, PokemonEntity entity, int durationTicks) {
+        private void broadcastStorm(ServerLevel level, PokemonEntity entity, int durationTicks, long seed) {
             StormPayload payload = new StormPayload(entity.getId(), durationTicks,
-                    (float) STORM_RADIUS, entity.getRandom().nextLong());
+                    (float) STORM_RADIUS, seed);
             for (var player : level.players()) {
                 if (player.distanceToSqr(entity) <= 128.0 * 128.0) {
                     net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player, payload);
@@ -1068,12 +1121,19 @@ public final class BlastoiseCombat {
                 for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class,
                         caster.getBoundingBox().inflate(STORM_RADIUS + 1.0),
                         e -> BasicAttack.validTarget(e, caster))) {
-                    if (target.position().distanceToSqr(center) > r2) continue;
+                    Vec3 contact = BasicAttack.closestPoint(target.getBoundingBox(), center.add(0, .8, 0));
+                    if (contact.subtract(center).horizontalDistanceSqr() > r2
+                            || target.getBoundingBox().minY > center.y + 5
+                            || target.getBoundingBox().maxY < center.y - 1) continue;
                     if (pulseHits.contains(target.getUUID())) continue;
-                    if (!clear(level, caster, center, target.position())) continue;
+                    if (!clear(level, caster, center.add(0, .8, 0), target.getBoundingBox().getCenter())) continue;
+                    float before = target.getHealth();
                     if (CombatDamage.apply(level, caster, target, STORM_PULSE_DAMAGE)) {
                         pulseHits.add(target.getUUID());
                     }
+                    if (com.pkmoba.duel.BotDuelService.isBot(caster))
+                        com.pkmoba.PkmobaMod.LOGGER.info("[pkmoba-bot] hit skill=waterR source={} target={} hp={}->{} pulse={}",
+                                caster.getId(), target.getId(), before, target.getHealth(), lastPulse);
                 }
             }
 
@@ -1085,8 +1145,11 @@ public final class BlastoiseCombat {
                         caster.getBoundingBox().inflate(STORM_RADIUS + 2.0),
                         e -> BasicAttack.validTarget(e, caster))) {
                     Vec3 delta = target.position().subtract(center);
-                    if (delta.lengthSqr() > r2) continue;
-                    if (!clear(level, caster, center, target.position())) continue;
+                    Vec3 contact = BasicAttack.closestPoint(target.getBoundingBox(), center.add(0, .8, 0));
+                    if (contact.subtract(center).horizontalDistanceSqr() > r2
+                            || target.getBoundingBox().minY > center.y + 5
+                            || target.getBoundingBox().maxY < center.y - 1) continue;
+                    if (!clear(level, caster, center.add(0, .8, 0), target.getBoundingBox().getCenter())) continue;
                     boolean hit = CombatDamage.apply(level, caster, target, STORM_BURST_DAMAGE,
                             com.pkmoba.network.EffectPayload.Element.WATER,
                             com.pkmoba.network.EffectPayload.Power.ULTIMATE);
@@ -1289,6 +1352,7 @@ public final class BlastoiseCombat {
         // ---- HUD ----
 
         private void syncHud(ServerPlayer player) {
+            if (player == null || player.connection == null) return;
             float distance = CharizardCombat.distanceToBorder(entity);
             Vec3 center = CharizardCombat.arenaCenter();
             float charge = 0.0F;

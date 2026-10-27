@@ -43,7 +43,7 @@ public final class DuelManager {
     /** 战败动画播放时长，之后才真正移除实体。 */
     private static final int FAINT_TICKS = 60;
     /** 阵亡后必须在这个时间内换人，否则判负。 */
-    private static final int SWITCH_TICKS = 20 * 3;
+    private static final int SWITCH_TICKS = 20 * 20;
     /** 队伍状态（含倒计时）推送间隔。 */
     private static final int TEAM_STATE_INTERVAL = 5;
 
@@ -55,25 +55,9 @@ public final class DuelManager {
 
     public static void init() {
         ServerTickEvents.END_SERVER_TICK.register(DuelManager::tick);
+        BotDuelService.init();
         ServerPlayNetworking.registerGlobalReceiver(SwitchPokemonPayload.TYPE, (payload, context) ->
                 context.server().execute(() -> {
-                    // m05326：1v1 单挑里只能在换宠区按 C 换宝可梦；不在对战中不受限制。
-                    Match match = MATCHES.get(context.player().getUUID());
-                    ArenaStore.Arena gate = match == null ? null : match.arena;
-                    if (gate == null) {
-                        RoomManager.Room room = RoomManager.roomOf(context.player().getUUID());
-                        if (room != null) {
-                            gate = ArenaStore.get(context.server()).byName(room.arenaName);
-                        }
-                    }
-                    if (gate != null && gate.hasSwitchZone()) {
-                        boolean isA = match != null && match.a.equals(context.player().getUUID());
-                        if (!gate.insideSwitchZone(isA, context.player().position())) {
-                            context.player().displayClientMessage(
-                                    net.minecraft.network.chat.Component.literal("只能在换宠区换宝可梦"), true);
-                            return;
-                        }
-                    }
                     switchPokemon(context.player());
                 }));
     }
@@ -81,11 +65,11 @@ public final class DuelManager {
     private static void tick(MinecraftServer running) {
         server = running;
         long now = running.getTickCount();
+        if (now % 20 == 0) pushSwitchZones(running);
         INVITES.entrySet().removeIf(entry -> tickInvite(running, entry.getKey(), entry.getValue()));
         Iterator<Map.Entry<UUID, Match>> iterator = MATCHES.entrySet().iterator();
         while (iterator.hasNext()) {
             Match match = iterator.next().getValue();
-            hintSwitchZone(running, match);
             if (tickMatch(running, match)) {
                 iterator.remove();
             }
@@ -101,6 +85,35 @@ public final class DuelManager {
                 if (a != null) TeamService.sendTeamState(a);
                 if (b != null) TeamService.sendTeamState(b);
             }
+        }
+    }
+
+    /** Keep visible zone geometry identical to the authoritative recall test. */
+    private static void pushSwitchZones(MinecraftServer running) {
+        for (ServerPlayer player : running.getPlayerList().getPlayers()) {
+            if (!inMatch(player)) continue;
+            var pokemon = CharizardManager.getControlled(player);
+            ArenaStore.Arena arena = pokemon == null ? null : arenaForEntity(pokemon);
+            if (arena == null) {
+                RoomManager.Room room = RoomManager.roomOf(player.getUUID());
+                arena = room == null ? null : ArenaStore.get(running).byName(room.arenaName);
+                Match match = matchOf(player);
+                if (arena == null && match != null) arena = match.arena;
+            }
+            if (arena != null) {
+                sendSwitchZone(player, arena.switchPolygon(true), true);
+                sendSwitchZone(player, arena.switchPolygon(false), false);
+            }
+        }
+    }
+
+    private static void sendSwitchZone(ServerPlayer player, java.util.List<Vec3> points, boolean red) {
+        if (points.size() != 4) return;
+        for (int i = 0; i < 4; i++) {
+            Vec3 point = points.get(i);
+            ServerPlayNetworking.send(player, new com.pkmoba.network.EffectPayload(
+                    "pkmoba:switch_zone/" + (red ? "red" : "blue") + "/" + i,
+                    point.x, point.y, point.z, 0, 0, 0));
         }
     }
 
@@ -165,22 +178,6 @@ public final class DuelManager {
     }
 
     /** @return true 表示这局已经结束、应从表中移除 */
-    /** m05326：1v1 时在屏幕上方提示「按 C 换宝可梦」（只在换宠区里才会亮）。 */
-    private static void hintSwitchZone(MinecraftServer running, Match match) {
-        if (match.arena == null || !match.arena.hasSwitchZone()) return;
-        if (running.getTickCount() % 20 != 0) return;
-        for (int side = 0; side < 2; side++) {
-            UUID id = side == 0 ? match.a : match.b;
-            if (id == null) continue;
-            ServerPlayer player = running.getPlayerList().getPlayer(id);
-            if (player == null) continue;
-            if (match.arena.insideSwitchZone(side == 0, player.position())) {
-                player.displayClientMessage(
-                        net.minecraft.network.chat.Component.literal("按 C 换宝可梦"), true);
-            }
-        }
-    }
-
     private static boolean tickMatch(MinecraftServer running, Match match) {
         ServerPlayer a = running.getPlayerList().getPlayer(match.a);
         ServerPlayer b = running.getPlayerList().getPlayer(match.b);
@@ -192,6 +189,23 @@ public final class DuelManager {
         }
 
         long now = running.getTickCount();
+        if (match.awaitingInitialSummon) {
+            if (now < match.readyAt) {
+                if (match.aEntity != null) { var entity = find(running, match.aEntity); setPreparation(entity, true); }
+                if (match.bEntity != null) { var entity = find(running, match.bEntity); setPreparation(entity, true); }
+                int seconds = (int) Math.ceil((match.readyAt - now) / 20.0);
+                if ((match.readyAt - now) % 20 == 0) {
+                    showTitle(a, Integer.toString(seconds), "已传送入场 · 请准备召唤");
+                    showTitle(b, Integer.toString(seconds), "已传送入场 · 请准备召唤");
+                    a.playNotifySound(net.minecraft.sounds.SoundEvents.NOTE_BLOCK_PLING.value(), net.minecraft.sounds.SoundSource.PLAYERS, 0.65F, 1.0F);
+                    b.playNotifySound(net.minecraft.sounds.SoundEvents.NOTE_BLOCK_PLING.value(), net.minecraft.sounds.SoundSource.PLAYERS, 0.65F, 1.0F);
+                }
+                return false;
+            }
+            match.awaitingInitialSummon = false;
+            showTitle(a, "开始召唤", "C 选择出战 · X 召唤");
+            showTitle(b, "开始召唤", "C 选择出战 · X 召唤");
+        }
 
         // 战败动画播完再真正移除实体
         match.aDyingEntity = tickDying(running, match.aDyingEntity, match.aDyingUntil, now);
@@ -199,7 +213,18 @@ public final class DuelManager {
 
         if (tickSide(running, match, a, b, true, now)) return true;
         if (tickSide(running, match, b, a, false, now)) return true;
+        boolean preparing = match.awaitingInitialSummon || match.aSwitchDeadline > now || match.bSwitchDeadline > now;
+        PokemonEntity aPokemon = find(running, match.aEntity);
+        PokemonEntity bPokemon = find(running, match.bEntity);
+        setPreparation(aPokemon, preparing);
+        setPreparation(bPokemon, preparing);
         return false;
+    }
+
+    private static void setPreparation(@Nullable PokemonEntity entity, boolean preparing) {
+        if (entity == null) return;
+        entity.setInvulnerable(preparing);
+        com.pkmoba.pokemon.BallThrow.releaseLock(entity);
     }
 
     @Nullable
@@ -241,6 +266,11 @@ public final class DuelManager {
                     match.bDyingEntity = entity == null ? null : entity.getUUID();
                     match.bDyingUntil = now + FAINT_TICKS;
                 }
+                PokemonEntity surviving = CharizardManager.getControlled(opponent);
+                if (surviving != null) {
+                    surviving.setInvulnerable(true);
+                    com.pkmoba.pokemon.BallThrow.releaseLock(surviving);
+                }
                 PlayerProfile profile = ProfileStore.get(running).profile(self.getUUID());
                 if (!profile.hasUsableLeft()) {
                     boolean aWins = !isA;
@@ -253,8 +283,11 @@ public final class DuelManager {
                     } else {
                         match.bSwitchDeadline = now + SWITCH_TICKS;
                     }
+                    PokemonEntity survivor = find(running, isA ? match.bEntity : match.aEntity);
+                    if (survivor != null) setPreparation(survivor, true);
+                    showTitle(self, "宝可梦倒下 · 请换宠", "按 C 选下一只，再按 X 召唤 · 限时 20 秒");
                     self.sendSystemMessage(Component.literal(
-                            "你的宝可梦倒下了！按 C 放出下一只，剩余 " + usable(profile)
+                            "你的宝可梦倒下了！按 C 选下一只，再按 X 召唤，剩余 " + usable(profile)
                                     + " 只，20 秒内不换判负。"));
                     opponent.sendSystemMessage(Component.literal(
                             self.getGameProfile().getName() + " 的宝可梦倒下了。"));
@@ -262,19 +295,25 @@ public final class DuelManager {
                 return false;
             }
         } else if (deadline > 0) {
-            // 等待换人：超时判负
+            // 服务端按整秒持续提示，避免聊天提示被忽略。
+            int seconds = (int) Math.max(0, (deadline - now + 19) / 20);
+            if ((deadline - now) % 20 == 0) {
+                self.displayClientMessage(Component.literal("换宠倒计时 " + seconds + " 秒 · C 选下一只 · X 召唤"), true);
+                if (seconds <= 5) showTitle(self, "请换下一只 · " + seconds, "按 C 选择并确认出战");
+            }
             if (now >= deadline) {
+                match.finishReason = "换宠超时（20 秒）";
                 boolean aWins = !isA;
                 scheduleFinish(match, now, aWins);
                 match.finishAt = now;
                 match.finishWinnerIsA = aWins;
-                return false;
+                return finish(running, match, isA ? self : opponent, isA ? opponent : self, aWins);
             }
         }
 
         // 已经排定结束时间：到点收尾
         if (match.finishAt > 0 && now >= match.finishAt) {
-            return finish(running, match, self, opponent, match.finishWinnerIsA);
+            return finish(running, match, isA ? self : opponent, isA ? opponent : self, match.finishWinnerIsA);
         }
         return false;
     }
@@ -283,6 +322,12 @@ public final class DuelManager {
         if (match.finishAt > 0) return;
         match.finishAt = at;
         match.finishWinnerIsA = aWins;
+    }
+
+    private static void showTitle(ServerPlayer player, String main, String subtitle) {
+        player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket(0, 35, 10));
+        player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket(Component.literal(main)));
+        player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket(Component.literal(subtitle)));
     }
 
     private static void sendFaint(@Nullable ServerPlayer player, PokemonEntity entity) {
@@ -304,17 +349,17 @@ public final class DuelManager {
         String loser = loserPlayer.getGameProfile().getName();
         for (ServerPlayer player : List.of(a, b)) {
             player.sendSystemMessage(Component.literal(
-                    "对战结束：" + winner + " 获胜（" + loser + " 的宝可梦全部倒下）。"));
+                    "对战结束：" + winner + " 获胜（" + loser + "：" + match.finishReason + "）。"));
             if (ServerPlayNetworking.canSend(player, MatchResultPayload.TYPE)) {
                 ServerPlayNetworking.send(player, new MatchResultPayload(winner,
-                        player.getUUID().equals(winnerPlayer.getUUID()), "队伍打光"));
+                        player.getUUID().equals(winnerPlayer.getUUID()), match.finishReason));
             }
         }
         end(match, a, b, find(running, match.aEntity), find(running, match.bEntity));
         return true;
     }
 
-    /** 管理员强制结束：/mo duel stop <场地|all> */
+    /** 管理员强制结束指定场地或全部对局。 */
     public static void stop(ServerPlayer admin, String target) {
         if (!admin.hasPermissions(2)) {
             admin.sendSystemMessage(Component.literal("只有管理员可以强制结束对局。"));
@@ -351,8 +396,24 @@ public final class DuelManager {
         admin.sendSystemMessage(Component.literal("已强制结束 " + targets.size() + " 场对局。"));
     }
 
+    /** Arena removal/invalidation must not leave an active duel behind its deleted room. */
+    public static void cancelArena(MinecraftServer running, String arenaName) {
+        BotDuelService.cancelArena(running, arenaName);
+        for (Match match : new ArrayList<>(MATCHES.values())) {
+            if (match.arena == null || !match.arena.name.equalsIgnoreCase(arenaName)) continue;
+            ServerPlayer a = running.getPlayerList().getPlayer(match.a);
+            ServerPlayer b = running.getPlayerList().getPlayer(match.b);
+            if (a != null) a.sendSystemMessage(Component.literal("场地配置已变更，本场对战已结束。"));
+            if (b != null) b.sendSystemMessage(Component.literal("场地配置已变更，本场对战已结束。"));
+            end(match, a, b, find(running, match.aEntity), find(running, match.bEntity));
+            MATCHES.remove(match.id);
+        }
+    }
+
     private static void end(Match match, @Nullable ServerPlayer a, @Nullable ServerPlayer b,
                             @Nullable PokemonEntity ea, @Nullable PokemonEntity eb) {
+        if (a != null && ea != null) TeamService.rememberHealth(a, ea);
+        if (b != null && eb != null) TeamService.rememberHealth(b, eb);
         if (a != null) {
             clearOpponentHud(a);
             ServerGodMode.setActive(a, false);
@@ -383,38 +444,153 @@ public final class DuelManager {
         return null;
     }
 
-    /** 对局中按下 C：有宝可梦在场就收回，没有就放出下一只可用的。 */
-    private static void switchPokemon(ServerPlayer player) {
-        Match match = matchOf(player);
-        if (match == null) {
-            // 不在对局中也允许用 C 收回/放出，方便平时练习
-            TeamService.cycle(player, player.position().add(2, 0, 0));
+    /** 队伍面板确认出战。物种、拥有权、倒下和收回锁全部在服务器验证。 */
+    public static void selectPartyPokemon(ServerPlayer player, String rawSpecies) {
+        ResourceLocation id = SpeciesRegistry.parse(rawSpecies);
+        if (!partyActionAllowed(player) || id == null || !canUseSwitchZone(player, null)) return;
+        String species = id.toString();
+        PlayerProfile profile = ProfileStore.get(player.server).profile(player.getUUID());
+        if (!profile.team.contains(species) || profile.fainted.contains(species)) {
+            player.sendSystemMessage(Component.literal("只能派出队伍中尚未倒下的宝可梦。"));
+            TeamService.sendTeamState(player);
             return;
         }
-        boolean isA = match.a.equals(player.getUUID());
-        // 主动换宠只能在己方换宠区（房间点位组配置了换宠区才限制；阵亡换宠不走这条路径）
-        if (match.arena != null && match.arena.hasSwitchZone()
-                && !match.arena.insideSwitchZone(isA, player.position())) {
-            player.sendSystemMessage(Component.literal("只能在己方换宠区里主动换宠，请先走到己方换宠区。"));
+        if (TeamService.recallLocked(player, species)) {
+            player.sendSystemMessage(Component.literal("这只宝可梦刚被收回，请稍等再出战。"));
             return;
         }
-        ServerPlayer opponent = player.server.getPlayerList().getPlayer(isA ? match.b : match.a);
+        PokemonEntity current = CharizardManager.getControlled(player);
+        if (current != null && !id.equals(current.getPokemon().getSpecies().getResourceIdentifier())) {
+            player.sendSystemMessage(Component.literal("请先按 X 收回场上宝可梦，再按 C 选择出战成员。"));
+            TeamService.sendTeamState(player);
+            return;
+        }
+        com.pkmoba.pokemon.BallThrow.clearPlayer(player.getUUID());
+        TeamService.choose(player, species);
+        player.displayClientMessage(Component.literal("已确定出战：" + SpeciesRegistry.displayName(id) + " · 按 X 召唤 / 收回"), true);
+        TeamService.sendTeamState(player);
+    }
+
+    /** X 的召唤/收回由服务器当前实体状态决定，快速双击也不会重复召唤。 */
+    public static void togglePartyPokemon(ServerPlayer player, Vec3 landing) {
+        if (!partyActionAllowed(player)) return;
         PokemonEntity current = CharizardManager.getControlled(player);
         if (current != null) {
-            // 主动收回：场上清空并进入换人倒计时，玩家再按一次 C 放出下一只。
-            TeamService.recall(player);
+            recallPartyPokemon(player, current.getPokemon().getSpecies().getResourceIdentifier().toString());
+            return;
+        }
+        if (com.pkmoba.pokemon.BallThrow.hasPending(player.getUUID())) {
+            com.pkmoba.pokemon.BallThrow.clearPlayer(player.getUUID());
+            TeamService.sendTeamState(player);
+            return;
+        }
+        if (!Double.isFinite(landing.x) || !Double.isFinite(landing.y) || !Double.isFinite(landing.z)
+                || !canUseSwitchZone(player, landing)) return;
+        RoomManager.Room room = RoomManager.roomOf(player.getUUID());
+        ArenaStore.Arena arena = room == null ? null : ArenaStore.get(player.server).byName(room.arenaName);
+        Match local = matchOf(player);
+        if (arena == null && local != null) arena = local.arena;
+        if (inMatch(player) && arena != null && !arena.insideBoundary(landing)) {
+            player.displayClientMessage(Component.literal("请在竞技场边界内召唤。"), true);
+            return;
+        }
+        if (landing.distanceToSqr(player.position()) > 96 * 96) return;
+        var level = player.serverLevel();
+        com.pkmoba.pokemon.BallThrow.throwBall(player, landing, at -> {
+            if (player.hasDisconnected() || player.serverLevel() != level || !partyActionAllowed(player)
+                    || !canUseSwitchZone(player, at)) return;
+            if (CharizardManager.getControlled(player) == null) TeamService.summonAt(player, at);
+        });
+    }
+
+    /** All battle party entry points use the same own-side polygon. Free play is unrestricted. */
+    public static boolean canUseSwitchZone(ServerPlayer player, @Nullable Vec3 landing) {
+        if (!inMatch(player)) return true;
+        PokemonEntity current = CharizardManager.getControlled(player);
+        ArenaStore.Arena arena = current == null ? null : arenaForEntity(current);
+        RoomManager.Room room = RoomManager.roomOf(player.getUUID());
+        if (arena == null && room != null) arena = ArenaStore.get(player.server).byName(room.arenaName);
+        Match match = matchOf(player);
+        if (arena == null && match != null) arena = match.arena;
+        boolean red = RoomManager.sideOf(player.getUUID()) != 2;
+        if (room == null && match != null) red = match.a.equals(player.getUUID());
+        if (arena != null && arena.switchPolygon(red).size() != 4) {
+            player.displayClientMessage(Component.literal("己方尚未设置完整四点换宠区，请先用换宠区工具设置；场地和房间仍可正常使用。"), true);
+            return false;
+        }
+        Vec3 location = current != null && current.isAlive() ? current.position() : player.position();
+        boolean allowed = arena != null && arena.insideSwitchZone(location, red)
+                && (landing == null || arena.insideSwitchZone(landing, red));
+        if (!allowed) player.displayClientMessage(Component.literal("对战中请进入己方四点换宠区，并在区内召唤或更换宝可梦。"), true);
+        return allowed;
+    }
+
+    public static boolean canRecallForSwitch(ServerPlayer player, PokemonEntity current) {
+        return canUseSwitchZone(player, null);
+    }
+
+    /** X 收回当前宝可梦；队伍菜单只负责选择与出战。 */
+    public static void recallPartyPokemon(ServerPlayer player, String rawSpecies) {
+        if (!partyActionAllowed(player)) return;
+        PokemonEntity current = CharizardManager.getControlled(player);
+        ResourceLocation requested = SpeciesRegistry.parse(rawSpecies);
+        if (current == null || requested == null
+                || !requested.equals(current.getPokemon().getSpecies().getResourceIdentifier())) {
+            TeamService.sendTeamState(player);
+            return;
+        }
+        com.pkmoba.pokemon.BallThrow.clearPlayer(player.getUUID());
+        if (!TeamService.recall(player)) return;
+        BotDuelService.notifyRecalled(player);
+        Match match = matchOf(player);
+        if (match != null) {
+            PokemonEntity remaining = CharizardManager.getControlled(player);
+            boolean isA = match.a.equals(player.getUUID());
+            long deadline = remaining == null && !match.awaitingInitialSummon ? player.server.getTickCount() + SWITCH_TICKS : 0;
             if (isA) {
-                match.aEntity = null;
-                match.aSwitchDeadline = player.server.getTickCount() + SWITCH_TICKS;
+                match.aEntity = remaining == null ? null : remaining.getUUID();
+                match.aSwitchDeadline = deadline;
             } else {
-                match.bEntity = null;
-                match.bSwitchDeadline = player.server.getTickCount() + SWITCH_TICKS;
+                match.bEntity = remaining == null ? null : remaining.getUUID();
+                match.bSwitchDeadline = deadline;
             }
-            PlayerProfile profile = ProfileStore.get(player.server).profile(player.getUUID());
-            if (profile.hasUsableLeft()) {
-                player.sendSystemMessage(Component.literal(
-                        "已收回，按 C 选下一只、再按 X 召唤出来；剩余 " + usable(profile) + " 只，3 秒内不换判负。"));
+            PokemonEntity opponent = find(player.server, isA ? match.bEntity : match.aEntity);
+            if (opponent != null) {
+                opponent.setInvulnerable(true);
+                com.pkmoba.pokemon.BallThrow.releaseLock(opponent);
             }
+            if (remaining == null) player.sendSystemMessage(Component.literal("C 选下一只 · X 召唤，请在 20 秒内完成。"));
+        }
+        TeamService.sendTeamState(player);
+    }
+
+    private static boolean partyActionAllowed(ServerPlayer player) {
+        if (!player.isAlive() || player.isSpectator()) return false;
+        if (!BotDuelService.canSummon(player)) {
+            player.sendSystemMessage(Component.literal("训练对战入场倒计时结束后才能召唤。"));
+            return false;
+        }
+        Match duel = matchOf(player);
+        if (duel != null && duel.awaitingInitialSummon && player.server.getTickCount() < duel.readyAt) {
+            player.sendSystemMessage(Component.literal("对战准备倒计时结束后才能召唤。"));
+            return false;
+        }
+        RoomManager.Room room = RoomManager.roomOf(player.getUUID());
+        if (room != null && room.state == RoomManager.State.COUNTDOWN) {
+            player.sendSystemMessage(Component.literal("开局倒计时中，请按房间提示选择出战宝可梦。"));
+            return false;
+        }
+        return true;
+    }
+
+    /** 兼容旧换宠请求；新客户端使用明确的队伍面板操作。 */
+    private static void switchPokemon(ServerPlayer player) {
+        if (!partyActionAllowed(player)) return;
+        Match match = matchOf(player);
+        boolean isA = match != null && match.a.equals(player.getUUID());
+        ServerPlayer opponent = match == null ? null : player.server.getPlayerList().getPlayer(isA ? match.b : match.a);
+        if (CharizardManager.getControlled(player) != null) {
+            player.sendSystemMessage(Component.literal("请先按 X 收回，再选择下一只宝可梦。"));
             return;
         }
         PlayerProfile profile = ProfileStore.get(player.server).profile(player.getUUID());
@@ -452,6 +628,7 @@ public final class DuelManager {
     /** 当前玩家还需要多久换人（tick），0 表示不需要换。 */
     public static int pendingTicksFor(@Nullable ServerPlayer player) {
         if (player == null) return 0;
+        if (BotDuelService.inMatch(player)) return BotDuelService.pendingTicksFor(player);
         Match match = matchOf(player);
         if (match == null) return 0;
         long deadline = match.a.equals(player.getUUID()) ? match.aSwitchDeadline : match.bSwitchDeadline;
@@ -461,6 +638,7 @@ public final class DuelManager {
 
     /** 玩家在对局中用 X 键召唤了宝可梦：登记到本局并清掉换人倒计时。 */
     public static void notifySummoned(ServerPlayer player, PokemonEntity entity) {
+        BotDuelService.notifySummoned(player, entity);
         Match match = matchOf(player);
         if (match == null) return;
         if (match.a.equals(player.getUUID())) {
@@ -470,12 +648,30 @@ public final class DuelManager {
             match.bEntity = entity.getUUID();
             match.bSwitchDeadline = 0;
         }
+        if (match.aSwitchDeadline == 0 && match.bSwitchDeadline == 0
+                && (!match.awaitingInitialSummon || player.server.getTickCount() >= match.readyAt)) {
+            PokemonEntity a = find(player.server, match.aEntity);
+            PokemonEntity b = find(player.server, match.bEntity);
+            if (a != null) { a.setInvulnerable(false); com.pkmoba.pokemon.BallThrow.releaseLock(a); }
+            if (b != null) { b.setInvulnerable(false); com.pkmoba.pokemon.BallThrow.releaseLock(b); }
+        }
+        if (match.awaitingInitialSummon && player.server.getTickCount() >= match.readyAt) {
+            match.awaitingInitialSummon = false;
+            PokemonEntity a = find(player.server, match.aEntity);
+            PokemonEntity b = find(player.server, match.bEntity);
+            if (a != null) { a.setInvulnerable(false); com.pkmoba.pokemon.BallThrow.releaseLock(a); }
+            if (b != null) { b.setInvulnerable(false); com.pkmoba.pokemon.BallThrow.releaseLock(b); }
+            showTitle(player, "开始召唤", "C 选择出战 · X 召唤");
+            ServerPlayer opponentPlayer = player.server.getPlayerList().getPlayer(
+                    match.a.equals(player.getUUID()) ? match.b : match.a);
+            if (opponentPlayer != null) showTitle(opponentPlayer, "开始召唤", "C 选择出战 · X 召唤");
+        }
     }
 
     private static Vec3 spawnPoint(Match match, boolean isA) {
         ArenaStore.Arena arena = match.arena;
         if (arena != null && arena.complete()) {
-            Vec3 point = isA ? arena.redPokemon : arena.bluePokemon;
+            Vec3 point = isA ? arena.redPlayer : arena.bluePlayer;
             if (point != null) return point;
         }
         ServerPlayer player = server == null ? null : server.getPlayerList().getPlayer(isA ? match.a : match.b);
@@ -485,7 +681,7 @@ public final class DuelManager {
     /**
      * 发出一份 1v1 挑战。
      *
-     * @param challengeUi true 表示来自道具界面（10 秒弹窗），false 表示 /mo duel 命令（30 秒）
+     * @param challengeUi true 表示使用界面的短时弹窗挑战，false 表示普通挑战
      */
     public static boolean challenge(ServerPlayer from, ServerPlayer to, @Nullable String arenaName) {
         return challenge(from, to, arenaName, false);
@@ -534,9 +730,9 @@ public final class DuelManager {
                     + " 发送 " + label + " 挑战，等待对方回应（10 秒）。"));
         } else {
             to.sendSystemMessage(Component.literal(from.getGameProfile().getName() + " 邀请你进行 " + label
-                    + "，输入 /mo duel consent 接受。"));
+                    + "，在收到的挑战提示中选择接受。"));
             from.sendSystemMessage(Component.literal("已向 " + to.getGameProfile().getName()
-                    + " 发送 " + label + " 邀请，等待对方输入 /mo duel consent 接受。"));
+                    + " 发送 " + label + " 邀请，等待对方在挑战提示中接受。"));
         }
         return true;
     }
@@ -649,10 +845,17 @@ public final class DuelManager {
     }
 
     private static boolean accept(ServerPlayer to, ServerPlayer from, @Nullable ArenaStore.Arena arena) {
-        if (busy(to) || busy(from)) return false;
+        if (busy(to) || busy(from) || ProfileStore.get(from.server).profile(from.getUUID()).team.isEmpty()
+                || ProfileStore.get(to.server).profile(to.getUUID()).team.isEmpty()) return false;
         Match match = new Match(UUID.randomUUID(), from.getUUID(), to.getUUID(), arena);
         if (!spawnParticipants(from, to, match)) return false;
+        TeamService.healPartyForBattle(from);
+        TeamService.healPartyForBattle(to);
+        match.awaitingInitialSummon = true;
+        match.readyAt = from.server.getTickCount() + 10 * 20;
         MATCHES.put(match.id, match);
+        showTitle(from, "10", "已传送入场 · 开始倒计时");
+        showTitle(to, "10", "已传送入场 · 开始倒计时");
         announce(match, "1v1 已开始：" + from.getGameProfile().getName() + " 对战 "
                 + to.getGameProfile().getName()
                 + "，各用自己选择的宝可梦，一方宝可梦全部倒下即判负。");
@@ -665,11 +868,16 @@ public final class DuelManager {
      */
     public static boolean startRoom(ServerPlayer red, ServerPlayer blue, @Nullable ArenaStore.Arena arena) {
         if (red.getUUID().equals(blue.getUUID())) return false;
-        if (busy(red) || busy(blue)) return false;
+        if (busy(red) || busy(blue) || ProfileStore.get(red.server).profile(red.getUUID()).team.isEmpty()
+                || ProfileStore.get(blue.server).profile(blue.getUUID()).team.isEmpty()) return false;
         Match match = new Match(UUID.randomUUID(), red.getUUID(), blue.getUUID(), arena);
         if (!spawnParticipants(red, blue, match)) return false;
+        TeamService.healPartyForBattle(red);
+        TeamService.healPartyForBattle(blue);
         lockSpawnedPlayers(red, blue);
         MATCHES.put(match.id, match);
+        showTitle(red, "选择出战", "按 C 确认成员 · 按 X 自行召唤 · 双方就绪后开战");
+        showTitle(blue, "选择出战", "按 C 确认成员 · 按 X 自行召唤 · 双方就绪后开战");
         announce(match, "房间对战开始：" + red.getGameProfile().getName() + "（红） 对战 "
                 + blue.getGameProfile().getName() + "（蓝）" + (arena == null ? "" : "，场地：" + arena.name)
                 + "，一方宝可梦全部倒下即判负。");
@@ -686,6 +894,8 @@ public final class DuelManager {
         if (busy(a) || busy(b)) return false;
         Match match = new Match(UUID.randomUUID(), a.getUUID(), b.getUUID(), null);
         if (!spawnParticipants(a, b, match)) return false;
+        TeamService.healPartyForBattle(a);
+        TeamService.healPartyForBattle(b);
         MATCHES.put(match.id, match);
         announce(match, "管理员已开始单挑：" + a.getGameProfile().getName() + " 对战 "
                 + b.getGameProfile().getName() + "，一方宝可梦全部倒下即判负。");
@@ -697,42 +907,40 @@ public final class DuelManager {
         for (ServerPlayer player : players) {
             var entity = CharizardManager.getControlled(player);
             if (entity != null) {
+                com.pkmoba.pokemon.BallThrow.releaseLock(entity);
                 com.pkmoba.pokemon.BallThrow.applyLock(entity, com.pkmoba.pokemon.BallThrow.SPAWN_LOCK_TICKS);
             }
         }
     }
 
     private static boolean spawnParticipants(ServerPlayer a, ServerPlayer b, Match match) {
-        if (!hasTeam(a) || !hasTeam(b)) return false;
+        if (ProfileStore.get(a.server).profile(a.getUUID()).team.isEmpty()
+                || ProfileStore.get(b.server).profile(b.getUUID()).team.isEmpty()) return false;
 
-        // 有场地：先把双方传送到玩家点，再到宝可梦点放宝可梦
+        // 清理旧视角锚点，传送后从竞技场玩家点重新锁定。
+        ServerGodMode.forceOff(a);
+        ServerGodMode.forceOff(b);
+        // 有场地：先把双方传送到玩家点，由玩家按 X 放出宝可梦。
         if (match.arena != null && match.arena.complete()) {
             ServerLevel level = resolveLevel(a.server, match.arena.dimension, a);
             if (level == null) {
                 a.sendSystemMessage(Component.literal("场地所在维度不存在，无法开始。"));
                 return false;
             }
-            teleport(a, level, match.arena.redPlayer);
-            teleport(b, level, match.arena.bluePlayer);
+            teleport(a, level, match.arena.redPlayer, match.arena.bluePlayer);
+            teleport(b, level, match.arena.bluePlayer, match.arena.redPlayer);
         }
 
-        Vec3 aPos = match.arena != null && match.arena.complete() ? match.arena.redPokemon : a.position().add(3, 0, 0);
-        Vec3 bPos = match.arena != null && match.arena.complete() ? match.arena.bluePokemon : b.position().add(-3, 0, 0);
-
-        PokemonEntity ea = TeamService.spawnActive(a, aPos);
-        if (ea == null) {
-            a.sendSystemMessage(Component.literal("对战开始失败：你的宝可梦无法生成。"));
-            return false;
-        }
-        PokemonEntity eb = TeamService.spawnActive(b, bPos);
-        if (eb == null) {
-            CharizardManager.unregisterControlled(a.getUUID());
-            ea.discard();
-            a.sendSystemMessage(Component.literal("对战开始失败：对手的宝可梦无法生成。"));
-            return false;
-        }
-        match.aEntity = ea.getUUID();
-        match.bEntity = eb.getUUID();
+        com.pkmoba.pokemon.BallThrow.clearPlayer(a.getUUID());
+        com.pkmoba.pokemon.BallThrow.clearPlayer(b.getUUID());
+        CharizardManager.discardAllControlled(a);
+        CharizardManager.discardAllControlled(b);
+        match.awaitingInitialSummon = true;
+        match.readyAt = a.server.getTickCount() + 10 * 20;
+        showTitle(a, "10", "已传送入场 · 开始倒计时");
+        showTitle(b, "10", "已传送入场 · 开始倒计时");
+        a.sendSystemMessage(Component.literal("已传送入场。10 秒后按 C 选择出战，再按 X 自行召唤。"));
+        b.sendSystemMessage(Component.literal("已传送入场。10 秒后按 C 选择出战，再按 X 自行召唤。"));
         // 场地无限大：清掉训练用的圆形限制，避免 clamp 把宝可梦/技能拉回
         com.pkmoba.combat.CharizardCombat.clearArena();
         ServerGodMode.setActive(a, true);
@@ -762,9 +970,11 @@ public final class DuelManager {
                 net.minecraft.core.registries.Registries.DIMENSION, dimension));
     }
 
-    private static void teleport(ServerPlayer player, ServerLevel level, @Nullable Vec3 pos) {
+    private static void teleport(ServerPlayer player, ServerLevel level, @Nullable Vec3 pos, Vec3 opposite) {
         if (pos == null) return;
-        player.teleportTo(level, pos.x, pos.y, pos.z, player.getYRot(), player.getXRot());
+        float yaw = opposite == null ? player.getYRot()
+                : (float) Math.toDegrees(Math.atan2(-(opposite.x - pos.x), opposite.z - pos.z));
+        player.teleportTo(level, pos.x, pos.y, pos.z, yaw, 0);
     }
 
     private static void announce(Match match, String text) {
@@ -795,16 +1005,31 @@ public final class DuelManager {
     }
 
     public static boolean inMatch(ServerPlayer player) {
-        return busy(player);
+        return busy(player) || BotDuelService.inMatch(player);
+    }
+
+    /** Shared server gate for movement, skill casts and damage until both sides summon. */
+    public static boolean isPreparing(net.minecraft.world.entity.Entity entity) {
+        if (entity == null) return false;
+        if (BotDuelService.isPreparing(entity)) return true;
+        for (Match match : MATCHES.values()) {
+            boolean participant = entity.getUUID().equals(match.a) || entity.getUUID().equals(match.b)
+                    || entity.getUUID().equals(match.aEntity) || entity.getUUID().equals(match.bEntity);
+            long now = entity.level().getServer() == null ? 0 : entity.level().getServer().getTickCount();
+            if (participant && (match.awaitingInitialSummon || match.aSwitchDeadline > now || match.bSwitchDeadline > now)) return true;
+        }
+        return false;
     }
 
     /**
-     * 找到某个宝可梦实体所属对局的点位组（房间边界/换宠区判定用）。
+     * 找到某个宝可梦实体所属对局的点位组（房间边界判定用）。
      * 不在对局里返回 null，调用方按"无限制"处理。
      */
     @Nullable
     public static ArenaStore.Arena arenaForEntity(net.minecraft.world.entity.Entity entity) {
         if (entity == null) return null;
+        ArenaStore.Arena botArena = BotDuelService.arenaForEntity(entity);
+        if (botArena != null) return botArena;
         for (Match match : MATCHES.values()) {
             if (match.arena == null) continue;
             if (entity.getUUID().equals(match.aEntity) || entity.getUUID().equals(match.bEntity)) {
@@ -858,6 +1083,9 @@ public final class DuelManager {
         /** 排定的结束 tick（0 表示未排定）与胜方。 */
         public long finishAt;
         public boolean finishWinnerIsA;
+        public String finishReason = "队伍全部倒下";
+        public boolean awaitingInitialSummon;
+        public long readyAt;
 
         public Match(UUID id, UUID a, UUID b, @Nullable ArenaStore.Arena arena) {
             this.id = id;

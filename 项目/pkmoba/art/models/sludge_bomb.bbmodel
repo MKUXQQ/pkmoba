@@ -1,0 +1,431 @@
+{
+  "meta": {
+    "format_version": "4.10",
+    "model_format": "free",
+    "box_uv": false
+  },
+  "name": "Sludge Bomb",
+  "resolution": {
+    "width": 64,
+    "height": 64
+  },
+  "elements": [
+    {
+      "name": "sludge_lobe_0",
+      "uuid": "1fd477f1-6a4e-41bc-9347-df58985b3b7a",
+      "from": [
+        -4.0,
+        4.0,
+        -4.0
+      ],
+      "to": [
+        4.0,
+        12.0,
+        4.0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "origin": [
+        0,
+        8,
+        0
+      ],
+      "faces": {
+        "north": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "east": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "south": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "west": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "up": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "down": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        }
+      }
+    },
+    {
+      "name": "sludge_lobe_1",
+      "uuid": "7ec4ec55-82b5-4494-bf80-71ac3fe6145c",
+      "from": [
+        -6.5,
+        6.5,
+        -2.5
+      ],
+      "to": [
+        -1.5,
+        11.5,
+        2.5
+      ],
+      "rotation": [
+        0,
+        19,
+        0
+      ],
+      "origin": [
+        -4,
+        9,
+        0
+      ],
+      "faces": {
+        "north": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "east": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "south": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "west": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "up": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "down": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        }
+      }
+    },
+    {
+      "name": "sludge_lobe_2",
+      "uuid": "6d1cbf5e-8862-4746-8e28-3e55c6168ff4",
+      "from": [
+        1.5,
+        7.5,
+        -1.5
+      ],
+      "to": [
+        6.5,
+        12.5,
+        3.5
+      ],
+      "rotation": [
+        0,
+        38,
+        0
+      ],
+      "origin": [
+        4,
+        10,
+        1
+      ],
+      "faces": {
+        "north": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "east": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "south": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "west": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "up": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "down": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        }
+      }
+    },
+    {
+      "name": "sludge_lobe_3",
+      "uuid": "297a6865-e406-43a7-a223-1d7731c36f3a",
+      "from": [
+        -2.5,
+        9.5,
+        -4.5
+      ],
+      "to": [
+        2.5,
+        14.5,
+        0.5
+      ],
+      "rotation": [
+        0,
+        57,
+        0
+      ],
+      "origin": [
+        0,
+        12,
+        -2
+      ],
+      "faces": {
+        "north": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "east": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "south": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "west": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "up": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "down": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        }
+      }
+    },
+    {
+      "name": "sludge_lobe_4",
+      "uuid": "189c7c07-746b-4558-9423-3930035c789e",
+      "from": [
+        -1.0,
+        2.0,
+        0.0
+      ],
+      "to": [
+        3.0,
+        6.0,
+        4.0
+      ],
+      "rotation": [
+        0,
+        76,
+        0
+      ],
+      "origin": [
+        1,
+        4,
+        2
+      ],
+      "faces": {
+        "north": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "east": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "south": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "west": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "up": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        },
+        "down": {
+          "uv": [
+            0,
+            0,
+            64,
+            64
+          ],
+          "texture": 0
+        }
+      }
+    }
+  ],
+  "outliner": [
+    "1fd477f1-6a4e-41bc-9347-df58985b3b7a",
+    "7ec4ec55-82b5-4494-bf80-71ac3fe6145c",
+    "6d1cbf5e-8862-4746-8e28-3e55c6168ff4",
+    "297a6865-e406-43a7-a223-1d7731c36f3a",
+    "189c7c07-746b-4558-9423-3930035c789e"
+  ],
+  "textures": [
+    {
+      "name": "venusaur_toxic_glob.png",
+      "id": "0",
+      "uuid": "c778e0da-a635-42e1-aa5c-da0867ea3305",
+      "source": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAJEklEQVR4nNWaTY8jRxnHny732G6/jN/Gnp3x7GwCTIT2ynfgCpcckEKQUGBXIIH2kBwQUYRA0SorFAm0KBuhSEQrJAQHuCIhTnwEwmHD7s7szGTH9tjtscft90ZP91a7uruqunpsZ8VfqumuanePf/966qXLpf3g+m9tWEKl6Vbsezp6y5cn5Rr3c8nEU+VnDpsZ77zXToSu58sz7n06vAQNexveeTo/WemzefC0nDWhY5jOkSzzzyytAas0Y13w7HUEp/BLRcAq4FWU7WihssuSHRueSj+pwLR+7uXJ/xu8rPwqIqofTBQsL7E63fgs1j/8wuqGygaHnVBZ6eJQ+hzWhGen+7A2A0bZUQg6KJkJzfIjKTzPhCh41oRl4LkGmOdJLyF8Rp+DingmUHg8Pkk9iXzGvP3lNC1WOptBaCpjvyeE/92Dn4fKfnTrV44Ju5ObXlm1feDA9y91KKcyANtDp3xwlpabELNrrm60AMpqHSHbAaI0OhEKwqN4Bnxw76dw/K9wm0W9/+l9X35EDBdcINYIdj5Q0eVNjpWZGcLsouTlZSYI5wEmAy8TC/+bv37qALPQP3vzxz54VU13Z9DPLzUliZzxBctLVtFJ2uuZB6FBlRcBQXiq/kUvBP/ew0+co6z2qVrZ8JBWbhKlKMDaR7EREFck7g0sPCq3mXcShY4jHjyqXZ3D+dRYGfyoee6loHTZjYMpURoFzvtTWBU8awI0DW4kiOCrxYvQZ48f+d810IRUtSKPAOso7zPBeZCg40tKIrU9GlwJPhgJ7ZTmJcwj+FXgqdhIIKJ/zjMB9ZNvvxmC30no8Is3vq8EpQrviwRGWtat/Sh4VZFiZQwqJtz9y0OfCbOu20bN2RBuf2dhSrAvmEzaTlqlWBOWgRfOA0RCs+5873Xh9bsPP4Ziwh3b+3bfK6+Wvuadf27zm5JMlUG4kuzLtJIBvGaAfUCyYcC4ZrlNwE63oFA/dZJINFI+/MOfhfA0IqyxwYVflXr2APqZtpOejKdOEmnvYIMLj0o2DNDeOniPuyTWPdn1znnNZJQQ12RqtuigyrWC79qyEYDwIr2alM+hm+amd+6LAJ4QmqZVKvefeM/DSZEKPEoWCUEhPEpoADYLmdhalpW3G90rm0Dhsb1HwUeZwNa+8kzwvECcxCqTH3gpCCsyBU3AZI40SH/1mpIJxc8Xk5WWnoLS05yX4koErzwVRhMotFc2B7CyA5inU16SiRSKoTKRCQiv79se/M6p+75BFccEGTxK2Gu0U/61+mckB9fnfQ+eJzTEuIx+AaJRcKEdQnIy8l3btG8ASOBZEzqvLIbaONCsdOVPvjAhM+X/U1UTziz3fiMTfjGhpjgmBJ+bWN3yOSuiDbdCNR+s/bhCE6rDdAg8Cp41QQU+/Szc50zTNTDL6vVKWOhlwVkdVdohE1TggyZE1TxrAsJTqZqg8woPTsJf8lF90SvHVfPFBEUG/+CDt73zW+/cc47pXAPgLLo9own9wIyPmlBsT+MZcMCBp+VxTXhmNQBwvrFdjgRnX7ff/dZbzvGXf/s9LKsoE3T8U7B60DXyQngqvH6yLR/ueMqftaEnMQHhWVhqACpTrMLAbMKqTEg1F1PzUbULZJq8dDJR8FT1M/+wFccEXu0H4VE0T41AE1YhFp7mCZ7U2vHm5yomaMfxl8lkWpUJX8r+AI0Dv/la3TmO/73Y9CBaZosrXgcYlN0UvAvo4yy8DHjUh/c+CrV5Nn//k38uBV/vd7yUq5+AXj/2XR+CffUISJ2601nUaPd5bPiggiaoKAqeJzShf+J+J5R25xv37eRjtQ4Q1ZqFp6lU47nfYWpAFDzqztu3vXNRzXdm7lpgcXrkHJt7tVjwrKgJGhqAJyom6LlteN5NxzIgPYm/B2iw9XUo2jYXnjWAZ4IKPGsCoZnxV6InOTJ4VJLswapkahoXPqjq8XI/qev9xhxyNeKZIIoErH0Q729Yi9AEexr9G6HPhGK8t0aCf9CEOJEg097OdSelS5tOWlaa7v+NkA3/pZ9dvViMAqwJkAu/ZmJLu1YYSptBbdsN29ZwPaGySvjYvw43IHq2OBv1nFTSmMfWKrE7QJ72dh4r3T821Trdy3H+aj+PYxRgCpZViv6VIpkJycyel+LA565PY8GpXCe8D4wzfS8Fo4BGAjWCFC4io8OAChi115zzIDTNi+CDmmTEb5WoU/sAmpcVeNp5RQq/UZw4yfttkCoI7XzJQfQqrK/GAeDxLAMl0nfgWc364fV9M+N//k4tbCixH0HnfDHmbwzaXHMQXqRq1h3hEJxKj4Kn5VEmdOy5ZwLCO2XzHBgxGxkPHjXXDvAHO2kkyODp9d26O21fy9tgx3ZHEqx5hN8l4cWTRC7jiwLMw1wOT1XYKkC3xR9hqlYBqsTtIz6b+7FuXlvMDhfbpF3pbKZ4tJh0mPvqu7x44sH7oBllSNOBU1HQhF9//EPv/O53/+Qcb5KpYwILTlWcud/LTLhrGsT7Ei3/shNrBhv+CWsWSi9LCI9rCjS9cfubsZ9Boj4QhOfpZZhA4XG/wsOP/u4kFDWBV/u8SCDLwqteX6eaRleaF2librh9ADEbMNQB0tPFG9hgqwoNMzzt3Um5i6giE6YZd6iy7PPQEMiTBeprEayCy2mq0EFpt/Lv+uYBZ1V3Z4jdFA8QMhOoAc7DI0wIwqt0hM+77l5gY9Lm7ldit/BUJdtvmz136CFx4VFfjNTXEUU1zCsXDXFBeOf+jTK8/8d/+K6L9i8pRcCZInxUJAQjIEqG7s7oGt1FXezduCGF992vsAWPjQRa81Q6m4kDTyNB1Byi4Ck4hd9nfpg9OjyEfLYIqV4ezLJ8gQMjIcqEIPTaZoIzI6FU60Gx8DTfTp+BO1WRv/wsK0JPtpviPYLk1RMleFWxtS9TerSaH06WmgiRF/AyE0Tw6azmJSsfvXUmKKsAUOr/V/oZlT5AJjIvyjdFzJ/Ufcc48KxKc0towjD9XJhHE9YpLbgewJv8iFQripergwaghpe2UjMY6OF7tWHJ6fC8+1e0AVvnQamYIINfl1YFHdkH1CLgVODZ2ublrWnZSayw5kW1vy79D9QEVacEQR+sAAAAAElFTkSuQmCC",
+      "uv_width": 64,
+      "uv_height": 64
+    }
+  ]
+}

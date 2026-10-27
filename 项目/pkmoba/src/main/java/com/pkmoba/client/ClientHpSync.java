@@ -29,7 +29,7 @@ public final class ClientHpSync {
     }
 
     /** 只对当前受控宝可梦生效；实体不存在时静默返回。 */
-    public static void apply(int entityId, float designMax) {
+    public static void apply(int entityId, float designMax, float authoritativeHp) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || entityId < 0) {
             return;
@@ -46,15 +46,19 @@ public final class ClientHpSync {
             return;
         }
         UUID uuid = pokemon.getUuid();
+        // The skill packet is authoritative; entity metadata can arrive a frame later.
+        var attribute = pokemonEntity.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH);
+        if (attribute != null) attribute.setBaseValue(designMax);
+        pokemonEntity.setHealth(Math.max(0.0F, Math.min(designMax, authoritativeHp)));
 
         // 1) 实体身上的 Pokemon 对象
-        write(pokemon, want, pokemonEntity.getHealth());
+        write(pokemon, want, authoritativeHp);
 
         // 2) 队伍里的同一只（P 键界面/队伍 HUD 读的是这份拷贝）
         try {
             Pokemon partyCopy = CobblemonClient.INSTANCE.getStorage().getParty().findByUUID(uuid);
             if (partyCopy != null && partyCopy != pokemon) {
-                write(partyCopy, want, pokemonEntity.getHealth());
+                write(partyCopy, want, authoritativeHp);
             }
         } catch (Throwable ignored) {
             // 队伍尚未同步（刚进服/刚召唤）时 getParty() 可能为 null，忽略即可。
@@ -70,7 +74,7 @@ public final class ClientHpSync {
             tag.putInt(PokemonHp.KEY, maxHp);
         }
         // 上限对齐后把当前血量也拉齐，避免界面出现"上限 300 / 当前 90"。
-        int wantHp = Math.max(1, Math.round(entityHealth));
+        int wantHp = Math.max(0, Math.min(maxHp, Math.round(entityHealth)));
         if (pokemon.getCurrentHealth() != Math.min(wantHp, maxHp)) {
             pokemon.setCurrentHealth(wantHp);
         }

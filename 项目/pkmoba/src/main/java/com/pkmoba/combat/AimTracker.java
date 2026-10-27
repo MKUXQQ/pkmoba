@@ -25,8 +25,8 @@ import java.util.UUID;
  */
 public final class AimTracker {
 
-    /** 每 tick 最大转角（度）。180° 需要 30 tick（1.5 秒）转完，观感是"缓慢跟随"。 */
-    public static final float AIM_TURN_PER_TICK = 20.0F;
+    /** 鼠标转向上限：常见 90° 转向两 tick 内完成，保留客户端插值。 */
+    public static final float AIM_TURN_PER_TICK = 58.0F;
 
     /** 超过这么多 tick 没收到新的瞄准点，就当作光标数据过期（玩家换视角/断线），不再转向。 */
     private static final int STALE_TICKS = 40;
@@ -66,6 +66,12 @@ public final class AimTracker {
      * <p>引导中的 CHANNEL 优先级更高，同一 tick 里会先占位，本请求会被 FacingService 忽略。
      */
     public static void track(@Nullable PokemonEntity entity) {
+        // Venusaur faces the move destination outside casts; casts claim CHANNEL priority.
+        if (entity != null && Skill.isVenusaur(entity)) return;
+        // 移动目标到达前，移动方向持续优先；静止后恢复常驻鼠标瞄准。
+        if (entity != null && com.pkmoba.move.MoveOrderService.hasOrder(entity)) {
+            return;
+        }
         Vec3 aim = aimOf(entity);
         if (aim == null) {
             return;

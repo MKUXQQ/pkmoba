@@ -23,9 +23,9 @@ import net.minecraft.resources.ResourceLocation;
  */
 public final class StarterScreen extends Screen {
     /** 每张卡片的尺寸。 */
-    private static final int CARD_W = 96;
-    private static final int CARD_H = 96;
-    private static final int GAP = 12;
+    private static final int CARD_W = 78;
+    private static final int CARD_H = 82;
+    private static final int GAP = 10;
     /** 每页最多几张卡片（超过则分页，避免面板被撑出屏幕）。 */
     private static final int PAGE_SIZE = 5;
     /** 头像贴图是 64×64 的网络抓取图，显示成 48×48。 */
@@ -86,25 +86,40 @@ public final class StarterScreen extends Screen {
         }
     }
 
+    private int cardWidth() {
+        int perRow = Math.max(1, Math.min(PAGE_SIZE, (width - 48 + GAP) / (CARD_W + GAP)));
+        int available = Math.max(1, width - 16 - 32 - (perRow - 1) * GAP);
+        return Math.min(CARD_W, Math.max(1, available / perRow));
+    }
+
+    private int cardHeight() {
+        return Math.min(CARD_H, Math.max(48, cardWidth()));
+    }
+
+    private int cardsPerPage() {
+        return Math.max(1, Math.min(PAGE_SIZE, (width - 48 + GAP) / (cardWidth() + GAP)));
+    }
+
     private int pageCount() {
-        return Math.max(1, (species.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+        int perPage = cardsPerPage();
+        return Math.max(1, (species.size() + perPage - 1) / perPage);
     }
 
     private int firstIndex() {
-        return page * PAGE_SIZE;
+        return page * cardsPerPage();
     }
 
     private int pageCards() {
-        return Math.min(PAGE_SIZE, species.size() - firstIndex());
+        return Math.min(cardsPerPage(), species.size() - firstIndex());
     }
 
     private int panelWidth() {
         int cards = Math.max(1, pageCards());
-        return Math.max(240, cards * CARD_W + (cards - 1) * GAP + 32);
+        return Math.min(width - 16, cards * cardWidth() + (cards - 1) * GAP + 32);
     }
 
     private int panelHeight() {
-        return CARD_H + 118;
+        return Math.min(height - 16, cardHeight() + 118);
     }
 
     private int left() {
@@ -117,9 +132,9 @@ public final class StarterScreen extends Screen {
 
     private int cardX(int slot) {
         int cards = pageCards();
-        int total = cards * CARD_W + (cards - 1) * GAP;
+        int total = cards * cardWidth() + (cards - 1) * GAP;
         int start = (width - total) / 2;
-        return start + slot * (CARD_W + GAP);
+        return start + slot * (cardWidth() + GAP);
     }
 
     private int cardY() {
@@ -150,40 +165,41 @@ public final class StarterScreen extends Screen {
             boolean owned = team.contains(id);
             boolean dead = fainted.contains(id);
             boolean isSelected = adding ? id.equals(selected) : id.equals(chosen);
+            int cw = cardWidth(), ch = cardHeight();
             int cx = cardX(slot);
             int cy = cardY();
-            boolean hovered = BattleMenuScreen.inside(mouseX, mouseY, cx, cy, CARD_W, CARD_H);
+            boolean hovered = BattleMenuScreen.inside(mouseX, mouseY, cx, cy, cw, ch);
 
-            graphics.fill(cx, cy, cx + CARD_W, cy + CARD_H, BattleMenuScreen.BORDER);
-            graphics.fill(cx + 2, cy + 2, cx + CARD_W - 2, cy + CARD_H - 2,
+            graphics.fill(cx, cy, cx + cw, cy + ch, BattleMenuScreen.BORDER);
+            graphics.fill(cx + 2, cy + 2, cx + cw - 2, cy + ch - 2,
                     isSelected ? 0xFFE4C77D : hovered ? BattleMenuScreen.HIGHLIGHT : BattleMenuScreen.PANEL);
-            graphics.fill(cx + 2, cy + CARD_H - 5, cx + CARD_W - 2, cy + CARD_H - 2,
+            graphics.fill(cx + 2, cy + ch - 5, cx + cw - 2, cy + ch - 2,
                     BattleMenuScreen.SHADOW);
 
-            // 头像：48×48，居中偏上
+            int portraitSize = Math.min(48, Math.max(32, ch - 32));
             ResourceLocation portrait = portraitOf(rl);
-            int px = cx + (CARD_W - 48) / 2;
+            int px = cx + (cw - portraitSize) / 2;
             if (portrait != null) {
                 graphics.pose().pushPose();
-                graphics.pose().translate(px, cy + 8, 0);
-                graphics.pose().scale(48 / PORTRAIT_SIZE, 48 / PORTRAIT_SIZE, 1.0F);
+                graphics.pose().translate(px, cy + 5, 0);
+                graphics.pose().scale(portraitSize / PORTRAIT_SIZE, portraitSize / PORTRAIT_SIZE, 1.0F);
                 graphics.blit(portrait, 0, 0, 0, 0, 64, 64, 64, 64);
                 graphics.pose().popPose();
             } else {
-                graphics.fill(px, cy + 8, px + 48, cy + 56, 0xFFB5A88F);
+                graphics.fill(px, cy + 5, px + portraitSize, cy + 5 + portraitSize, 0xFFB5A88F);
             }
 
             // 已拥有 / 已阵亡角标
             if (dead) {
-                graphics.fill(cx + 2, cy + 2, cx + CARD_W - 2, cy + CARD_H - 2, 0x66000000);
-                graphics.drawCenteredString(font, "已倒下", cx + CARD_W / 2, cy + 30, 0xFFC94F3D);
+                graphics.fill(cx + 2, cy + 2, cx + cw - 2, cy + ch - 2, 0x66000000);
+                graphics.drawCenteredString(font, "已倒下", cx + cw / 2, cy + ch / 2, 0xFFC94F3D);
             } else if (owned) {
                 String badge = id.equals(chosen) ? "当前" : "已拥有";
                 graphics.drawString(font, badge, cx + 5, cy + 5, 0xFF2E7D32, false);
             }
 
-            graphics.drawCenteredString(font, SpeciesRegistry.displayName(rl), cx + CARD_W / 2,
-                    cy + CARD_H - 20, BattleMenuScreen.TEXT);
+            graphics.drawCenteredString(font, SpeciesRegistry.displayName(rl), cx + cw / 2,
+                    cy + ch - 20, BattleMenuScreen.TEXT);
         }
 
         // 分页按钮（只有多于一页时才显示）
@@ -264,7 +280,7 @@ public final class StarterScreen extends Screen {
         for (int slot = 0; slot < pageCards(); slot++) {
             int cx = cardX(slot);
             int cy = cardY();
-            if (!BattleMenuScreen.inside(mouseX, mouseY, cx, cy, CARD_W, CARD_H)) {
+            if (!BattleMenuScreen.inside(mouseX, mouseY, cx, cy, cardWidth(), cardHeight())) {
                 continue;
             }
             String id = species.get(firstIndex() + slot);

@@ -85,7 +85,7 @@ public final class BattleMenuScreen extends Screen {
 
         graphics.drawCenteredString(font, "双方各控一只宝可梦，先倒下判负", width / 2, y + 118, TEXT);
         graphics.drawCenteredString(font,
-                arenas.isEmpty() ? "还没有场地，用 /mo arena create <名字> 创建" : "也可直接输入 /mo duel <玩家名> [场地]",
+                arenas.isEmpty() ? "先画四点边界，再放红蓝玩家点即可创建场地" : "选择玩家并发送挑战邀请",
                 width / 2, y + 134, MUTED);
         drawButton(graphics, font, "关闭", x + w / 2 - 38, y + 154, 76, 23,
                 inside(mouseX, mouseY, x + w / 2 - 38, y + 154, 76, 23), false, true);

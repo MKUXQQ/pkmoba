@@ -43,7 +43,13 @@ public final class ServerGodMode {
         });
     }
     public static boolean isActive(Player player) { return ACTIVE.contains(player.getUUID()); }
-    public static void toggle(ServerPlayer player) { setActive(player, !isActive(player)); }
+    public static void toggle(ServerPlayer player) {
+        if (com.pkmoba.duel.DuelManager.inMatch(player)) {
+            player.displayClientMessage(Component.literal("对战中玩家本体保持锁定，使用右键操作已召唤的宝可梦。"), true);
+            return;
+        }
+        setActive(player, !isActive(player));
+    }
     public static void setActive(ServerPlayer player, boolean active) {
         if (active) {
             if (isActive(player)) return;

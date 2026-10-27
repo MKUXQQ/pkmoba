@@ -108,10 +108,18 @@ public final class BallThrow {
         LOCKS.merge(entity.getUUID(), until, Math::max);
     }
 
+    /** State transitions may release a shorter replacement wait immediately. */
+    public static void releaseLock(Entity entity) {
+        if (entity != null) LOCKS.remove(entity.getUUID());
+    }
+
     /** 是否还在登场硬直里。 */
     public static boolean locked(Entity entity) {
         if (entity == null) {
             return false;
+        }
+        if (com.pkmoba.duel.DuelManager.isPreparing(entity)) {
+            return true;
         }
         Long until = LOCKS.get(entity.getUUID());
         if (until == null) {
@@ -155,15 +163,11 @@ public final class BallThrow {
                 } catch (Throwable error) {
                     PkmobaMod.LOGGER.error("[pkmoba] 投球落地生成宝可梦失败，已吞掉以免崩服", error);
                 }
-                p.level.sendParticles(ParticleTypes.CLOUD, p.to.x, p.to.y + 0.2, p.to.z,
-                        14, 0.35, 0.15, 0.35, 0.02);
                 p.level.playSound(null, net.minecraft.core.BlockPos.containing(p.to),
                         SoundEvents.ITEM_PICKUP, SoundSource.PLAYERS, 1.0F, 1.0F);
                 continue;
             }
-            Vec3 pos = parabola(p.from, p.to, t);
-            // 保留一点拖尾光点，让高速飞行时轨迹看得清。
-            p.level.sendParticles(ParticleTypes.END_ROD, pos.x, pos.y, pos.z, 1, 0.0, 0.0, 0.0, 0.0);
+            // 投球模型由客户端绘制；召唤不再附带粒子拖尾。
         }
     }
 
@@ -173,6 +177,11 @@ public final class BallThrow {
         double peak = 0.85 + from.distanceTo(to) * 0.10;
         double lift = 4.0 * peak * t * (1.0 - t);
         return flat.add(0, lift, 0);
+    }
+
+    /** X 再按一次时取消仍在飞行中的召唤，避免落地后重新出现。 */
+    public static boolean hasPending(UUID player) {
+        return PENDING.stream().anyMatch(p -> p.player.equals(player));
     }
 
     /** 清掉某玩家的待落地投球（退出/换维度时用）。 */

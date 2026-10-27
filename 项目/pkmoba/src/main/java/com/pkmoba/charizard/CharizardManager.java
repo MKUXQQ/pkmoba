@@ -57,6 +57,21 @@ public final class CharizardManager {
     public static final ResourceLocation BLASTOISE_ID =
             ResourceLocation.fromNamespaceAndPath("cobblemon", "blastoise");
 
+    public static final ResourceLocation VENUSAUR_ID =
+            ResourceLocation.fromNamespaceAndPath("cobblemon", "venusaur");
+
+    public static final ResourceLocation PIKACHU_ID =
+            ResourceLocation.fromNamespaceAndPath("cobblemon", "pikachu");
+
+    public static boolean isPikachu(PokemonEntity entity) {
+        return entity != null && entity.getPokemon() != null
+                && PIKACHU_ID.equals(entity.getPokemon().getSpecies().getResourceIdentifier());
+    }
+
+    public static boolean isVenusaur(PokemonEntity entity) {
+        return entity != null && VENUSAUR_ID.equals(entity.getPokemon().getSpecies().getResourceIdentifier());
+    }
+
     public static boolean isBlastoise(PokemonEntity entity) {
         return entity != null && BLASTOISE_ID.equals(entity.getPokemon().getSpecies().getResourceIdentifier());
     }
@@ -79,6 +94,14 @@ public final class CharizardManager {
     private static final Map<UUID, UUID> SELECTED = new LinkedHashMap<>();
 
     static {
+        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DEATH.register((entity, damage) -> {
+            if (!(entity instanceof PokemonEntity pokemon)) return;
+            UUID owner = getControlledOwner(pokemon);
+            if (owner == null || entity.level().getServer() == null) return;
+            rememberFainted(owner, pokemon);
+            ServerPlayer player = entity.level().getServer().getPlayerList().getPlayer(owner);
+            if (player != null) com.pkmoba.pokemon.TeamService.markDead(player, pokemon);
+        });
         // 离线清理：玩家退出时收回其所有在场宝可梦，避免实体永远留在世界里没人管。
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
             discardAllControlled(handler.player);
@@ -137,6 +160,8 @@ public final class CharizardManager {
     public static boolean select(ServerPlayer player, PokemonEntity entity) {
         if (player == null || entity == null) return false;
         if (!getActiveList(player).contains(entity)) return false;
+        PokemonEntity previous = selectedOf(player.getUUID());
+        if (previous != null && previous != entity) com.pkmoba.combat.VenusaurCombat.clearTransient(previous);
         SELECTED.put(player.getUUID(), entity.getUUID());
         broadcastSync(player.server);
         return true;
@@ -154,6 +179,7 @@ public final class CharizardManager {
         PokemonEntity current = selectedOf(player.getUUID());
         int index = current == null ? -1 : list.indexOf(current);
         PokemonEntity next = list.get((index + 1) % list.size());
+        if (current != null && current != next) com.pkmoba.combat.VenusaurCombat.clearTransient(current);
         SELECTED.put(player.getUUID(), next.getUUID());
         broadcastSync(player.server);
         return next;
@@ -166,8 +192,8 @@ public final class CharizardManager {
         // 旧版单实体优先（训练场那条路径不进 OWNED 表）
         if (targetId.equals(activeEntityId)) return activeOwnerId;
         for (UUID owner : new ArrayList<>(OWNED.keySet())) {
-            for (PokemonEntity owned : prune(owner)) {
-                if (owned.getUUID().equals(targetId)) return owner;
+            for (PokemonEntity owned : OWNED.getOrDefault(owner, List.of())) {
+                if (owned != null && owned.getUUID().equals(targetId)) return owner;
             }
         }
         return null;
@@ -194,7 +220,14 @@ public final class CharizardManager {
     public static void registerControlled(UUID owner, PokemonEntity entity) {
         if (owner == null || entity == null) return;
         List<PokemonEntity> list = OWNED.computeIfAbsent(owner, id -> new ArrayList<>());
-        list.removeIf(e -> e == null || e.isRemoved() || !e.isAlive());
+        list.removeIf(e -> {
+            boolean removed = e == null || e.isRemoved() || !e.isAlive();
+            if (removed && e != null) {
+                rememberFainted(owner, e);
+                com.pkmoba.combat.VenusaurCombat.reset(e);
+            }
+            return removed;
+        });
         boolean exists = false;
         for (PokemonEntity owned : list) {
             if (owned.getUUID().equals(entity.getUUID())) {
@@ -249,6 +282,8 @@ public final class CharizardManager {
     /** 收回该玩家场上的指定一只（不记为阵亡）。 */
     public static void discardControlled(ServerPlayer player, PokemonEntity entity) {
         if (player == null || entity == null) return;
+        com.pkmoba.pokemon.TeamService.rememberHealth(player, entity);
+        com.pkmoba.combat.VenusaurCombat.reset(entity);
         unregisterControlled(player, entity);
         if (!entity.isRemoved()) entity.discard();
         broadcastSync(player.server);
@@ -266,6 +301,8 @@ public final class CharizardManager {
         SELECTED.remove(player.getUUID());
         boolean changed = false;
         for (PokemonEntity entity : list) {
+            com.pkmoba.pokemon.TeamService.rememberHealth(player, entity);
+            com.pkmoba.combat.VenusaurCombat.reset(entity);
             if (!entity.isRemoved()) {
                 entity.discard();
                 changed = true;
@@ -274,6 +311,7 @@ public final class CharizardManager {
         if (player.getUUID().equals(activeOwnerId)) {
             PokemonEntity training = getActive(player.server);
             if (training != null && !training.isRemoved()) {
+                com.pkmoba.combat.VenusaurCombat.reset(training);
                 training.discard();
                 changed = true;
             }
@@ -284,6 +322,7 @@ public final class CharizardManager {
 
     public static boolean isMatchEntity(PokemonEntity entity) {
         if (entity == null) return false;
+        if (activeEntityId != null && activeEntityId.equals(entity.getUUID())) return true;
         for (List<PokemonEntity> list : OWNED.values()) {
             for (PokemonEntity owned : list) {
                 if (owned == entity || owned.getUUID().equals(entity.getUUID())) return true;
@@ -297,10 +336,29 @@ public final class CharizardManager {
      *
      * @return 清理后的列表（可能为空但不会是 null）
      */
+    private static void rememberFainted(UUID ownerId, PokemonEntity entity) {
+        if (entity.getHealth() > 0 && entity.getPokemon().getCurrentHealth() > 0) return;
+        MinecraftServer server = entity.level().getServer();
+        if (server == null) return;
+        com.pkmoba.pokemon.PlayerProfile profile = com.pkmoba.pokemon.TeamService.profile(server, ownerId);
+        String species = com.pkmoba.pokemon.TeamService.speciesOf(entity);
+        if (profile.team.contains(species)) {
+            profile.markFainted(species);
+            com.pkmoba.pokemon.ProfileStore.get(server).setDirty();
+        }
+    }
+
     private static List<PokemonEntity> prune(UUID ownerId) {
         List<PokemonEntity> list = OWNED.get(ownerId);
         if (list == null) return List.of();
-        list.removeIf(e -> e == null || e.isRemoved() || !e.isAlive());
+        list.removeIf(e -> {
+            boolean removed = e == null || e.isRemoved() || !e.isAlive();
+            if (removed && e != null) {
+                rememberFainted(ownerId, e);
+                com.pkmoba.combat.VenusaurCombat.reset(e);
+            }
+            return removed;
+        });
         if (list.isEmpty()) {
             OWNED.remove(ownerId);
             SELECTED.remove(ownerId);
@@ -354,7 +412,7 @@ public final class CharizardManager {
             return null;
         }
 
-        if (!CHARIZARD_ID.equals(speciesId) && !BLASTOISE_ID.equals(speciesId)) return null;
+        if (!com.pkmoba.pokemon.SpeciesRegistry.contains(speciesId)) return null;
         Species species = PokemonSpecies.getByIdentifier(speciesId);
         if (species == null) {
             PkmobaMod.LOGGER.error("[pkmoba] 找不到物种 {}，Cobblemon 数据是否加载完成？", speciesId);
@@ -364,6 +422,7 @@ public final class CharizardManager {
         Pokemon pokemon = new Pokemon();
         pokemon.setSpecies(species);
         pokemon.setLevel(50);
+        if ("pikachu".equals(speciesId.getPath())) pokemon.setScaleModifier(2.0F);
 
         // 注意：Cobblemon 是 Kotlin，回调类型是 Function1<PokemonEntity, Unit>，
         // invoke 有返回值，所以必须写成显式匿名类并 return Unit.INSTANCE。
@@ -430,6 +489,7 @@ public final class CharizardManager {
             return false;
         }
         PkmobaMod.LOGGER.info("[pkmoba] 移除受控宝可梦 uuid={}", entity.getUUID());
+        com.pkmoba.combat.VenusaurCombat.reset(entity);
         entity.discard();
         reset();
         broadcastSync(server);
@@ -471,12 +531,13 @@ public final class CharizardManager {
     /** Spawn a match participant without replacing the training singleton. Caller owns rollback/cleanup. */
     @Nullable
     public static PokemonEntity spawnMatchEntity(ServerLevel level, Vec3 pos, ResourceLocation speciesId) {
-        if (!CHARIZARD_ID.equals(speciesId) && !BLASTOISE_ID.equals(speciesId)) return null;
+        if (!com.pkmoba.pokemon.SpeciesRegistry.contains(speciesId)) return null;
         Species species = PokemonSpecies.getByIdentifier(speciesId);
         if (species == null) return null;
         Pokemon pokemon = new Pokemon();
         pokemon.setSpecies(species);
         pokemon.setLevel(50);
+        if ("pikachu".equals(speciesId.getPath())) pokemon.setScaleModifier(2.0F);
         return pokemon.sendOut(level, groundPos(level, pos), null, e -> {
             e.setPersistenceRequired();
             e.setInvulnerable(false);
@@ -484,7 +545,9 @@ public final class CharizardManager {
             float maxHp = com.pkmoba.combat.CharizardCombat.maxHpFor(e);
             e.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH)
                     .setBaseValue(maxHp);
+            com.pkmoba.combat.PokemonHp.apply(e, maxHp);
             e.setHealth(maxHp);
+            com.pkmoba.combat.PokemonHp.apply(e, maxHp);
             return Unit.INSTANCE;
         });
     }

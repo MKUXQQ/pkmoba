@@ -46,6 +46,16 @@ public final class SkillKeys {
      */
     public static int slotForChannel(String speciesId, int channel) {
         if (channel == 0) return -1;
+        if (com.pkmoba.combat.Skill.isPikachu(speciesId)) return channel >= 11 && channel <= 14 ? channel - 11 : -1;
+        if (com.pkmoba.combat.Skill.isVenusaur(speciesId)) {
+            return switch (channel) {
+                case 7 -> 0;
+                case 8 -> 1;
+                case 9 -> 2;
+                case 10 -> 3;
+                default -> -1;
+            };
+        }
         if (com.pkmoba.combat.Skill.isBlastoise(speciesId)) {
             return switch (channel) {
                 case 4 -> 0;
@@ -57,6 +67,8 @@ public final class SkillKeys {
         }
         return switch (channel) {
             case 1 -> 0;
+            case 2 -> 1;
+            case 3 -> 2;
             case 4 -> 3;
             default -> -1;
         };
@@ -146,7 +158,8 @@ public final class SkillKeys {
         var entity = mc.level.getEntity(ClientState.getCharizardId());
         if (!(entity instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon) || !pokemon.isAlive()) return false;
         String species = pokemon.getPokemon().getSpecies().getResourceIdentifier().toString();
-        return species.equals("cobblemon:charizard") || species.equals("cobblemon:blastoise");
+        return species.equals("cobblemon:charizard") || species.equals("cobblemon:blastoise")
+                || species.equals("cobblemon:venusaur") || species.equals("cobblemon:pikachu");
     }
 
     /**
@@ -178,7 +191,14 @@ public final class SkillKeys {
         //
         // <p>松开时什么都不发：引导技能由服务端计时自然结束（channel 1/4 有各自的上限 tick），
         // 不主动发取消包。
-        boolean down = key.isDown();
+        InputConstants.Key bound = KeyBindingHelper.getBoundKeyOf(key);
+        long window = Minecraft.getInstance().getWindow().getWindow();
+        // W also belongs to vanilla movement; poll the binding instead of its shared event cache.
+        boolean down = switch (bound.getType()) {
+            case KEYSYM -> bound.getValue() >= 0 && InputConstants.isKeyDown(window, bound.getValue());
+            case MOUSE -> GLFW.glfwGetMouseButton(window, bound.getValue()) == GLFW.GLFW_PRESS;
+            case SCANCODE -> key.isDown();
+        };
         boolean pressed = down && !KEY_DOWN[index];
         KEY_DOWN[index] = down;
         // 点击队列只清空、不再逐个施放：长按重复的 click 直接丢弃，避免残留到下一 tick 造成二次触发。

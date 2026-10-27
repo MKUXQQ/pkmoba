@@ -20,6 +20,8 @@ public final class SpeciesRegistry {
     static {
         add("charizard", "喷火龙");
         add("blastoise", "水箭龟");
+        add("venusaur", "妙蛙花");
+        add("pikachu", "皮卡丘");
     }
 
     private SpeciesRegistry() {

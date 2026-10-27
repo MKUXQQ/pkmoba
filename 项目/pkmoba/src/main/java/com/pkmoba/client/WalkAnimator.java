@@ -107,14 +107,15 @@ public final class WalkAnimator {
             lastEntityId = pokemonEntity.getUUID();
         }
         boolean skillFlying = ClientState.getChannel() == 3
-                && !com.pkmoba.charizard.CharizardManager.isBlastoise(pokemonEntity);
+                && "cobblemon:charizard".equals(pokemonEntity.getPokemon().getSpecies().getResourceIdentifier().toString());
         Vec3 displacement = lastPos == null ? Vec3.ZERO : pos.subtract(lastPos);
         boolean moved = displacement.horizontalDistanceSqr() > MOVE_EPSILON_SQR;
         // Entity.tick recalculates flying/walking from distances that client interpolation
         // does not advance reliably. Apply the skill pose AFTER that tick, before rendering.
         if (skillFlying || wasSkillFlying) {
-            boolean translating = skillFlying && moved;
-            PoseType pose = skillFlying ? (translating ? PoseType.FLY : PoseType.HOVER)
+            // 插值包间隙不代表停止飞翔：整段技能保持同一个扑翼循环。
+            boolean translating = skillFlying;
+            PoseType pose = skillFlying ? PoseType.FLY
                     : (moved ? PoseType.WALK : PoseType.STAND);
             if (!skillFlying && moved) {
                 // 落回地面的这一帧同样要修 onGround，理由见下方地面分支注释。
@@ -204,6 +205,7 @@ public final class WalkAnimator {
         lastPos = null;
         lastEntityId = null;
         wasSkillFlying = false;
+        lastSkillPose = null;
         lastWalkPose = null;
         walkHoldTicks = 0;
     }

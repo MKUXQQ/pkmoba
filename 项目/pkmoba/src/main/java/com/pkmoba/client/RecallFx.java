@@ -5,8 +5,17 @@ import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.Minecraft;
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemDisplayContext;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.core.registries.BuiltInRegistries;
+import com.mojang.math.Axis;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
@@ -14,21 +23,15 @@ import java.util.Iterator;
 import java.util.List;
 
 /**
- * 红光召回 / 放出的光束（0.41.8，客户端自绘）。
- *
- * <p>用户 m05076：「按 C 收回我需要一束红光，要你自己画的，然后收回到宝可梦球中
- * 并且融入玩家身体里面」。所以这里画的是三段：
- * <ol>
- *   <li>宝可梦身上一圈向内收的红环；</li>
- *   <li>从宝可梦中心到玩家胸口的一束红色光带（越靠中间越亮、边缘透明）；</li>
- *   <li>一个沿光带飞行的红色光球，最后在玩家身上爆开一小片红光。</li>
- * </ol>
- * 全部用 {@link RenderType#debugQuads()} 的纯色四边形，不依赖任何贴图/实体。
+ * Client recall presentation: the player's red beam reaches the Pokémon,
+ * the Pokémon is absorbed, and Cobblemon's original 3D Poké Ball item model
+ * travels back to the player's chest. Beam/glow geometry is drawn separately
+ * from the native item renderer so changing render types cannot invalidate it.
  */
 public final class RecallFx {
-    /** 总时长默认 14 tick（与服务端 RecallBeam 一致）。 */
     private static final float BEAM_WIDTH = 0.16F;
     private static final float CORE_WIDTH = 0.06F;
+    private static final float BALL_SCALE = 0.34F;
 
     private static final class Flight {
         int entityId;
@@ -50,6 +53,10 @@ public final class RecallFx {
         }
         initialized = true;
         WorldRenderEvents.AFTER_TRANSLUCENT.register(RecallFx::render);
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK
+                .register(client -> prune(client));
+        net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.DISCONNECT
+                .register((handler, client) -> FLIGHTS.clear());
     }
 
     public static void start(int entityId, int playerId, int durationTicks, boolean recall) {
@@ -62,6 +69,26 @@ public final class RecallFx {
         FLIGHTS.add(flight);
     }
 
+    public static boolean hidesEntity(int entityId) {
+        long now = System.nanoTime();
+        for (Flight flight : FLIGHTS) {
+            if (!flight.recall || flight.entityId != entityId) continue;
+            if (progress(flight, now) >= .40D) return true;
+        }
+        return false;
+    }
+
+    private static double progress(Flight flight, long now) {
+        return (now - flight.startNanos) / (flight.durationTicks * 50_000_000.0D);
+    }
+
+    private static void prune(Minecraft client) {
+        long now = System.nanoTime();
+        FLIGHTS.removeIf(flight -> progress(flight, now) >= 1.0D
+                || client.level == null || client.level.getEntity(flight.entityId) == null
+                || client.level.getEntity(flight.playerId) == null);
+    }
+
     private static void render(WorldRenderContext context) {
         if (FLIGHTS.isEmpty()) {
             return;
@@ -71,17 +98,20 @@ public final class RecallFx {
                 || context.camera() == null) {
             return;
         }
+        if (mc.player == null) {
+            FLIGHTS.clear();
+            return;
+        }
         PoseStack poseStack = context.matrixStack();
         poseStack.pushPose();
         poseStack.translate(-context.camera().getPosition().x, -context.camera().getPosition().y,
                 -context.camera().getPosition().z);
         PoseStack.Pose pose = poseStack.last();
-        VertexConsumer buffer = context.consumers().getBuffer(RenderType.debugQuads());
         long now = System.nanoTime();
         Iterator<Flight> iterator = FLIGHTS.iterator();
         while (iterator.hasNext()) {
             Flight flight = iterator.next();
-            double t = (now - flight.startNanos) / 1.0E9 / (flight.durationTicks / 20.0D);
+            double t = progress(flight, now);
             if (t >= 1.0D) {
                 iterator.remove();
                 continue;
@@ -93,7 +123,8 @@ public final class RecallFx {
                 continue;
             }
             try {
-                draw(buffer, pose, flight, mon, player, t);
+                VertexConsumer buffer = context.consumers().getBuffer(RenderType.debugQuads());
+                draw(mc, context, buffer, pose, flight, mon, player, t);
             } catch (Throwable ignored) {
                 // 纯表现：出错只跳过这一帧
             }
@@ -101,72 +132,88 @@ public final class RecallFx {
         poseStack.popPose();
     }
 
-    private static void draw(VertexConsumer buffer, PoseStack.Pose pose, Flight flight,
-                             Entity mon, Entity player, double t) {
-        Vec3 monCenter = mon.position().add(0, mon.getBbHeight() * 0.45, 0);
-        Vec3 chest = player.position().add(0, player.getBbHeight() * 0.55, 0);
-        // 召回：宝可梦 → 玩家；放出：玩家 → 宝可梦。
-        if (!flight.recall) {
-            // m05326：放出宝可梦不画红光，只有收回（C 键/换宠）才有红色激光。
-            return;
-        }
-        Vec3 from = flight.recall ? monCenter : chest;
-        Vec3 to = flight.recall ? chest : monCenter;
-        // 光带走完 70% 的时间，剩下的时间留给"融入身体"的爆闪。
-        double beamT = Math.min(1.0D, t / 0.7D);
-        Vec3 head = from.lerp(to, easeIn(beamT));
-        float fade = (float) Math.max(0.0D, 1.0D - Math.max(0.0D, (t - 0.7D) / 0.3D));
-        float pulse = 0.75F + 0.25F * (float) Math.sin(t * 22.0D);
-        float alpha = Math.min(1.0F, fade * pulse);
-        if (alpha <= 0.01F) {
-            return;
-        }
+    private static void draw(Minecraft mc, WorldRenderContext context, VertexConsumer buffer, PoseStack.Pose pose,
+                             Flight flight, Entity mon, Entity player, double t) {
+        if (!flight.recall) return;
+        Vec3 monCenter = mon.position().add(0, mon.getBbHeight() * 0.48, 0);
+        Vec3 chest = player.position().add(0, player.getBbHeight() * 0.58, 0);
+        // The recall beam travels outward first. Once the Pokémon is absorbed, the
+        // actual Cobblemon Poké Ball item returns to the player on a rising arc.
+        double collapse = smoothStep(Math.max(0.0D, Math.min(1.0D, (t - 0.24D) / 0.18D)));
+        double returnT = smoothStep(Math.max(0.0D, (t - 0.42D) / 0.58D));
+        Vec3 ballStart = monCenter;
+        Vec3 ball = ballStart.lerp(chest, returnT);
+        double arc = Math.sin(Math.PI * returnT) * Math.min(1.15D, mon.distanceTo(player) * 0.08D);
+        ball = ball.add(0, arc, 0);
+        float alpha = (float) (0.94D - 0.2D * t);
 
-        // 1) 宝可梦身边向内收的红环（只在召回且前 60% 出现）
-        if (flight.recall && t < 0.6D) {
-            double shrink = 1.0D - t / 0.6D;
-            double radius = 0.95D * shrink + 0.05D;
-            int segments = 24;
-            Vec3 center = mon.position().add(0, mon.getBbHeight() * 0.35, 0);
-            for (int i = 0; i < segments; i++) {
-                double a0 = Math.PI * 2.0 * i / segments;
-                double a1 = Math.PI * 2.0 * (i + 1) / segments;
-                Vec3 p0 = ringPoint(center, a0, radius);
-                Vec3 p1 = ringPoint(center, a1, radius);
-                Vec3 p2 = ringPoint(center, a1, radius * 0.55D);
-                Vec3 p3 = ringPoint(center, a0, radius * 0.55D);
-                quad(buffer, pose, p0, p1, p2, p3, 1.0F, 0.28F, 0.22F, alpha * 0.85F);
-            }
+        if (t < 0.48D) {
+            Vec3 beamStart = chest;
+            Vec3 beamEnd = chest.lerp(monCenter, smoothStep(t / 0.16D));
+            beam(buffer, pose, beamStart, beamEnd, alpha);
+            double radius = 0.92D * (1.0D - 0.72D * collapse);
+            ring(buffer, pose, monCenter.add(0, -0.08, 0), radius, alpha * 0.9F);
         }
-
-        // 2) 主光束（两条交叉四边形拼出一个有厚度的光带，从任何角度看都不会消失）
-        Vec3 axis = head.subtract(from);
-        if (axis.lengthSqr() > 1.0E-6D) {
-            Vec3 dir = axis.normalize();
-            Vec3 up = Math.abs(dir.y) > 0.9D ? new Vec3(1, 0, 0) : new Vec3(0, 1, 0);
-            Vec3 side = dir.cross(up).normalize();
-            Vec3 side2 = dir.cross(side).normalize();
-            ribbon(buffer, pose, from, head, side, BEAM_WIDTH, alpha * 0.55F, 1.0F, 0.30F, 0.24F);
-            ribbon(buffer, pose, from, head, side2, BEAM_WIDTH, alpha * 0.55F, 1.0F, 0.30F, 0.24F);
-            ribbon(buffer, pose, from, head, side, CORE_WIDTH, alpha * 0.95F, 1.0F, 0.62F, 0.55F);
-            ribbon(buffer, pose, from, head, side2, CORE_WIDTH, alpha * 0.95F, 1.0F, 0.62F, 0.55F);
-
-            // 3) 沿光带飞行的光球（用三片互相垂直的方片近似一个亮球）
-            float size = 0.20F + 0.10F * (1.0F - alpha);
-            billboard(buffer, pose, head, size, alpha, 1.0F, 0.72F, 0.62F);
+        if (t >= 0.34D) {
+            double glow = Math.max(0.0D, 1.0D - Math.abs(t - 0.40D) / 0.16D);
+            if (glow > 0.0D) billboard(buffer, pose, ball, 0.3F, (float) glow, 1.0F, 0.26F, 0.18F);
         }
+        if (t > 0.88D) {
+            double burst = 1.0D - (t - 0.88D) / 0.12D;
+            billboard(buffer, pose, chest, 0.18F + (float) (0.32F * (1.0D - burst)),
+                    (float) burst, 1.0F, 0.34F, 0.25F);
+        }
+        // Item rendering can change the active buffer; finish all beam vertices first.
+        if (t >= 0.34D) renderOriginalBall(mc, context, ball, t);
+    }
 
-        // 4) 收进身体那一刻的爆闪
-        if (t > 0.62D) {
-            double burst = (t - 0.62D) / 0.38D;
-            float s = (float) (0.15D + 0.55D * easeIn(burst));
-            float a = (float) Math.max(0.0D, 0.9D * (1.0D - burst));
-            billboard(buffer, pose, to, s, a, 1.0F, 0.45F, 0.38F);
+    private static void beam(VertexConsumer buffer, PoseStack.Pose pose, Vec3 from, Vec3 to, float alpha) {
+        Vec3 axis = to.subtract(from);
+        if (axis.lengthSqr() < 1.0E-6D) return;
+        Vec3 dir = axis.normalize();
+        Vec3 up = Math.abs(dir.y) > 0.9D ? new Vec3(1, 0, 0) : new Vec3(0, 1, 0);
+        Vec3 side = dir.cross(up).normalize();
+        Vec3 side2 = dir.cross(side).normalize();
+        ribbon(buffer, pose, from, to, side, BEAM_WIDTH, alpha * 0.6F, 1.0F, 0.12F, 0.10F);
+        ribbon(buffer, pose, from, to, side2, BEAM_WIDTH, alpha * 0.6F, 1.0F, 0.12F, 0.10F);
+        ribbon(buffer, pose, from, to, side, CORE_WIDTH, alpha, 1.0F, 0.82F, 0.72F);
+        ribbon(buffer, pose, from, to, side2, CORE_WIDTH, alpha, 1.0F, 0.82F, 0.72F);
+    }
+
+    private static void renderOriginalBall(Minecraft mc, WorldRenderContext context, Vec3 position, double t) {
+        Item ballItem = BuiltInRegistries.ITEM.get(ResourceLocation.fromNamespaceAndPath("cobblemon", "poke_ball"));
+        if (ballItem == Items.AIR) return;
+        ItemStack stack = new ItemStack(ballItem);
+        PoseStack stackPose = context.matrixStack();
+        stackPose.pushPose();
+        try {
+            // The outer render pose already subtracts the camera position.
+            stackPose.translate(position.x, position.y, position.z);
+            stackPose.mulPose(Axis.YP.rotationDegrees((float) (t * 1080.0D)));
+            stackPose.mulPose(Axis.XP.rotationDegrees(22.0F));
+            stackPose.scale(BALL_SCALE, BALL_SCALE, BALL_SCALE);
+            var model = mc.getItemRenderer().getModel(stack, mc.level, mc.player, 0);
+            RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, 1.0F);
+            mc.getItemRenderer().render(stack, ItemDisplayContext.GROUND, false, stackPose,
+                    context.consumers(), 0xF000F0, OverlayTexture.NO_OVERLAY, model);
+        } finally {
+            stackPose.popPose();
         }
     }
 
-    private static double easeIn(double x) {
-        return x * x;
+    private static void ring(VertexConsumer buffer, PoseStack.Pose pose, Vec3 center, double radius, float alpha) {
+        int segments = 28;
+        for (int i = 0; i < segments; i++) {
+            double a0 = Math.PI * 2 * i / segments, a1 = Math.PI * 2 * (i + 1) / segments;
+            Vec3 p0 = ringPoint(center, a0, radius), p1 = ringPoint(center, a1, radius);
+            Vec3 p2 = ringPoint(center, a1, radius * .72), p3 = ringPoint(center, a0, radius * .72);
+            quad(buffer, pose, p0, p1, p2, p3, 1, .12F, .08F, alpha);
+        }
+    }
+
+    private static double smoothStep(double x) {
+        x = Math.max(0.0D, Math.min(1.0D, x));
+        return x * x * (3.0D - 2.0D * x);
     }
 
     private static Vec3 ringPoint(Vec3 center, double angle, double radius) {
