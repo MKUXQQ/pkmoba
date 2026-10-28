@@ -5,6 +5,7 @@ import com.pkmoba.PkmobaMod;
 import com.pkmoba.charizard.CharizardManager;
 import com.pkmoba.network.StarterListPayload;
 import com.pkmoba.network.TeamStatePayload;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
@@ -34,6 +35,25 @@ public final class TeamService {
     private static final java.util.Map<UUID, Long> PENDING_REMOVE_ALL = new java.util.HashMap<>();
 
     private TeamService() {
+    }
+
+    /**
+     * 注册队伍相关的生命周期清理。由 {@link com.pkmoba.duel.DuelManager#init()} 在模组初始化时调用
+     * （TeamService 原本没有自己的 init 钩子，而 PkmobaMod 不在此次改动范围）。
+     *
+     * <p>登出时必须清掉三类只按玩家 UUID 记的内存状态：{@code /mo remove all} 的二次确认、
+     * 主动收回的 3 秒锁，以及"收回时暂存"的扩展战斗资源（否则重登后会继承旧冷去/点数，
+     * 而且离线玩家的暂存资源会一直留在服务端内存里）。
+     */
+    public static void init() {
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            ServerPlayer player = handler.getPlayer();
+            if (player == null) return;
+            UUID id = player.getUUID();
+            PENDING_REMOVE_ALL.remove(id);
+            RECALL_LOCK.remove(id);
+            com.pkmoba.combat.BattleStateReset.releaseReserves(id);
+        });
     }
 
     /**
@@ -179,6 +199,8 @@ public final class TeamService {
      * @return 成功返回 true
      */
     public static boolean choose(ServerPlayer player, String rawSpecies) {
+        var room = com.pkmoba.duel.RoomManager.roomOf(player.getUUID());
+        if (room != null && room.state == com.pkmoba.duel.RoomManager.State.COUNTDOWN) return false;
         if (!com.pkmoba.duel.DuelManager.canUseSwitchZone(player, null)) return false;
         ResourceLocation id = SpeciesRegistry.parse(rawSpecies);
         if (id == null) {
@@ -202,7 +224,9 @@ public final class TeamService {
         }
 
         if (profile.team.isEmpty()) {
+            if (!com.pkmoba.duel.RoomManager.collectionMutationAllowed(player)) return false;
             profile.team.add(species);
+            com.pkmoba.duel.RoomManager.collectionChanged(player);
             profile.activeIndex = 0;
         } else {
             int index = profile.team.indexOf(species);
@@ -222,6 +246,7 @@ public final class TeamService {
 
     /** 往队伍里添加一只宝可梦。 */
     public static boolean addSpecies(ServerPlayer player, String rawSpecies) {
+        if (!com.pkmoba.duel.RoomManager.collectionMutationAllowed(player)) return false;
         ResourceLocation id = SpeciesRegistry.parse(rawSpecies);
         if (id == null) {
             player.sendSystemMessage(Component.literal("无法识别的宝可梦：" + rawSpecies));
@@ -238,6 +263,7 @@ public final class TeamService {
             return false;
         }
         profile.team.add(species);
+        com.pkmoba.duel.RoomManager.collectionChanged(player);
         profile.fainted.remove(species);
         profile.health.remove(species);
         ProfileStore.get(player.server).setDirty();
@@ -300,7 +326,10 @@ public final class TeamService {
     /** Reset all owned roster members for a fresh match, including any deployed entities. */
     public static void healPartyForBattle(ServerPlayer player) {
         if (player == null) return;
+        RECALL_LOCK.remove(player.getUUID());
+        PENDING_REMOVE_ALL.remove(player.getUUID());
         PlayerProfile profile = profile(player.server, player.getUUID());
+        profile.activeIndex = 0;
         for (String species : profile.team) {
             profile.fainted.remove(species);
             profile.health.put(species, com.pkmoba.combat.CharizardCombat.maxHpFor(species));
@@ -344,6 +373,7 @@ public final class TeamService {
         restoreHealth(player, entity);
         com.pkmoba.combat.RecallBeam.sendOut(level, entity);
         CharizardManager.registerControlled(player.getUUID(), entity);
+        com.pkmoba.duel.RoomManager.reveal(player.getUUID(), id.toString());
         CharizardManager.broadcastSync(player.server);
         sendTeamState(player);
         return entity;
@@ -508,6 +538,7 @@ public final class TeamService {
      * @return 真的删掉了返回 true
      */
     public static boolean removeSpecies(ServerPlayer player, String rawSpecies) {
+        if (!com.pkmoba.duel.RoomManager.collectionMutationAllowed(player)) return false;
         ResourceLocation id = SpeciesRegistry.parse(rawSpecies);
         if (id == null) {
             player.sendSystemMessage(Component.literal("无法识别的宝可梦：" + rawSpecies));
@@ -527,6 +558,9 @@ public final class TeamService {
             CharizardManager.discardControlled(player, field);
         }
         profile.removeSpecies(species);
+        // 删除即终态：只清这一只收回时暂存的点数/冷却（别误伤同玩家其它物种的暂存资源）。
+        com.pkmoba.combat.ExpansionCombat.clearReserve(player.getUUID(), species);
+        com.pkmoba.duel.RoomManager.collectionChanged(player);
         ProfileStore.get(player.server).setDirty();
         CharizardManager.broadcastSync(player.server);
         sendTeamState(player);
@@ -537,6 +571,7 @@ public final class TeamService {
 
     /** 删除全部宝可梦（含场上实体）。调用方负责二次确认。 */
     public static int removeAll(ServerPlayer player) {
+        if (!com.pkmoba.duel.RoomManager.collectionMutationAllowed(player)) return 0;
         PlayerProfile profile = profile(player.server, player.getUUID());
         int count = profile.team.size();
         if (count == 0) {
@@ -545,9 +580,12 @@ public final class TeamService {
         }
         CharizardManager.discardAllControlled(player);
         profile.team.clear();
+        com.pkmoba.duel.RoomManager.collectionChanged(player);
         profile.fainted.clear();
         profile.health.clear();
         profile.activeIndex = 0;
+        // 全部删除：暂存的点数/冷却一并作废。
+        com.pkmoba.combat.BattleStateReset.releaseReserves(player.getUUID());
         ProfileStore.get(player.server).setDirty();
         CharizardManager.broadcastSync(player.server);
         sendTeamState(player);
@@ -571,6 +609,7 @@ public final class TeamService {
         PlayerProfile profile = profile(player.server, player.getUUID());
         if (!alive) profile.markFainted(species);
         // 0.38：只收回"选中的这一只"；同玩家场上其它宝可梦继续保留、各自行动。
+        com.pkmoba.combat.ExpansionCombat.rememberRecall(current);
         com.pkmoba.combat.CharizardCombat.reset(current);
         com.pkmoba.move.MoveOrderService.cancelPending(current);
         CharizardManager.unregisterControlled(player, current);
@@ -755,6 +794,7 @@ public final class TeamService {
 
     /** Revive the entire party and fully heal both stored and currently deployed Pokémon. */
     public static void revive(ServerPlayer player) {
+        if (!com.pkmoba.duel.RoomManager.collectionMutationAllowed(player)) return;
         PlayerProfile profile = profile(player.server, player.getUUID());
         profile.reviveAll();
         for (String species : profile.team) {
@@ -764,6 +804,8 @@ public final class TeamService {
         java.util.Set<PokemonEntity> deployed = new java.util.LinkedHashSet<>(CharizardManager.getActiveList(player));
         PokemonEntity selected = CharizardManager.getControlled(player);
         if (selected != null) deployed.add(selected);
+        // 复活是"整队重来"：不保留阵亡前的暂存点数/冷却。
+        com.pkmoba.combat.BattleStateReset.releaseReserves(player.getUUID());
         for (PokemonEntity entity : deployed) {
             if (entity.isRemoved()) continue;
             float maximum = com.pkmoba.combat.CharizardCombat.maxHpFor(entity);

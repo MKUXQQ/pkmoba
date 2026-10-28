@@ -7,6 +7,7 @@ import net.minecraft.world.phys.Vec3;
 import javax.annotation.Nullable;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -57,11 +58,28 @@ public final class FacingService {
     private static final float CATCH_UP_DEGREES = 90.0F;
     /** 大转角的额外倍率上限：180° 时 cap 约为 1.8 倍。 */
     private static final float CATCH_UP_BOOST = 0.8F;
+    /** 头/身体角度与锁定方向的容差（度）。yaw 已对齐但头或身体偏离超过它时，仍要重写一次（AI 会单独改头）。 */
+    private static final float FACING_TOLERANCE = 1.0F;
 
     private record Claim(Priority priority, int tick) {
     }
 
     private static final Map<UUID, Claim> CLAIMS = new HashMap<>();
+
+    /**
+     * 预瞄（AIM）最近一次真正写朝向的 tick（0.48.5）。
+     *
+     * <p>原实现只有"同 tick 仲裁"：{@code MoveOrderService} 的 MOVE 请求先写（110°/t），
+     * AIM 后写但只有 58°/t，于是每 tick 净效果仍被拉向移动方向 ——
+     * 用户看到的就是"走动/施法收尾后模型不跟鼠标，只有引导时跟"。
+     *
+     * <p>现在只要 AIM 在本 tick 或上一 tick 写过，MOVE/ATTACK 这种更弱的来源<b>直接不写、不占位</b>，
+     * 让 AIM 成为唯一的水平朝向写者；施法期间则由 {@link CastLock} 独占（连 AIM 也让位）。
+     */
+    private static final Map<UUID, Integer> AIM_OWNED = new HashMap<>();
+
+    /** AIM 抢占的宽限：上一 tick 写过就继续独占，避免"移动指令每隔一 tick 插一脚"导致的抖动。 */
+    private static final int AIM_OWN_TICKS = 2;
 
     private FacingService() {
     }
@@ -83,6 +101,20 @@ public final class FacingService {
 
         UUID id = entity.getUUID();
         int tick = entity.tickCount;
+
+        // 0.48.5：预瞄 / 施法锁定期间，弱来源（移动、旧的攻击系统）不得抢写朝向。
+        // 顺序说明：MoveOrderService 的 END tick 比 CharizardCombat 早，MOVE 每 tick 先写，
+        // 单靠下面的同 tick 仲裁只能挡住"AIM 之后来的"来源，挡不住"先写的大角度"。
+        if (priority == Priority.MOVE || priority == Priority.ATTACK) {
+            if (CastLock.active(entity) || aimOwned(entity)) {
+                return;
+            }
+        }
+        // 施法锁定是绝对权威：期间连鼠标预瞄都不许改方向（收招结束后才放开）。
+        if (priority == Priority.AIM && CastLock.active(entity)) {
+            return;
+        }
+
         Claim claim = CLAIMS.get(id);
         // 同一 tick 已经有同级或更强的来源写过朝向：让位，避免两个系统互相拉扯。
         // 用 >= 而不是 > 的原因：弱来源后到时不能把强来源刚写好的角度又拉回去。
@@ -90,6 +122,11 @@ public final class FacingService {
             return;
         }
         CLAIMS.put(id, new Claim(priority, tick));
+        if (priority == Priority.AIM) {
+            // 记下"预瞄正在接管"：即使本 tick 已经对准（下面 gap≈0 直接 return），
+            // 弱来源也必须在接下来的 tick 里让位。
+            AIM_OWNED.put(id, tick);
+        }
 
         float desired = (float) (Math.toDegrees(Math.atan2(dir.z, dir.x)) - 90.0);
         float current = entity.getYRot();
@@ -109,6 +146,11 @@ public final class FacingService {
         }
         float step = Mth.clamp(gap, -cap, cap);
         if (Math.abs(step) < 0.01F) {
+            // 0.48.5：yaw 已对齐时也不能"什么都不做" —— 实体 AI/LookControl 会单独改 head/body 角度，
+            // 让状态看起来"朝向正确但头在乱转"。偏差超过容差就按目标角重写一次，把三套角度抹平。
+            if (headOrBodyOff(entity, desired)) {
+                write(entity, desired);
+            }
             return;
         }
         float next = current + step;
@@ -163,6 +205,83 @@ public final class FacingService {
         write(entity, desired);
     }
 
+    /**
+     * 无条件立刻转到位（0.48.5，施法确认帧的"起手即转向"专用）。
+     *
+     * <p>与 {@link #snap} 的唯一区别：**不看同 tick 仲裁**。原因：技能包在包处理阶段先于本 tick 的
+     * Combat tick 执行，此时 {@code CLAIMS} 里可能还留着上一 tick 某个 CHANNEL 来源的 claim，
+     * 而仲裁比较用的是 {@code entity.tickCount}（实体尚未 tick、数值没变），于是"同级或更强"的判断
+     * 会把这次起手 snap 吃掉，表现为"按下技能后模型还朝旧方向慢慢转半个身位"。
+     * 起手朝向必须绝对权威：这里强制写入，并把 claim 记成 CHANNEL 最高的那一档。
+     */
+    public static void force(@Nullable PokemonEntity entity, @Nullable Vec3 dir) {
+        if (entity == null || dir == null) {
+            return;
+        }
+        double horizontal = Math.sqrt(dir.x * dir.x + dir.z * dir.z);
+        if (horizontal < 1.0E-6) {
+            return;
+        }
+        int tick = entity.tickCount;
+        CLAIMS.put(entity.getUUID(), new Claim(Priority.CHANNEL, tick));
+        // 同时记 ownership：起手这一 tick 的 MOVE/ATTACK 也必须让位（它们可能在本 tick 稍后才跑）。
+        AIM_OWNED.put(entity.getUUID(), tick);
+        float desired = (float) (Math.toDegrees(Math.atan2(dir.z, dir.x)) - 90.0);
+        write(entity, desired);
+    }
+
+    /**
+     * 施法锁定期间逐 tick 重申朝向（0.48.5，{@link CastLock} 专用）。
+     *
+     * <p>与 {@link #request} 的区别：不参与同 tick 仲裁，也不会被已有 claim 挡住 ——
+     * 它就是本 tick 的最终写者（调用点在 {@code AimTracker.track} 里，位于 Combat tick 的末尾）。
+     * 只在模型还没完全对齐锁定方向时补步，已对齐则不重复发包。
+     */
+    public static void hold(PokemonEntity entity, @Nullable Vec3 dir) {
+        if (entity == null || dir == null) {
+            return;
+        }
+        double horizontal = Math.sqrt(dir.x * dir.x + dir.z * dir.z);
+        if (horizontal < 1.0E-6) {
+            return;
+        }
+        int tick = entity.tickCount;
+        CLAIMS.put(entity.getUUID(), new Claim(Priority.CHANNEL, tick));
+        float desired = (float) (Math.toDegrees(Math.atan2(dir.z, dir.x)) - 90.0);
+        float gap = Mth.wrapDegrees(desired - entity.getYRot());
+        float cap = CHANNEL_RATE;
+        if (Math.abs(gap) > CATCH_UP_DEGREES) {
+            // 起手 snap 被客户端插值抹掉半帧、或锁定方向被位移技能带偏时，2 tick 内补到位。
+            cap *= 1.0F + CATCH_UP_BOOST;
+        }
+        float step = Mth.clamp(gap, -cap, cap);
+        if (Math.abs(step) < 0.01F) {
+            // 0.48.5：yaw 对齐了也不能直接退出 —— 原版 LookControl / 实体 AI 每 tick 只改 head/body 角度
+            // （尤其施法引导时它们仍在跑），yaw 不变但头会歪，表现为"锁期间头乱动"。
+            // 所以这里补一次头/身体偏差检查：不一致就按锁定角重写一次（write 会把三套角度一起抹平）。
+            if (headOrBodyOff(entity, desired)) {
+                write(entity, desired);
+            }
+            return;
+        }
+        write(entity, entity.getYRot() + step);
+    }
+
+    /** 头或身体相对目标角的偏差是否超过容差（度）。 */
+    private static boolean headOrBodyOff(PokemonEntity entity, float desired) {
+        return Math.abs(Mth.wrapDegrees(entity.getYHeadRot() - desired)) > FACING_TOLERANCE
+                || Math.abs(Mth.wrapDegrees(entity.yBodyRot - desired)) > FACING_TOLERANCE;
+    }
+
+    /** 预瞄是否正在接管这只宝可梦的朝向（最近 {@link #AIM_OWN_TICKS} tick 内 AIM 写过）。 */
+    public static boolean aimOwned(@Nullable PokemonEntity entity) {
+        if (entity == null) {
+            return false;
+        }
+        Integer tick = AIM_OWNED.get(entity.getUUID());
+        return tick != null && entity.tickCount - tick <= AIM_OWN_TICKS;
+    }
+
     /** 把三套角度写成同一个值并请求本 tick 发包（FacingService 的唯一写入点）。 */
     private static void write(PokemonEntity entity, float yaw) {
         entity.setYRot(yaw);
@@ -174,12 +293,25 @@ public final class FacingService {
     /** 清空仲裁记录（换人/收回/对局结束）。 */
     public static void clear() {
         CLAIMS.clear();
+        AIM_OWNED.clear();
     }
 
     /** 清掉某一只的记录。 */
     public static void clear(PokemonEntity entity) {
         if (entity != null) {
             CLAIMS.remove(entity.getUUID());
+            AIM_OWNED.remove(entity.getUUID());
         }
+    }
+
+    /**
+     * 只保留仍在受控集合里的仲裁记录（0.48.5，由 {@link CastLock#retain} 每 tick 调用一次）。
+     *
+     * <p>收回/换宝可梦时实体还活着但不再受控，这条链路上不会再有人替它清表；
+     * 不清的话 UUID 会一直堆在 {@code CLAIMS}/{@code AIM_OWNED} 里。
+     */
+    static void retain(Set<UUID> keep) {
+        CLAIMS.keySet().retainAll(keep);
+        AIM_OWNED.keySet().retainAll(keep);
     }
 }

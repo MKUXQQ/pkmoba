@@ -45,6 +45,11 @@ public final class VenusaurCombat {
             R_BURST_DAMAGE = 20, R_POISON_DAMAGE = 4;
     public static final int Q_HIT_TICK = 20, Q_CAST_TICKS = 30,
             R_CHARGE_TICKS = 30, R_CAST_TICKS = 48, R_FIELD_TICKS = 70;
+    /**
+     * 0.48.5：Q 藤鞭只在"点击方向"左右各 {@code 25°} 的窄扇形内索敌（存 cos 值省掉每个候选的 atan2）。
+     * 超出扇形不自动转身去打侧面/背后，宁可朝点击方向抽空。
+     */
+    private static final double Q_CONE_COS = Math.cos(Math.toRadians(25.0));
     private static final ResourceLocation SLOW_ID = ResourceLocation.fromNamespaceAndPath("pkmoba", "venusaur_slow");
     private static final Map<UUID, State> STATES = new HashMap<>();
     private static final Map<UUID, SlowState> SLOWS = new HashMap<>();
@@ -85,6 +90,8 @@ public final class VenusaurCombat {
     }
 
     public static void updateAim(PokemonEntity entity, Vec3 aim) {
+        // 0.48.5：施法锁定期间不再接受新鼠标 —— 方向/落点在确认施法那一帧已定。
+        if (CastLock.active(entity)) return;
         State state = STATES.get(entity.getUUID());
         if (state != null && finite(aim)) state.aim = aim;
     }
@@ -179,7 +186,19 @@ public final class VenusaurCombat {
             sendEffect(level, entity, KIND_R_FIELD, state.projectileStart,
                     state.destination.subtract(state.projectileStart), R_RANGE, state.castTicks, -1);
         }
-        FacingService.request(entity, FacingService.Priority.CHANNEL, state.direction, 360);
+        // 0.48.5：确认施法这一帧锁死方向/落点（见 CastLock）。引导期间每 tick 重申的都是这份值，
+        // 鼠标、AI、旧移动指令都改不了；藤鞭/落光/花之舞的判定点与模型朝向取自同一份。
+        // 注意：Q 的藤鞭索敌只在"点击方向"的窄扇形内（见 acquireInCone），索敌结果不会反过来改这里的锁定方向。
+        switch (skill) {
+            case Q -> CastLock.begin(entity, CastLock.Shape.LINE, state.direction, null, state.castTicks);
+            case W -> CastLock.begin(entity, CastLock.Shape.POINT, state.direction, state.destination, state.castTicks);
+            // 0.48.5：E 是"蓄力 → 沿方向发射光束"（不是位移），所以锁 LINE；beam()/beamLength() 都读锁定的方向。
+            case E -> CastLock.begin(entity, CastLock.Shape.LINE, state.direction, null, state.castTicks);
+            case R -> CastLock.begin(entity, CastLock.Shape.POINT, state.direction, state.destination,
+                    state.castTicks + R_FIELD_TICKS);
+        }
+        FacingService.request(entity, FacingService.Priority.CHANNEL,
+                CastLock.dirOr(entity, state.direction), 360);
         syncHud(player, entity);
     }
 
@@ -245,6 +264,8 @@ public final class VenusaurCombat {
         STATES.clear();
         for (SlowState slow : SLOWS.values()) removeSlowModifier(slow.target);
         SLOWS.clear();
+        // 0.48.5：对局结束/全员收回时把施法锁与朝向仲裁一起清掉。
+        CastLock.clearAll();
     }
 
     public static void sendEffect(ServerLevel level, PokemonEntity entity, String kind, Vec3 position,
@@ -292,13 +313,13 @@ public final class VenusaurCombat {
             if (++age % 20 == 0) points = Math.min(10, points + 1.0F);
             long now = level.getGameTime();
             if (channel != 0) {
-                // Every cast tracks the latest mouse aim; idle movement keeps its own facing.
-                direction = CharizardCombat.aimDirection(entity, aim);
+                // 0.48.5：引导期间方向只读施法锁定值（起手那一帧已定），不再每 tick 重读鼠标。
+                direction = CastLock.dirOr(entity, CharizardCombat.aimDirection(entity, aim));
                 elapsed++;
                 if (channel == 3) {
                     entity.getNavigation().stop();
                     stop(entity);
-                    direction = CharizardCombat.aimDirection(entity, aim);
+                    direction = CastLock.dirOr(entity, CharizardCombat.aimDirection(entity, aim));
                     FacingService.request(entity, FacingService.Priority.CHANNEL, direction, 360);
                     if (elapsed < 28) sendEffect(level, entity, KIND_E_CHARGE, flower(entity), direction, E_RANGE, 28 - elapsed, elapsed / 28.0F);
                     else if (elapsed < 40) {
@@ -314,15 +335,17 @@ public final class VenusaurCombat {
                         if (elapsed == Q_HIT_TICK) vine(level);
                         if (elapsed >= castTicks) finishCast();
                     } else if (channel == 2) {
-                        direction = CharizardCombat.aimDirection(entity, aim);
+                        // 0.48.5：引导期间不再重读鼠标（旧代码每 tick 用 aim 覆盖 direction，模型会跟着鼠标转）。
+                        direction = CastLock.dirOr(entity, direction);
                         if (elapsed < 20) sendEffect(level, entity, KIND_W_CHARGE, flower(entity), direction, 1.25, 20 - elapsed, elapsed / 20.0F);
                         if (elapsed == 20 || elapsed == 24 || elapsed == 28) launchLeaf(level);
                         if (elapsed >= castTicks) finishCast();
                     } else if (channel == 4) {
-                        // Track cursor throughout the charge, then lock the authoritative lob endpoint.
+                        // 0.48.5：落点在确认施法那一帧锁定（CastLock POINT），蓄力期间只读不回写；
+                        // 旧代码每 tick 用实时 aim 重算 destination，等于"确认之后还能改落点"。
                         if (elapsed <= R_CHARGE_TICKS) {
                             projectileStart = flower(entity);
-                            destination = ground(level, entity, targeted(entity, aim, R_RANGE));
+                            destination = CastLock.pointOr(entity, destination);
                             if (elapsed % 2 == 0) sendEffect(level, entity, KIND_R_FIELD, projectileStart,
                                     destination.subtract(projectileStart), R_RANGE, R_CAST_TICKS - elapsed, -1);
                         }
@@ -349,14 +372,30 @@ public final class VenusaurCombat {
         }
 
         void updateVine(ServerLevel level) {
-            if (!validLock(level, entity, vineTarget, Q_RANGE)) vineTarget = acquire(level, entity, aim, Q_RANGE);
+            // 0.48.5：藤鞭的朝向永远是"确认施法时的点击方向"（CastLock 的 LINE 方向），索敌结果不能反过来改它。
+            // 目标只在锁定方向左右 25° 的窄扇形里找；目标失效/跑出扇形就在扇形内重找，找不到就沿点击方向直抽。
+            Vec3 aimDir = CastLock.dirOr(entity, CharizardCombat.aimDirection(entity, aim));
+            Vec3 flatDir = new Vec3(aimDir.x, 0.0, aimDir.z);
+            if (flatDir.lengthSqr() < 1.0E-8) {
+                flatDir = CharizardCombat.modelForward(entity);
+            } else {
+                flatDir = flatDir.normalize();
+            }
+            if (!validLock(level, entity, vineTarget, Q_RANGE) || !inCone(entity, vineTarget, flatDir)) {
+                vineTarget = acquireInCone(level, entity, aim, Q_RANGE, flatDir);
+            }
             Vec3 from = flower(entity);
-            vineEnd = vineTarget == null ? from.add(CharizardCombat.aimDirection(entity, aim).scale(Q_RANGE))
-                    : vineTarget.getBoundingBox().getCenter();
-            HitResult hit = level.clip(new ClipContext(from, vineEnd, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
-            if (hit.getType() != HitResult.Type.MISS) vineEnd = hit.getLocation();
+            Vec3 end = from.add(flatDir.scale(Q_RANGE));
+            if (vineTarget != null) {
+                // 把藤鞭末端压回锁定射线上（取目标中心在射线上的投影长度）。否则偏离一点的目标会把整条藤鞭
+                // 拽向自己，出现"模型朝点击方向、藤鞭却斜着抽"的视角错位；压回射线后判定与朝向同源。
+                double along = vineTarget.getBoundingBox().getCenter().subtract(from).dot(flatDir);
+                along = Math.max(0.0, Math.min(Q_RANGE, along));
+                end = from.add(flatDir.scale(along));
+            }
+            HitResult hit = level.clip(new ClipContext(from, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
+            vineEnd = hit.getType() == HitResult.Type.MISS ? end : hit.getLocation();
             Vec3 delta = vineEnd.subtract(from);
-            direction = delta.normalize();
             sendEffect(level, entity, KIND_Q_VINE, from, delta, delta.length(), Q_CAST_TICKS - elapsed, elapsed);
         }
 
@@ -410,12 +449,12 @@ public final class VenusaurCombat {
 
         void beam(ServerLevel level) {
             Vec3 from = flower(entity);
-            Vec3 beamDirection = CharizardCombat.aimDirection(entity, aim);
+            // 0.48.5：E 是"蓄力后沿确认方向发射光束"，方向读施法锁定值，不再每 tick 追鼠标。
+            Vec3 beamDirection = CastLock.dirOr(entity, CharizardCombat.aimDirection(entity, aim));
             Vec3 intended = from.add(beamDirection.scale(E_RANGE));
             HitResult hit = level.clip(new ClipContext(from, intended, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
             Vec3 end = hit.getType() == HitResult.Type.MISS ? intended : hit.getLocation();
             double length = from.distanceTo(end);
-            direction = beamDirection;
             for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class, new AABB(from, end).inflate(E_RADIUS),
                     candidate -> validEnemy(candidate, entity))) {
                 if (!target.getBoundingBox().inflate(E_RADIUS).contains(from) && target.getBoundingBox().inflate(E_RADIUS).clip(from, end).isEmpty()) continue;
@@ -426,7 +465,8 @@ public final class VenusaurCombat {
 
         double beamLength(ServerLevel level) {
             Vec3 from = flower(entity);
-            Vec3 intended = from.add(CharizardCombat.aimDirection(entity, aim).scale(E_RANGE));
+            Vec3 beamDirection = CastLock.dirOr(entity, CharizardCombat.aimDirection(entity, aim));
+            Vec3 intended = from.add(beamDirection.scale(E_RANGE));
             HitResult hit = level.clip(new ClipContext(from, intended, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
             return from.distanceTo(hit.getType() == HitResult.Type.MISS ? intended : hit.getLocation());
         }
@@ -445,11 +485,19 @@ public final class VenusaurCombat {
             sendEffect(level, entity, KIND_R_FIELD, center, Vec3.ZERO, R_RADIUS, R_FIELD_TICKS, 1);
         }
 
-        void finishCast() { channel = 0; elapsed = 0; FacingService.clear(entity); }
+        void finishCast() {
+            channel = 0;
+            elapsed = 0;
+            // 0.48.5：收招再锁 2 tick 再交还预瞄（释放瞬间不要被鼠标甩走）。
+            CastLock.finish(entity, 2);
+            FacingService.clear(entity);
+        }
         void clear() {
             boolean active = channel != 0 || flowerCenter != null || !leaves.isEmpty();
             finishCast(); leaves.clear(); beamHit.clear(); vineTarget = null; vineEnd = null;
             flowerCenter = null; flowerPoison = false;
+            // 0.48.5：取消/死亡/换人时硬释放（不能按 finish 留 2 tick）。
+            CastLock.release(entity);
             if (active && entity.level() instanceof ServerLevel level) sendEffect(level, entity, KIND_CLEAR, entity.position(), Vec3.ZERO, 0, 0, 0);
         }
     }
@@ -475,6 +523,30 @@ public final class VenusaurCombat {
             if (candidateScore < score) { score = candidateScore; best = candidate; }
         }
         return best;
+    }
+
+    /**
+     * 0.48.5：Q 藤鞭的"点击方向优先"索敌 —— 只在确认方向左右 {@link #Q_CONE_COS}（25°）的窄扇形内找目标，
+     * 圈内仍按"离光标最近"排序；圈内没有目标就返回 null，藤鞭沿点击方向直抽。
+     * 这样它不会自动转身/抽向侧面或背后的目标（用户要的是"我点哪儿打哪儿"）。
+     */
+    private static LivingEntity acquireInCone(ServerLevel level, PokemonEntity source, Vec3 aim, double range, Vec3 flatDir) {
+        LivingEntity best = null;
+        double score = Double.MAX_VALUE;
+        for (LivingEntity candidate : enemies(level, source, source.position(), range)) {
+            if (!validLock(level, source, candidate, range)) continue;
+            if (!inCone(source, candidate, flatDir)) continue;
+            double candidateScore = candidate.position().multiply(1, 0, 1).distanceToSqr(aim.multiply(1, 0, 1));
+            if (candidateScore < score) { score = candidateScore; best = candidate; }
+        }
+        return best;
+    }
+
+    /** 目标是否落在 {@code flatDir} 左右 25° 的水平窄扇形内。 */
+    private static boolean inCone(PokemonEntity source, LivingEntity target, Vec3 flatDir) {
+        if (target == null) return false;
+        Vec3 toTarget = target.position().subtract(source.position()).multiply(1, 0, 1);
+        return toTarget.lengthSqr() > 1.0E-8 && toTarget.normalize().dot(flatDir) >= Q_CONE_COS;
     }
     private static boolean validEnemy(LivingEntity target, PokemonEntity source) {
         if (!BasicAttack.validTarget(target, source) || target.getUUID().equals(CharizardManager.getControlledOwner(source))) return false;

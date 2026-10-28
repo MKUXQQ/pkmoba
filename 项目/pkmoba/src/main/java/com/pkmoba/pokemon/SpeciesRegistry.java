@@ -17,11 +17,21 @@ public final class SpeciesRegistry {
 
     private static final List<Entry> ENTRIES = new ArrayList<>();
 
+    // 0.51 扩展物种：8 只新物种的战斗/控制/动画已通过构建，这里注册后即进入选人界面、
+    // 指令补全（MoCommand）、队伍（TeamService）、房间/DuelManager 与头像解析，无需改别处。
     static {
         add("charizard", "喷火龙");
         add("blastoise", "水箭龟");
         add("venusaur", "妙蛙花");
         add("pikachu", "皮卡丘");
+        add("blaziken", "火焰鸡");
+        add("gardevoir", "沙奈朵");
+        add("scizor", "巨钳螳螂");
+        add("gengar", "耿鬼");
+        add("garchomp", "烈咬陆鲨");
+        add("lucario", "路卡利欧");
+        add("tyranitar", "班基拉斯");
+        add("abomasnow", "暴雪王");
     }
 
     private SpeciesRegistry() {

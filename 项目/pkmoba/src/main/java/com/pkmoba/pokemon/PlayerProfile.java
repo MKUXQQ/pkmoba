@@ -13,6 +13,8 @@ public final class PlayerProfile {
     public final List<String> team = new ArrayList<>();
     /** 已阵亡、需要复活才能再上场的物种 id。 */
     public final Set<String> fainted = new LinkedHashSet<>();
+    /** Persistent personal stars, independent of ownership and match selection. */
+    public final Set<String> favorites = new LinkedHashSet<>();
     /** 收回后保存的实际剩余血量；缺省表示从未出战。 */
     public final java.util.Map<String, Float> health = new java.util.LinkedHashMap<>();
     /** 当前上场的是队伍第几只（0 起）。 */

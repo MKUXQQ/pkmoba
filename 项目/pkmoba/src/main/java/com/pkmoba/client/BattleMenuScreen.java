@@ -71,7 +71,7 @@ public final class BattleMenuScreen extends Screen {
         graphics.fill(0, 0, width, height, 0xC0000000);
         int x = left(), y = top(), w = panelWidth();
         drawPanel(graphics, x, y, w, 190);
-        graphics.drawCenteredString(font, title, width / 2, y + 17, TEXT);
+        PixelUi.centered(graphics, font, title, width / 2, y + 17, TEXT);
         drawButton(graphics, font, "邀请玩家 1v1", x + 20, y + 42, w - 40, 32,
                 inside(mouseX, mouseY, x + 20, y + 42, w - 40, 32), false, true);
 
@@ -81,10 +81,10 @@ public final class BattleMenuScreen extends Screen {
                 inside(mouseX, mouseY, x + 20, rowY, 22, 20), false, arenaIndex > 0);
         drawButton(graphics, font, ">", x + w - 42, rowY, 22, 20,
                 inside(mouseX, mouseY, x + w - 42, rowY, 22, 20), false, arenaIndex < arenas.size());
-        graphics.drawCenteredString(font, "场地：" + arenaLabel(), width / 2, rowY + 6, TEXT);
+        PixelUi.centered(graphics, font, "场地：" + arenaLabel(), width / 2, rowY + 6, TEXT);
 
-        graphics.drawCenteredString(font, "双方各控一只宝可梦，先倒下判负", width / 2, y + 118, TEXT);
-        graphics.drawCenteredString(font,
+        PixelUi.centered(graphics, font, "双方各控一只宝可梦，先倒下判负", width / 2, y + 118, TEXT);
+        PixelUi.centered(graphics, font,
                 arenas.isEmpty() ? "先画四点边界，再放红蓝玩家点即可创建场地" : "选择玩家并发送挑战邀请",
                 width / 2, y + 134, MUTED);
         drawButton(graphics, font, "关闭", x + w / 2 - 38, y + 154, 76, 23,
@@ -135,6 +135,6 @@ public final class BattleMenuScreen extends Screen {
         graphics.fill(x + 2, y + 2, x + w - 2, y + h - 2,
                 selected ? 0xFFE4C77D : hovered && enabled ? HIGHLIGHT : PANEL);
         graphics.fill(x + 2, y + h - 4, x + w - 2, y + h - 2, SHADOW);
-        graphics.drawCenteredString(font, label, x + w / 2, y + (h - 8) / 2, enabled ? TEXT : MUTED);
+        PixelUi.centered(graphics, font, label, x + w / 2, y + (h - 8) / 2, enabled ? TEXT : MUTED);
     }
 }

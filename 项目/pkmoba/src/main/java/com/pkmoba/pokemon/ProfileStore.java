@@ -19,6 +19,8 @@ public final class ProfileStore extends SavedData {
     private static final String NAME = "pkmoba_profiles";
 
     private final Map<UUID, PlayerProfile> profiles = new HashMap<>();
+    /** Match-only profiles; never serialized, and never mutate owned collection lists. */
+    private final Map<UUID, PlayerProfile> battleProfiles = new HashMap<>();
 
     public static ProfileStore get(MinecraftServer server) {
         return server.overworld().getDataStorage().computeIfAbsent(
@@ -35,6 +37,8 @@ public final class ProfileStore extends SavedData {
                 PlayerProfile profile = new PlayerProfile(id);
                 ListTag team = entry.getList("team", Tag.TAG_STRING);
                 for (int j = 0; j < team.size(); j++) profile.team.add(team.getString(j));
+                ListTag favorites = entry.getList("favorites", Tag.TAG_STRING);
+                for (int j = 0; j < favorites.size(); j++) profile.favorites.add(favorites.getString(j));
                 ListTag fainted = entry.getList("fainted", Tag.TAG_STRING);
                 for (int j = 0; j < fainted.size(); j++) profile.fainted.add(fainted.getString(j));
                 CompoundTag health = entry.getCompound("health");
@@ -60,6 +64,9 @@ public final class ProfileStore extends SavedData {
             ListTag team = new ListTag();
             for (String id : profile.team) team.add(StringTag.valueOf(id));
             entry.put("team", team);
+            ListTag favorites = new ListTag();
+            for (String id : profile.favorites) favorites.add(StringTag.valueOf(id));
+            entry.put("favorites", favorites);
             ListTag fainted = new ListTag();
             for (String id : profile.fainted) fainted.add(StringTag.valueOf(id));
             entry.put("fainted", fainted);
@@ -74,8 +81,24 @@ public final class ProfileStore extends SavedData {
     }
 
     public PlayerProfile profile(UUID id) {
+        PlayerProfile battle = battleProfiles.get(id);
+        return battle != null ? battle : collection(id);
+    }
+
+    public PlayerProfile collection(UUID id) {
         return profiles.computeIfAbsent(id, PlayerProfile::new);
     }
+
+    public boolean beginBattle(UUID id, java.util.List<String> roster) {
+        if (battleProfiles.containsKey(id) || roster.isEmpty()) return false;
+        PlayerProfile battle = new PlayerProfile(id);
+        battle.team.addAll(roster);
+        battleProfiles.put(id, battle);
+        return true;
+    }
+
+    public void endBattle(UUID id) { battleProfiles.remove(id); }
+    public void clearBattles() { battleProfiles.clear(); }
 
     @Nullable
     public PlayerProfile peek(UUID id) {

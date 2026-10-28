@@ -48,6 +48,8 @@ public final class SkillPresentation {
     }
 
     public static ResourceLocation icon(PokemonEntity pokemon, int index) {
+        var expansion = com.pkmoba.combat.ExpansionCombat.species(pokemon);
+        if (expansion != null) return icon(expansion.id(), index);
         String[] icons = Skill.isPikachu(pokemon) ? PIKACHU_ICONS : Skill.isVenusaur(pokemon) ? VENUSAUR_ICONS
                 : Skill.isBlastoise(pokemon) ? BLASTOISE_ICONS : ICONS;
         return ResourceLocation.fromNamespaceAndPath("pkmoba", "textures/gui/skills/" + icons[index] + ".png");
@@ -55,6 +57,8 @@ public final class SkillPresentation {
 
     /** 按物种 id 取图标（宝可梦还没召唤出来时 HUD 也要能画对）。 */
     public static ResourceLocation icon(String speciesId, int index) {
+        var expansion = com.pkmoba.combat.ExpansionRoster.find(speciesId);
+        if (expansion != null) return ResourceLocation.fromNamespaceAndPath("pkmoba", "textures/gui/skills/" + expansion.id() + "_" + "qwer".charAt(index) + ".png");
         String[] icons = Skill.isPikachu(speciesId) ? PIKACHU_ICONS : Skill.isVenusaur(speciesId) ? VENUSAUR_ICONS
                 : Skill.isBlastoise(speciesId) ? BLASTOISE_ICONS : ICONS;
         return ResourceLocation.fromNamespaceAndPath("pkmoba", "textures/gui/skills/" + icons[index] + ".png");
@@ -66,7 +70,8 @@ public final class SkillPresentation {
         if (!(entity instanceof PokemonEntity pokemon) || !pokemon.isAlive()) return false;
         try {
             return "cobblemon:charizard".equals(pokemon.getPokemon().getSpecies().getResourceIdentifier().toString())
-                    || Skill.isBlastoise(pokemon) || Skill.isVenusaur(pokemon) || Skill.isPikachu(pokemon);
+                    || Skill.isBlastoise(pokemon) || Skill.isVenusaur(pokemon) || Skill.isPikachu(pokemon)
+                    || com.pkmoba.combat.ExpansionCombat.supports(pokemon);
         } catch (RuntimeException ignored) {
             return false;
         }

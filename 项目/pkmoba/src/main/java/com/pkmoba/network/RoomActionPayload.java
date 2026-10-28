@@ -22,9 +22,9 @@ public record RoomActionPayload(String action, int roomId, String arg) implement
             (buf, p) -> {
                 buf.writeUtf(p.action == null ? "" : p.action, 32);
                 buf.writeVarInt(Math.max(0, p.roomId));
-                buf.writeUtf(p.arg == null ? "" : p.arg, 128);
+                buf.writeUtf(p.arg == null ? "" : p.arg, 256);
             },
-            buf -> new RoomActionPayload(buf.readUtf(32), buf.readVarInt(), buf.readUtf(128)));
+            buf -> new RoomActionPayload(buf.readUtf(32), buf.readVarInt(), buf.readUtf(256)));
 
     public static RoomActionPayload of(String action) {
         return new RoomActionPayload(action, 0, "");

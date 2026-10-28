@@ -2,6 +2,7 @@ package com.pkmoba.client;
 
 import com.pkmoba.network.StarterChoosePayload;
 import com.pkmoba.network.StarterListPayload;
+import com.pkmoba.network.RoomListPayload;
 import com.pkmoba.pokemon.SpeciesRegistry;
 import java.util.List;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
@@ -20,15 +21,21 @@ import net.minecraft.resources.ResourceLocation;
  *   <li>ADD：点卡片先「选中」，再点「获取」才真正请求服务端加入队伍；
  *       服务端会把关（是否已拥有、队伍是否已满、物种是否存在），失败给原因。</li>
  * </ul>
+ *
+ * <p>0.51 扩展物种：物种扩到 12 只后单排放不下，改为自适应网格——最多 4 列 × 3 行，
+ * 屏幕窄时自动减列并翻页（每页容量 = 列数 × 行数），保证 12 张卡片互不重叠。
  */
 public final class StarterScreen extends Screen {
-    /** 每张卡片的尺寸。 */
+    /** 每张卡片的最大尺寸（屏幕放不下时按列宽等比缩小）。 */
     private static final int CARD_W = 78;
     private static final int CARD_H = 82;
+    /** 卡片最小宽度：低于它就不再挤列，改为翻页。 */
+    private static final int MIN_CARD_W = 64;
     private static final int GAP = 10;
-    /** 每页最多几张卡片（超过则分页，避免面板被撑出屏幕）。 */
-    private static final int PAGE_SIZE = 5;
-    /** 头像贴图是 64×64 的网络抓取图，显示成 48×48。 */
+    /** 网格上限：12 只扩展物种按 4 列 × 3 行铺满。 */
+    private static final int MAX_COLS = 4;
+    private static final int MAX_ROWS = 3;
+    /** 头像贴图是 64×64 的网络抓取图，最大显示 48×48。 */
     private static final float PORTRAIT_SIZE = 64.0F;
 
     private List<String> species;
@@ -40,6 +47,38 @@ public final class StarterScreen extends Screen {
     /** ADD 模式下当前选中的物种 id（空串表示没选）。 */
     private String selected = "";
     private int page;
+    /** 房间入口只是获取收藏；关闭回到阵容编辑，不能把已拥有卡片当删除按钮。 */
+    private RoomTeamScreen roomParent;
+    private static long roomPickerSuppressUntilNanos;
+
+    public boolean isRoomPicker() { return roomParent != null; }
+
+    public static void openAddForRoom(RoomTeamScreen parent) {
+        RoomListPayload.RoomView room = ClientRooms.currentRoom(parent.roomId());
+        if (room == null || ClientRooms.myRoomId() != room.id()) { ClientRooms.returnToRoom(parent.roomId()); return; }
+        List<String> favorites = ClientRooms.isBlue(room) ? room.blueTeam() : room.redTeam();
+        List<String> allSpecies = SpeciesRegistry.all().stream().map(entry -> entry.id().toString()).toList();
+        StarterScreen screen = new StarterScreen(new StarterListPayload("ADD", "", allSpecies, favorites, List.of()));
+        screen.roomParent = parent;
+        roomPickerSuppressUntilNanos = 0;
+        Minecraft.getInstance().setScreen(screen);
+    }
+
+    static void cancelRoomReturn() {
+        roomPickerSuppressUntilNanos = System.nanoTime() + 5_000_000_000L;
+    }
+
+    void updateRoom(RoomListPayload snapshot) {
+        if (roomParent == null) return;
+        RoomListPayload.RoomView room = ClientRooms.currentRoom(roomParent.roomId());
+        if (room == null || snapshot.myRoomId() != roomParent.roomId() || room.state() >= 2) {
+            cancelRoomReturn();
+            ClientRooms.returnToRoom(roomParent.roomId());
+        } else {
+            team = List.copyOf(ClientRooms.isBlue(room) ? room.blueTeam() : room.redTeam());
+            roomParent.update(room);
+        }
+    }
 
     public StarterScreen(StarterListPayload payload) {
         super(Component.literal(payload.adding() ? "获取宝可梦" : "选择宝可梦"));
@@ -67,6 +106,10 @@ public final class StarterScreen extends Screen {
         client.execute(() -> {
             if (client.screen instanceof StarterScreen open) {
                 open.apply(payload);
+            } else if (client.screen instanceof RoomTeamScreen teamScreen && payload.adding()) {
+                teamScreen.refreshFromLatest();
+            } else if (payload.adding() && System.nanoTime() < roomPickerSuppressUntilNanos) {
+                // 退出房间取宠器后可能还有一个旧 ADD 响应在队列里，不能重新打开取宠 UI。
             } else {
                 open(payload);
             }
@@ -86,18 +129,36 @@ public final class StarterScreen extends Screen {
         }
     }
 
+    /** 当前屏幕宽度下能放下的列数（1–4）。 */
+    private int columns() {
+        int fit = (width - 48 + GAP) / (MIN_CARD_W + GAP);
+        return Math.max(1, Math.min(MAX_COLS, fit));
+    }
+
+    /**
+     * 网格行数：物种少时只占一行，最多 3 行；屏幕太矮（例如 GUI 高度 240）时按行高下限减行，
+     * 宁可翻页也不让卡片压到面板底部按钮或溢出屏幕。
+     */
+    private int rows() {
+        int cols = columns();
+        int byCount = (species.size() + cols - 1) / cols;
+        int byHeight = Math.max(1, (height - 134 + GAP) / (CARD_H + GAP));
+        return Math.max(1, Math.min(MAX_ROWS, Math.min(byCount, byHeight)));
+    }
+
+    /** 每页容量 = 列数 × 行数。 */
+    private int cardsPerPage() {
+        return Math.max(1, columns() * rows());
+    }
+
     private int cardWidth() {
-        int perRow = Math.max(1, Math.min(PAGE_SIZE, (width - 48 + GAP) / (CARD_W + GAP)));
-        int available = Math.max(1, width - 16 - 32 - (perRow - 1) * GAP);
-        return Math.min(CARD_W, Math.max(1, available / perRow));
+        int cols = columns();
+        int available = Math.max(1, width - 16 - 32 - (cols - 1) * GAP);
+        return Math.min(CARD_W, Math.max(48, available / cols));
     }
 
     private int cardHeight() {
         return Math.min(CARD_H, Math.max(48, cardWidth()));
-    }
-
-    private int cardsPerPage() {
-        return Math.max(1, Math.min(PAGE_SIZE, (width - 48 + GAP) / (cardWidth() + GAP)));
     }
 
     private int pageCount() {
@@ -113,13 +174,18 @@ public final class StarterScreen extends Screen {
         return Math.min(cardsPerPage(), species.size() - firstIndex());
     }
 
+    private int gridHeight() {
+        return rows() * cardHeight() + (rows() - 1) * GAP;
+    }
+
     private int panelWidth() {
-        int cards = Math.max(1, pageCards());
-        return Math.min(width - 16, cards * cardWidth() + (cards - 1) * GAP + 32);
+        int cols = Math.max(1, columns());
+        return Math.min(width - 16, cols * cardWidth() + (cols - 1) * GAP + 32);
     }
 
     private int panelHeight() {
-        return Math.min(height - 16, cardHeight() + 118);
+        int extra = pageCount() > 1 ? 12 : 0;
+        return Math.min(height - 16, gridHeight() + 118 + extra);
     }
 
     private int left() {
@@ -130,15 +196,32 @@ public final class StarterScreen extends Screen {
         return (height - panelHeight()) / 2;
     }
 
-    private int cardX(int slot) {
-        int cards = pageCards();
-        int total = cards * cardWidth() + (cards - 1) * GAP;
-        int start = (width - total) / 2;
-        return start + slot * (cardWidth() + GAP);
+    /** 有分页时把分页条放在标题下方，卡片整体下移，避免压住提示行。 */
+    private int gridTop() {
+        return top() + (pageCount() > 1 ? 56 : 44);
     }
 
-    private int cardY() {
-        return top() + 40;
+    private int navY() {
+        return top() + 30;
+    }
+
+    private int cardX(int slot) {
+        int cols = Math.max(1, columns());
+        int row = slot / cols;
+        int col = slot % cols;
+        int rowCards = Math.max(1, Math.min(cols, pageCards() - row * cols));
+        int total = rowCards * cardWidth() + (rowCards - 1) * GAP;
+        int start = (width - total) / 2;
+        return start + col * (cardWidth() + GAP);
+    }
+
+    private int cardY(int slot) {
+        return gridTop() + (slot / Math.max(1, columns())) * (cardHeight() + GAP);
+    }
+
+    /** 提示行紧跟在网格下方；按钮固定在面板底部。 */
+    private int hintY() {
+        return gridTop() + gridHeight() + 4;
     }
 
     private int confirmY() {
@@ -156,7 +239,7 @@ public final class StarterScreen extends Screen {
         int w = panelWidth();
         int h = panelHeight();
         BattleMenuScreen.drawPanel(graphics, x, y, w, h);
-        graphics.drawCenteredString(font, adding ? "获取宝可梦" : "选择你的宝可梦",
+        PixelUi.centered(graphics, font, adding ? "获取宝可梦" : "选择你的宝可梦",
                 width / 2, y + 14, BattleMenuScreen.TEXT);
 
         for (int slot = 0; slot < pageCards(); slot++) {
@@ -167,7 +250,7 @@ public final class StarterScreen extends Screen {
             boolean isSelected = adding ? id.equals(selected) : id.equals(chosen);
             int cw = cardWidth(), ch = cardHeight();
             int cx = cardX(slot);
-            int cy = cardY();
+            int cy = cardY(slot);
             boolean hovered = BattleMenuScreen.inside(mouseX, mouseY, cx, cy, cw, ch);
 
             graphics.fill(cx, cy, cx + cw, cy + ch, BattleMenuScreen.BORDER);
@@ -192,26 +275,26 @@ public final class StarterScreen extends Screen {
             // 已拥有 / 已阵亡角标
             if (dead) {
                 graphics.fill(cx + 2, cy + 2, cx + cw - 2, cy + ch - 2, 0x66000000);
-                graphics.drawCenteredString(font, "已倒下", cx + cw / 2, cy + ch / 2, 0xFFC94F3D);
+                PixelUi.centered(graphics, font, "已倒下", cx + cw / 2, cy + ch / 2, 0xFFC94F3D);
             } else if (owned) {
                 String badge = id.equals(chosen) ? "当前" : "已拥有";
                 graphics.drawString(font, badge, cx + 5, cy + 5, 0xFF2E7D32, false);
             }
 
-            graphics.drawCenteredString(font, SpeciesRegistry.displayName(rl), cx + cw / 2,
+            PixelUi.centered(graphics, font, SpeciesRegistry.displayName(rl), cx + cw / 2,
                     cy + ch - 20, BattleMenuScreen.TEXT);
         }
 
-        // 分页按钮（只有多于一页时才显示）
+        // 分页按钮（只有多于一页时才显示，放在标题下方）
         if (pageCount() > 1) {
-            int navY = confirmY() - 24;
+            int nav = navY();
             boolean canPrev = page > 0;
             boolean canNext = page < pageCount() - 1;
-            BattleMenuScreen.drawButton(graphics, font, "<", width / 2 - 74, navY, 20, 16,
-                    BattleMenuScreen.inside(mouseX, mouseY, width / 2 - 74, navY, 20, 16), false, canPrev);
-            BattleMenuScreen.drawButton(graphics, font, ">", width / 2 + 54, navY, 20, 16,
-                    BattleMenuScreen.inside(mouseX, mouseY, width / 2 + 54, navY, 20, 16), false, canNext);
-            graphics.drawCenteredString(font, (page + 1) + " / " + pageCount(), width / 2, navY + 4,
+            BattleMenuScreen.drawButton(graphics, font, "<", width / 2 - 74, nav, 20, 16,
+                    BattleMenuScreen.inside(mouseX, mouseY, width / 2 - 74, nav, 20, 16), false, canPrev);
+            BattleMenuScreen.drawButton(graphics, font, ">", width / 2 + 54, nav, 20, 16,
+                    BattleMenuScreen.inside(mouseX, mouseY, width / 2 + 54, nav, 20, 16), false, canNext);
+            PixelUi.centered(graphics, font, (page + 1) + " / " + pageCount(), width / 2, nav + 4,
                     BattleMenuScreen.MUTED);
         }
 
@@ -225,7 +308,7 @@ public final class StarterScreen extends Screen {
         } else {
             hint = "当前上场：" + SpeciesRegistry.displayName(ResourceLocation.tryParse(chosen));
         }
-        graphics.drawCenteredString(font, hint, width / 2, y + h - 66, BattleMenuScreen.MUTED);
+        PixelUi.centered(graphics, font, hint, width / 2, hintY(), BattleMenuScreen.MUTED);
 
         int btnY = confirmY();
         if (adding) {
@@ -245,8 +328,6 @@ public final class StarterScreen extends Screen {
         if (button != 0) {
             return super.mouseClicked(mouseX, mouseY, button);
         }
-        int y = top();
-        int h = panelHeight();
         int btnY = confirmY();
 
         // 关闭
@@ -262,14 +343,14 @@ public final class StarterScreen extends Screen {
         }
         // 分页
         if (pageCount() > 1) {
-            int navY = btnY - 24;
-            if (BattleMenuScreen.inside(mouseX, mouseY, width / 2 - 74, navY, 20, 16)) {
+            int nav = navY();
+            if (BattleMenuScreen.inside(mouseX, mouseY, width / 2 - 74, nav, 20, 16)) {
                 if (page > 0) {
                     page--;
                 }
                 return true;
             }
-            if (BattleMenuScreen.inside(mouseX, mouseY, width / 2 + 54, navY, 20, 16)) {
+            if (BattleMenuScreen.inside(mouseX, mouseY, width / 2 + 54, nav, 20, 16)) {
                 if (page < pageCount() - 1) {
                     page++;
                 }
@@ -279,14 +360,15 @@ public final class StarterScreen extends Screen {
 
         for (int slot = 0; slot < pageCards(); slot++) {
             int cx = cardX(slot);
-            int cy = cardY();
+            int cy = cardY(slot);
             if (!BattleMenuScreen.inside(mouseX, mouseY, cx, cy, cardWidth(), cardHeight())) {
                 continue;
             }
             String id = species.get(firstIndex() + slot);
             if (adding) {
                 if (team.contains(id)) {
-                    // 已拥有：再点一次就是删除这只（服务端会先收回实体再删记录）
+                    if (roomParent != null) return true;
+                    // 非房间旧获取入口仍保留原收藏删除语义。
                     if (ClientPlayNetworking.canSend(StarterChoosePayload.TYPE)) {
                         ClientPlayNetworking.send(new StarterChoosePayload("DELETE", id));
                     }
@@ -313,6 +395,19 @@ public final class StarterScreen extends Screen {
             ClientPlayNetworking.send(new StarterChoosePayload("ADD", selected));
             selected = "";
         }
+    }
+
+    @Override
+    public void onClose() {
+        if (roomParent != null) {
+            cancelRoomReturn();
+            RoomListPayload.RoomView room = ClientRooms.currentRoom(roomParent.roomId());
+            if (room != null && ClientRooms.myRoomId() == room.id() && room.state() <= 1) {
+                roomParent.refreshFromLatest();
+                minecraft.setScreen(roomParent);
+                ClientRooms.send("OPEN", 0, "");
+            } else ClientRooms.returnToRoom(roomParent.roomId());
+        } else super.onClose();
     }
 
     @Override

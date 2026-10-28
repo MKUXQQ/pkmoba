@@ -52,6 +52,40 @@ public final class Targeting {
         Vec3 origin = self.position();
         Vec3 eye = self.getEyePosition();
         if (self instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon
+                && com.pkmoba.combat.ExpansionCombat.supports(pokemon)) {
+            if (skill < 0 || skill >= 4 || !BasicAttack.clearMeleeLine(self,target)) return false;
+            var move=com.pkmoba.combat.ExpansionCombat.species(pokemon).move(skill);
+            Vec3 direction=com.pkmoba.combat.ExpansionGeometry.direction(pokemon,aim);
+            Vec3 relative=target.getBoundingBox().getCenter().subtract(origin).multiply(1,0,1);
+            double width=target.getBbWidth()*.5;
+            if (move.shape()==com.pkmoba.combat.ExpansionRoster.Shape.DASH) {
+                Vec3 endpoint=com.pkmoba.combat.ExpansionGeometry.previewMove(pokemon,direction.scale(move.range()));
+                return com.pkmoba.combat.ExpansionGeometry.swept(mc.level,pokemon,origin.add(0,.5,0),endpoint.add(0,.5,0),.75).contains(target);
+            }
+            return switch(move.shape()) {
+                case CONE -> com.pkmoba.combat.ExpansionGeometry.inCone(pokemon,target,direction,move.range(),move.radius());
+                case LINE -> {
+                    double forward=relative.dot(direction);
+                    yield forward>=0 && forward<=move.range()+width
+                        && relative.subtract(direction.scale(forward)).lengthSqr()<=Math.pow(.55+width,2);
+                }
+                case POINT -> {
+                    if (move.name().equals("喷水"))
+                        yield relative.lengthSqr()<=Math.pow(move.radius()+width,2);
+                    Vec3 center=com.pkmoba.combat.ExpansionGeometry.point(pokemon,aim,move.range());
+                    yield target.position().subtract(center).horizontalDistanceSqr()<=Math.pow(move.radius()+width,2);
+                }
+                case SELF -> relative.lengthSqr()<=Math.pow(move.radius()+width,2);
+                case BLINK -> {
+                    Vec3 delta=aim.subtract(origin).multiply(1,0,1);
+                    Vec3 end=com.pkmoba.combat.ExpansionGeometry.previewMove(pokemon,delta.length()>move.range()
+                            ?delta.normalize().scale(move.range()):delta);
+                    yield target.getBoundingBox().inflate(width+.75).contains(end.add(0,.5,0));
+                }
+                case WALL, BUFF, DASH -> false;
+            };
+        }
+        if (self instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon
                 && com.pkmoba.combat.Skill.isVenusaur(pokemon) && skill >= 0) {
             return venusaurCovered(mc, pokemon, target, skill, aim, origin);
         }

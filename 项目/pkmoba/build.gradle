@@ -7,7 +7,7 @@ plugins {
     id 'maven-publish'
 }
 
-version = '0.48.4'
+version = '0.52.0'
 group = 'com.pkmoba'
 
 base {

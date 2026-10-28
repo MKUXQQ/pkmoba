@@ -42,6 +42,14 @@ public final class PixelUi {
                 y + (h - 8) / 2, enabled ? TEXT : MUTED, false);
     }
 
+    public static void centered(GuiGraphics g, Font font, String text, int x, int y, int color) {
+        g.drawString(font, text, x - font.width(text) / 2, y, color, false);
+    }
+
+    public static void centered(GuiGraphics g, Font font, net.minecraft.network.chat.Component text, int x, int y, int color) {
+        g.drawString(font, text, x - font.width(text) / 2, y, color, false);
+    }
+
     public static String fit(Font font, String text, int width) {
         return font.width(text) <= width ? text
                 : font.plainSubstrByWidth(text, Math.max(0, width - font.width("…"))) + "…";

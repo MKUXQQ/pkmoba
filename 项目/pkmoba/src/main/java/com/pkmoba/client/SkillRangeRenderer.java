@@ -107,7 +107,43 @@ public final class SkillRangeRenderer {
                 -context.camera().getPosition().z);
         PoseStack.Pose pose = poseStack.last();
 
-        if (self instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon && com.pkmoba.combat.Skill.isPikachu(pokemon)) {
+        if (self instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon
+                && com.pkmoba.combat.ExpansionCombat.supports(pokemon)) {
+            var move=com.pkmoba.combat.ExpansionCombat.species(pokemon).move(slot);
+            Vec3 endpoint=com.pkmoba.combat.ExpansionGeometry.point(pokemon,aim,move.range());
+            switch(move.shape()) {
+                case LINE -> rect(mc,context,pose,origin,flat,move.range(),.55);
+                case DASH -> {
+                    Vec3 end=com.pkmoba.combat.ExpansionGeometry.previewMove(pokemon,flat.scale(move.range()));
+                    Vec3 actual=end.subtract(origin).multiply(1,0,1);
+                    Vec3 travel=actual.lengthSqr()<1.0E-6?flat:actual.normalize();
+                    rect(mc,context,pose,origin,travel,actual.length(),.75);
+                }
+                case POINT -> disc(context,mc,pose,move.name().equals("喷水")?origin:endpoint,move.radius());
+                case SELF, BUFF -> disc(context,mc,pose,origin,move.radius());
+                case BLINK -> {
+                    Vec3 delta=aim.subtract(origin).multiply(1,0,1);
+                    Vec3 destination=com.pkmoba.combat.ExpansionGeometry.previewMove(pokemon,delta.length()>move.range()
+                            ?delta.normalize().scale(move.range()):delta);
+                    disc(context,mc,pose,destination,.65);
+                }
+                case WALL -> {
+                    Vec3 across=Math.abs(flat.z)>=Math.abs(flat.x)?new Vec3(1,0,0):new Vec3(0,0,1);
+                    rect(mc,context,pose,endpoint.subtract(across.scale(move.radius())),across,move.radius()*2,.35);
+                }
+                case CONE -> {
+                    double base=Math.atan2(flat.z,flat.x),half=Math.toRadians(move.radius());
+                    VertexConsumer buffer=context.consumers().getBuffer(RenderType.debugQuads());
+                    double y=groundY(mc,origin)+GROUND_LIFT;
+                    for(int i=0;i<20;i++) {
+                        double a=base-half+2*half*i/20,b=base-half+2*half*(i+1)/20;
+                        Vec3 p=origin.add(Math.cos(a)*move.range(),0,Math.sin(a)*move.range());
+                        Vec3 q=origin.add(Math.cos(b)*move.range(),0,Math.sin(b)*move.range());
+                        solid(buffer,pose,origin.x,y,origin.z,p.x,groundY(mc,p)+GROUND_LIFT,p.z,q.x,groundY(mc,q)+GROUND_LIFT,q.z);
+                    }
+                }
+            }
+        } else if (self instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon && com.pkmoba.combat.Skill.isPikachu(pokemon)) {
             switch (slot) {
                 case 0 -> rect(mc, context, pose, origin, flat, com.pkmoba.combat.PikachuCombat.Q_RANGE, 0.5);
                 case 1 -> {

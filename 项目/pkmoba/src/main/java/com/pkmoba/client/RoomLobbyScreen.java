@@ -41,7 +41,7 @@ public final class RoomLobbyScreen extends Screen {
 
     void update(RoomListPayload payload) {
         apply(payload);
-        if (pendingRoom != 0 && myRoomId == pendingRoom && minecraft != null) {
+        if ((pendingRoom != 0 && myRoomId == pendingRoom || ClientRooms.consumePendingJoin(myRoomId)) && minecraft != null) {
             for (RoomListPayload.RoomView room : rooms) {
                 if (room.id() == myRoomId) {
                     minecraft.setScreen(new RoomDetailScreen(room));
@@ -52,6 +52,8 @@ public final class RoomLobbyScreen extends Screen {
         pendingRoom = 0;
     }
 
+    /** Do not run the vanilla full-frame blur over custom menu artwork. */
+    @Override public void renderBackground(GuiGraphics g, int mx, int my, float delta) {}
     @Override
     public void tick() {
         waitTicks++;
@@ -86,12 +88,12 @@ public final class RoomLobbyScreen extends Screen {
             int ey = listY() + 10;
             String heading = !loaded ? (waitTicks > 100 ? "未收到房间数据" : "正在同步房间…")
                     : savedArenas > 0 ? "场地已保存，尚未就绪" : "还没有可加入的场地";
-            g.drawCenteredString(font, heading, width / 2, ey, TEXT);
+            PixelUi.centered(g, font, heading, width / 2, ey, TEXT);
             if (loaded) {
-                g.drawCenteredString(font, "先用画笔围好 4 点边界", width / 2, ey + 18, MUTED);
-                g.drawCenteredString(font, fit("再放红蓝玩家点，房间自动出现", w - 28), width / 2, ey + 32, MUTED);
+                PixelUi.centered(g, font, "先用画笔围好 4 点边界", width / 2, ey + 18, MUTED);
+                PixelUi.centered(g, font, fit("再放红蓝玩家点，房间自动出现", w - 28), width / 2, ey + 32, MUTED);
             } else if (waitTicks > 100) {
-                g.drawCenteredString(font, "检查服务端模组连接，然后点击刷新", width / 2, ey + 20, MUTED);
+                PixelUi.centered(g, font, "检查服务端模组连接，然后点击刷新", width / 2, ey + 20, MUTED);
             }
         }
         scroll = Math.max(0, Math.min(maxScroll(), scroll));
@@ -119,14 +121,14 @@ public final class RoomLobbyScreen extends Screen {
         g.fill(x + 7, y + 23, x + w - 7, y + 24, PixelUi.CREAM);
         if (hover && enabled) PixelUi.arrow(g, x + 10, y + h - 18, ACCENT);
         String status = status(room);
-        g.drawString(font, fit("#" + room.id() + "  " + room.arena(), w - font.width(status) - 34), x + 12, y + 10, TEXT, false);
+        g.drawString(font, fit("#" + room.id() + "  " + room.displayName(), w - font.width(status) - 34), x + 12, y + 10, TEXT, false);
         g.drawString(font, status, x + w - 12 - font.width(status), y + 10,
                 room.state() == 3 ? PixelUi.RED : ACCENT, false);
         int sideW = (w - 30) / 2;
         drawSeat(g, room.red(), room.redId(), room.redTeam(), x + 12, y + 29, sideW, PixelUi.RED, "红方");
         drawSeat(g, room.blue(), room.blueId(), room.blueTeam(), x + 18 + sideW, y + 29, sideW, PixelUi.BLUE, "蓝方");
         String action = pendingRoom == room.id() ? "正在加入…" : mine ? "返回我的房间"
-                : myRoomId != 0 ? "请先退出当前房间" : room.canJoin() ? "加入房间" : "暂不可加入";
+                : myRoomId != 0 ? "请先退出当前房间" : room.canJoin() ? (room.passwordProtected() ? "密码加入" : "公开加入") : "暂不可加入";
         g.drawString(font, fit(action, w - 48), x + (hover && enabled ? 22 : 12), y + h - 18, enabled ? ACCENT : MUTED, false);
         if (h >= 90) {
             int members = (room.redId().isEmpty() ? 0 : 1) + (room.blueId().isEmpty() ? 0 : 1);
@@ -223,7 +225,12 @@ public final class RoomLobbyScreen extends Screen {
             else if (room.canJoin() && myRoomId == 0 && pendingRoom == 0) {
                 pendingRoom = room.id();
                 waitTicks = 0;
-                ClientRooms.send("JOIN", room.id(), "");
+                if (room.passwordProtected()) {
+                    pendingRoom = 0;
+                    minecraft.setScreen(new RoomPasswordScreen(this, room));
+                } else {
+                    ClientRooms.send("JOIN", room.id(), "");
+                }
             }
             return true;
         }

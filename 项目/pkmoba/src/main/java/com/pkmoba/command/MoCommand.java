@@ -64,10 +64,10 @@ public final class MoCommand {
                 .then(Commands.literal("revive").executes(MoCommand::revive))
                 .then(Commands.literal("arena")
                         .then(Commands.literal("list").executes(MoCommand::arenaList))
-                        .then(Commands.literal("create")
+                        .then(Commands.literal("create").requires(source -> source.hasPermission(2))
                                 .then(Commands.argument("name", StringArgumentType.word())
                                         .executes(MoCommand::arenaCreate)))
-                        .then(Commands.literal("delete")
+                        .then(Commands.literal("delete").requires(source -> source.hasPermission(2))
                                 // m04660：允许名字里带空格（历史点位组叫「房间组 1」），
                                 // 用 greedyString 把后面的全部当成一个名字，避免被拆成多个参数报错。
                                 .then(Commands.argument("name", StringArgumentType.greedyString())

@@ -56,6 +56,14 @@ public final class DuelManager {
     public static void init() {
         ServerTickEvents.END_SERVER_TICK.register(DuelManager::tick);
         BotDuelService.init();
+        // TeamService 没有自己的初始化入口：登出时的队伍/资源清理挂在它身上，这里替它注册。
+        TeamService.init();
+        net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STOPPED.register(stopped -> {
+            MATCHES.clear();
+            INVITES.clear();
+            server = null;
+            lastTeamStatePush = 0;
+        });
         ServerPlayNetworking.registerGlobalReceiver(SwitchPokemonPayload.TYPE, (payload, context) ->
                 context.server().execute(() -> {
                     switchPokemon(context.player());
@@ -412,8 +420,13 @@ public final class DuelManager {
 
     private static void end(Match match, @Nullable ServerPlayer a, @Nullable ServerPlayer b,
                             @Nullable PokemonEntity ea, @Nullable PokemonEntity eb) {
-        if (a != null && ea != null) TeamService.rememberHealth(a, ea);
-        if (b != null && eb != null) TeamService.rememberHealth(b, eb);
+        MinecraftServer running = a != null ? a.server : b != null ? b.server : server;
+        if (match.roomBattle && running != null) {
+            ProfileStore.get(running).endBattle(match.a);
+            ProfileStore.get(running).endBattle(match.b);
+        }
+        if (!match.roomBattle && a != null && ea != null) TeamService.rememberHealth(a, ea);
+        if (!match.roomBattle && b != null && eb != null) TeamService.rememberHealth(b, eb);
         if (a != null) {
             clearOpponentHud(a);
             ServerGodMode.setActive(a, false);
@@ -426,12 +439,15 @@ public final class DuelManager {
             CharizardManager.unregisterControlled(match.b);
             TeamService.sendTeamState(b);
         }
-        if (ea != null) ea.discard();
-        if (eb != null) eb.discard();
+        if (ea != null) { com.pkmoba.combat.BattleStateReset.reset(ea); ea.discard(); }
+        if (eb != null) { com.pkmoba.combat.BattleStateReset.reset(eb); eb.discard(); }
         match.aDyingEntity = null;
         match.bDyingEntity = null;
         match.aSwitchDeadline = 0;
         match.bSwitchDeadline = 0;
+        // 结算即终态：双方"收回时暂存"的扩展点数/冷却一并作废（只有切换路径才该保留）。
+        com.pkmoba.combat.BattleStateReset.releaseReserves(match.a);
+        com.pkmoba.combat.BattleStateReset.releaseReserves(match.b);
     }
 
     @Nullable
@@ -689,6 +705,10 @@ public final class DuelManager {
 
     public static boolean challenge(ServerPlayer from, ServerPlayer to, @Nullable String arenaName,
                                    boolean challengeUi) {
+        if (RoomManager.inRoom(from.getUUID()) || RoomManager.inRoom(to.getUUID())) {
+            from.sendSystemMessage(Component.literal("房间成员请使用房间准备/开始，或先退出房间再发起挑战。"));
+            return false;
+        }
         if (from == to) {
             from.sendSystemMessage(Component.literal("不能挑战自己。"));
             return false;
@@ -845,6 +865,8 @@ public final class DuelManager {
     }
 
     private static boolean accept(ServerPlayer to, ServerPlayer from, @Nullable ArenaStore.Arena arena) {
+        if (RoomManager.inRoom(to.getUUID()) || RoomManager.inRoom(from.getUUID())) return false;
+        if (arena != null && !arena.complete()) return false;
         if (busy(to) || busy(from) || ProfileStore.get(from.server).profile(from.getUUID()).team.isEmpty()
                 || ProfileStore.get(to.server).profile(to.getUUID()).team.isEmpty()) return false;
         Match match = new Match(UUID.randomUUID(), from.getUUID(), to.getUUID(), arena);
@@ -867,11 +889,41 @@ public final class DuelManager {
      * 房间负责成员/权限/生命周期，这里只负责"把一场对局真的开起来"。
      */
     public static boolean startRoom(ServerPlayer red, ServerPlayer blue, @Nullable ArenaStore.Arena arena) {
+        RoomManager.Room room = RoomManager.roomOf(red.getUUID());
+        if (room == null || room != RoomManager.roomOf(blue.getUUID())) return false;
+        return startRoom(red, blue, arena, room.rosters.getOrDefault(red.getUUID(), List.of()),
+                room.rosters.getOrDefault(blue.getUUID(), List.of()));
+    }
+
+    public static boolean startRoom(ServerPlayer red, ServerPlayer blue, @Nullable ArenaStore.Arena arena,
+                                    List<String> redRoster, List<String> blueRoster) {
         if (red.getUUID().equals(blue.getUUID())) return false;
+        RoomManager.Room room = RoomManager.roomOf(red.getUUID());
+        if (room == null || room != RoomManager.roomOf(blue.getUUID()) || room.bot != null
+                || room.state != RoomManager.State.COUNTDOWN || room.countdown > 0
+                || !room.ready.contains(red.getUUID()) || !room.ready.contains(blue.getUUID())) return false;
+        if (arena == null || !room.arenaName.equalsIgnoreCase(arena.name) || !arena.complete()) return false;
         if (busy(red) || busy(blue) || ProfileStore.get(red.server).profile(red.getUUID()).team.isEmpty()
                 || ProfileStore.get(blue.server).profile(blue.getUUID()).team.isEmpty()) return false;
+        ProfileStore store = ProfileStore.get(red.server);
+        try {
+            RoomRules.roster(redRoster, store.collection(red.getUUID()).team, SpeciesRegistry.ids(), room.settings.capacity);
+            RoomRules.roster(blueRoster, store.collection(blue.getUUID()).team, SpeciesRegistry.ids(), room.settings.capacity);
+            if (!redRoster.equals(room.rosters.get(red.getUUID())) || !blueRoster.equals(room.rosters.get(blue.getUUID()))) return false;
+        } catch (IllegalArgumentException ex) { return false; }
+        if (redRoster.isEmpty() || blueRoster.isEmpty()) return false;
+        if (!store.beginBattle(red.getUUID(), redRoster)) return false;
+        if (!store.beginBattle(blue.getUUID(), blueRoster)) { store.endBattle(red.getUUID()); return false; }
         Match match = new Match(UUID.randomUUID(), red.getUUID(), blue.getUUID(), arena);
-        if (!spawnParticipants(red, blue, match)) return false;
+        match.roomBattle = true;
+        if (!spawnParticipants(red, blue, match)) {
+            store.endBattle(red.getUUID()); store.endBattle(blue.getUUID()); return false;
+        }
+        // RoomManager already spent ten seconds in a cancellable room countdown.
+        match.awaitingInitialSummon = false;
+        match.readyAt = red.server.getTickCount();
+        match.aSwitchDeadline = match.readyAt + SWITCH_TICKS;
+        match.bSwitchDeadline = match.readyAt + SWITCH_TICKS;
         TeamService.healPartyForBattle(red);
         TeamService.healPartyForBattle(blue);
         lockSpawnedPlayers(red, blue);
@@ -891,7 +943,7 @@ public final class DuelManager {
             admin.sendSystemMessage(Component.literal("不能把同一个玩家设为双方。"));
             return false;
         }
-        if (busy(a) || busy(b)) return false;
+        if (busy(a) || busy(b) || RoomManager.inRoom(a.getUUID()) || RoomManager.inRoom(b.getUUID())) return false;
         Match match = new Match(UUID.randomUUID(), a.getUUID(), b.getUUID(), null);
         if (!spawnParticipants(a, b, match)) return false;
         TeamService.healPartyForBattle(a);
@@ -933,14 +985,20 @@ public final class DuelManager {
 
         com.pkmoba.pokemon.BallThrow.clearPlayer(a.getUUID());
         com.pkmoba.pokemon.BallThrow.clearPlayer(b.getUUID());
+        com.pkmoba.combat.ExpansionCombat.clearReserves(a.getUUID());
+        com.pkmoba.combat.ExpansionCombat.clearReserves(b.getUUID());
+        com.pkmoba.combat.BattleStateReset.resetParticipants(CharizardManager.getActiveList(a));
+        com.pkmoba.combat.BattleStateReset.resetParticipants(CharizardManager.getActiveList(b));
         CharizardManager.discardAllControlled(a);
         CharizardManager.discardAllControlled(b);
-        match.awaitingInitialSummon = true;
-        match.readyAt = a.server.getTickCount() + 10 * 20;
-        showTitle(a, "10", "已传送入场 · 开始倒计时");
-        showTitle(b, "10", "已传送入场 · 开始倒计时");
-        a.sendSystemMessage(Component.literal("已传送入场。10 秒后按 C 选择出战，再按 X 自行召唤。"));
-        b.sendSystemMessage(Component.literal("已传送入场。10 秒后按 C 选择出战，再按 X 自行召唤。"));
+        match.awaitingInitialSummon = !match.roomBattle;
+        match.readyAt = a.server.getTickCount() + (match.roomBattle ? 0 : 10 * 20);
+        if (!match.roomBattle) {
+            showTitle(a, "10", "已传送入场 · 开始倒计时");
+            showTitle(b, "10", "已传送入场 · 开始倒计时");
+        }
+        a.sendSystemMessage(Component.literal(match.roomBattle ? "入场完成，请在20秒内按X召唤首发。" : "已传送入场。10 秒后按 C 选择出战，再按 X 自行召唤。"));
+        b.sendSystemMessage(Component.literal(match.roomBattle ? "入场完成，请在20秒内按X召唤首发。" : "已传送入场。10 秒后按 C 选择出战，再按 X 自行召唤。"));
         // 场地无限大：清掉训练用的圆形限制，避免 clamp 把宝可梦/技能拉回
         com.pkmoba.combat.CharizardCombat.clearArena();
         ServerGodMode.setActive(a, true);
@@ -993,7 +1051,7 @@ public final class DuelManager {
     }
 
     private static boolean busy(ServerPlayer player) {
-        return matchOf(player) != null;
+        return matchOf(player) != null || BotDuelService.inMatch(player);
     }
 
     @Nullable
@@ -1084,6 +1142,7 @@ public final class DuelManager {
         public long finishAt;
         public boolean finishWinnerIsA;
         public String finishReason = "队伍全部倒下";
+        public boolean roomBattle;
         public boolean awaitingInitialSummon;
         public long readyAt;
 

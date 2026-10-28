@@ -46,6 +46,11 @@ public final class SkillKeys {
      */
     public static int slotForChannel(String speciesId, int channel) {
         if (channel == 0) return -1;
+        var expansion = com.pkmoba.combat.ExpansionRoster.find(speciesId);
+        if (expansion != null) {
+            int slot=channel-expansion.channel(0);
+            return slot>=0 && slot<4 ? slot : -1;
+        }
         if (com.pkmoba.combat.Skill.isPikachu(speciesId)) return channel >= 11 && channel <= 14 ? channel - 11 : -1;
         if (com.pkmoba.combat.Skill.isVenusaur(speciesId)) {
             return switch (channel) {
@@ -159,7 +164,8 @@ public final class SkillKeys {
         if (!(entity instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon) || !pokemon.isAlive()) return false;
         String species = pokemon.getPokemon().getSpecies().getResourceIdentifier().toString();
         return species.equals("cobblemon:charizard") || species.equals("cobblemon:blastoise")
-                || species.equals("cobblemon:venusaur") || species.equals("cobblemon:pikachu");
+                || species.equals("cobblemon:venusaur") || species.equals("cobblemon:pikachu")
+                || com.pkmoba.combat.ExpansionRoster.find(species)!=null;
     }
 
     /**
@@ -204,10 +210,13 @@ public final class SkillKeys {
         // 点击队列只清空、不再逐个施放：长按重复的 click 直接丢弃，避免残留到下一 tick 造成二次触发。
         while (key.consumeClick()) { }
         if (!pressed) return;
+        // 0.48.5：不在客户端预测转身 —— 技能可能被服务端拒绝（CD/点数/引导中），
+        // 而客户端没有 ack/rollback，一旦本地先转就会把正在引导的模型朝向甩走。朝向完全交给服务端权威。
         aimedSkill = index;
         aimUntil = System.nanoTime() + 1_200_000_000L;
         if (ClientPlayNetworking.canSend(SkillCastPayload.TYPE)) {
             ClientPlayNetworking.send(new SkillCastPayload(index, aim.x, aim.y, aim.z));
         }
     }
+
 }

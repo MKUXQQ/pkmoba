@@ -58,9 +58,9 @@ final class MatchResultOverlay {
         graphics.fill(x + 2, y + 2, x + w - 2, y + h - 2, panel);
 
         int color = (alpha << 24) | (win ? 0x2E7D32 : 0x8B2E1F);
-        graphics.drawCenteredString(mc.font, title, sw / 2, y + 10, color);
+        PixelUi.centered(graphics, mc.font, title, sw / 2, y + 10, color);
         if (!detail.isEmpty()) {
-            graphics.drawCenteredString(mc.font, detail, sw / 2, y + 28,
+            PixelUi.centered(graphics, mc.font, detail, sw / 2, y + 28,
                     (alpha << 24) | 0x493522);
         }
     }

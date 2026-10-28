@@ -66,6 +66,8 @@ public final class CharizardCombat {
 
     /** 按实体取最大血量：喷火龙 280 / 水箭龟 340。 */
     public static float maxHpFor(PokemonEntity entity) {
+        var expansion = ExpansionCombat.species(entity);
+        if (expansion != null) return expansion.maxHp();
         return CharizardManager.isPikachu(entity) ? PIKACHU_MAX_HP
                 : CharizardManager.isBlastoise(entity) ? BLASTOISE_MAX_HP
                 : CharizardManager.isVenusaur(entity) ? VENUSAUR_MAX_HP : CHARIZARD_MAX_HP;
@@ -73,6 +75,8 @@ public final class CharizardCombat {
 
     /** 按物种 id 取最大血量（实体已被移除、只剩物种名时用）。 */
     public static float maxHpFor(String speciesId) {
+        var expansion = ExpansionRoster.find(speciesId);
+        if (expansion != null) return expansion.maxHp();
         return Skill.isPikachu(speciesId) ? PIKACHU_MAX_HP
                 : Skill.isBlastoise(speciesId) ? BLASTOISE_MAX_HP
                 : Skill.isVenusaur(speciesId) ? VENUSAUR_MAX_HP : CHARIZARD_MAX_HP;
@@ -419,7 +423,9 @@ public final class CharizardCombat {
                     // 无论是否在引导，都记下最新瞄准点：模型要"时时刻刻"朝鼠标慢慢转。
                     AimTracker.set(entity, aim);
                     // 水炮定身不等于锁住瞄准：由各通道自己决定是否接收新的鼠标位置。
-                    if (CharizardManager.isBlastoise(entity)) {
+                    if (ExpansionCombat.supports(entity)) {
+                        ExpansionCombat.updateAim(entity, aim);
+                    } else if (CharizardManager.isBlastoise(entity)) {
                         BlastoiseCombat.updateAim(entity, aim);
                     } else if (CharizardManager.isVenusaur(entity)) {
                         VenusaurCombat.updateAim(entity, aim);
@@ -465,7 +471,8 @@ public final class CharizardCombat {
         State st = peek(entity);
         boolean busy = st != null && (st.channel != 0 || st.dashTicks > 0);
         return busy || BlastoiseCombat.blocksBasicAttack(entity) || VenusaurCombat.blocksBasicAttack(entity)
-                || PikachuCombat.isBusy(entity);
+                || PikachuCombat.isBusy(entity) || ExpansionCombat.isBusy(entity)
+                || (entity != null && ExpansionControl.sleeping(entity));
     }
 
     /** Moving casts (Q) never own locomotion; E and R explicitly do. */
@@ -477,7 +484,8 @@ public final class CharizardCombat {
         State st = peek(entity);
         boolean busy = st != null && (st.channel == 4 || st.dashTicks > 0);
         return busy || BlastoiseCombat.blocksMovement(entity) || VenusaurCombat.blocksMovement(entity)
-                || PikachuCombat.blocksMovement(entity);
+                || PikachuCombat.blocksMovement(entity)
+                || (entity != null && ExpansionCombat.blocksMovement(entity));
     }
 
     private static boolean authorizedActor(ServerPlayer player, PokemonEntity entity) {
@@ -522,10 +530,14 @@ public final class CharizardCombat {
         BlastoiseCombat.resetAll();
         VenusaurCombat.resetAll();
         PikachuCombat.resetAll();
+        ExpansionCombat.resetAll();
         for (State st : new ArrayList<>(STATES.values())) {
             st.abort();
         }
         STATES.clear();
+        // 0.48.5：施法锁 / 朝向仲裁 / 预瞄缓存一起清（换局时不能把上一局的朝向带进来）。
+        CastLock.clearAll();
+        AimTracker.clearAll();
     }
 
     /** 只清一只实体的状态。 */
@@ -534,8 +546,12 @@ public final class CharizardCombat {
         BlastoiseCombat.reset(entity);
         VenusaurCombat.reset(entity);
         PikachuCombat.reset(entity);
+        ExpansionCombat.reset(entity);
         State st = STATES.remove(entity.getUUID());
         if (st != null) st.abort();
+        // 0.48.5：死亡 / 收回 / 取消也走这里，顺手释放施法锁并清预瞄缓存。
+        CastLock.release(entity);
+        AimTracker.clear(entity);
     }
 
     // ------------------------------------------------------------ 主循环
@@ -545,18 +561,25 @@ public final class CharizardCombat {
         STATES.entrySet().removeIf(entry -> {
             PokemonEntity entity = byId(server, entry.getKey());
             if (entity == null || !entity.isAlive() || entity.isRemoved()) {
+                if (entity != null) {
+                    // 0.48.5：死亡 / 被移除时释放施法锁，避免 UUID 残留在朝向表里。
+                    CastLock.release(entity);
+                }
                 entry.getValue().abort();
                 return true;
             }
             return false;
         });
 
-        for (PokemonEntity entity : CharizardManager.getControlledEntities(server)) {
+        java.util.List<PokemonEntity> controlled = CharizardManager.getControlledEntities(server);
+        for (PokemonEntity entity : controlled) {
             enforceArena(entity);
             tickEntity(server, entity);
             // 常驻朝向：低速转向鼠标瞄准点（引导中会被 CHANNEL 优先级压过）。
             AimTracker.track(entity);
         }
+        // 0.48.5：收回/换宝可梦后实体还活着但已不受控，清了残留锁定（否则下次召唤会被旧锁钉住）。
+        CastLock.retain(controlled);
         tickArenaRing(server);
         syncAll(server);
     }
@@ -625,8 +648,14 @@ public final class CharizardCombat {
             BlastoiseCombat.clearTransient(entity);
             VenusaurCombat.clearTransient(entity);
             PikachuCombat.clearTransient(entity);
+            ExpansionCombat.clearTransient(entity);
             entity.getNavigation().stop();
             entity.setDeltaMovement(Vec3.ZERO);
+            return;
+        }
+        if (ExpansionCombat.supports(entity)) {
+            enforceRangeLimit(entity, st);
+            ExpansionCombat.tick((ServerLevel) entity.level(), entity);
             return;
         }
         if (CharizardManager.isPikachu(entity)) {
@@ -698,9 +727,9 @@ public final class CharizardCombat {
         st.channelTicks++;
 
         if (st.channel == 1) {
-            // 0.38.1：火焰方向 = 模型当前正前方。模型由 AimTracker 以 6°/tick 低速追光标，
-            // 所以火焰是"跟着模型慢慢扫"，不再被光标拽着瞬移。
-            Vec3 dir = modelForward(entity);
+            // 0.38.1：火焰方向 = 模型正前方；0.48.5 改为优先读施法锁定方向，
+            // 喷火期间鼠标/移动/AI 都改不了它（射线与锥形伤害共用同一个方向）。
+            Vec3 dir = CastLock.dirOr(entity, modelForward(entity));
             int jetTicks = st.channelTicks - Q_WINDUP_TICKS;
             if (jetTicks < 0) {
                 // 前摇：动作已经在施法瞬间起手（客户端 q_windup），这里补<b>看得见的聚火</b>，
@@ -724,16 +753,19 @@ public final class CharizardCombat {
             if (st.channelTicks >= Q_CHANNEL_TICKS) {
                 st.channel = 0;
                 st.cdQ = Skill.cooldownTicks(false, 0);
+                // 0.48.5：收招再锁 3 tick 再交还预瞄，避免"松手瞬间模型被鼠标甩走"。
+                CastLock.finish(entity, 3);
             }
         } else if (st.channel == 2) {
-            // W 火焰旋涡前摇：只蓄力、不出区。方向跟手，落点是"模型到光标的地面距离"（限射程）。
-            Vec3 dir = aimDirection(entity, st.channelAim);
+            // W 火焰旋涡前摇：只蓄力、不出区。方向与落点都读施法锁定值（0.48.5）。
+            Vec3 dir = CastLock.dirOr(entity, aimDirection(entity, st.channelAim));
             Vec3 mouth = mouthPosition(entity, dir, Q_JET_FORWARD, MOUTH_DROP);
             chargeMouthFx(level, mouth, Math.min(1.0, st.channelTicks / (double) Math.max(1, W_WINDUP_TICKS)), false);
             if (st.channelTicks >= W_WINDUP_TICKS) {
                 // 前摇结束：落区 + 播成形特效 + 开始冷却（冷却从"技能真正出手"算起）
                 st.channel = 0;
-                Vec3 center = tornadoCenter(level, entity, st.channelAim);
+                // 0.48.5：中心一律读锁定落点（施法那一帧算好的合法坐标），保证预告圈 = 实际落区。
+                Vec3 center = CastLock.pointOr(entity, tornadoCenter(level, entity, st.channelAim));
                 FacingService.snap(entity, FacingService.Priority.CHANNEL, dir);
                 st.zones.add(new Zone(level.dimension(), center, W_DURATION_TICKS));
                 sendTornado(level, entity, center);
@@ -744,19 +776,20 @@ public final class CharizardCombat {
                 sound(level, center, "cobblemon:move.flamethrower.actor");
                 // Client channel transition owns the release pose; a second full special would replay the windup.
                 st.cdW = Skill.cooldownTicks(false, 1);
+                // 0.48.5：出区后收招 3 tick 内仍保持面向，然后交还预瞄。
+                CastLock.finish(entity, 3);
             }
         } else if (st.channel == 4) {
-            // 火球蓄力：模型跟着瞄准点转，出手方向也取"嘴→瞄准点"。
-            // 旧版蓄力期间完全不转身，模型可能还朝着上一次的方向（甚至背对目标），
-            // 出手时火球会朝背后飞、立刻撞地 —— 用户看到的就是"大字爆在原地炸开"。
-            Vec3 dir = aimDirection(entity, st.channelAim);
-            FacingService.request(entity, FacingService.Priority.CHANNEL, dir, 0.0F);
+            // 火球蓄力：模型朝向 = 施法锁定的出手方向（0.48.5），蓄满沿它发射。
+            Vec3 dir = CastLock.dirOr(entity, aimDirection(entity, st.channelAim));
             chargeMouthFx(level, mouthPosition(entity, dir, MOUTH_FORWARD, MOUTH_DROP),
                     Math.min(1.0, st.channelTicks / (double) Math.max(1, R_CHARGE_TICKS)), true);
             if (st.channelTicks >= R_CHARGE_TICKS) {
                 st.channel = 0;
                 st.cdR = Skill.cooldownTicks(false, 3);
                 launchProjectile(entity, st, dir);
+                // 0.48.5：出手瞬间到收招结束（4 tick）仍锁方向，弹道已固定，朝向不提前甩走。
+                CastLock.finish(entity, 4);
             }
         }
     }
@@ -908,23 +941,32 @@ public final class CharizardCombat {
         entity.setDeltaMovement(Vec3.ZERO);
         entity.setNoGravity(true);
         Vec3 before = entity.position();
+        // 0.48.5：位移终点不只在施法帧"记一笔" —— 真的按 CastLock.DASH 的 point 飞：
+        // 剩余距离取"当前位置 → 锁定终点"的水平距离（与固定里程取小），接近终点就进入落地阶段。
+        // 锁定被硬清（死亡/收回/传送）时才退回固定 E_MAX_DISTANCE 兜底。
+        Vec3 lockEnd = CastLock.point(entity);
+        double toEnd = lockEnd == null ? E_MAX_DISTANCE - st.dashTravelled
+                : Math.sqrt((lockEnd.x - before.x) * (lockEnd.x - before.x)
+                        + (lockEnd.z - before.z) * (lockEnd.z - before.z));
         boolean landing = st.dashLandingTicks > 0;
         if (!landing) {
-            turnToward(entity, st.channelAim, 8.0F);
+            // 0.48.5：飞行方向 = 施法锁定的冲刺方向（旧的 8°/tick 追鼠标会让轨迹画弧、终点漂移）。
             double yaw = Math.toRadians(entity.getYRot());
-            st.dashDir = new Vec3(-Math.sin(yaw), 0, Math.cos(yaw));
-            if (E_MAX_DISTANCE - st.dashTravelled <= E_FINISH_DISTANCE || st.dashTicks <= E_LANDING_TICKS) {
+            st.dashDir = CastLock.dirOr(entity, new Vec3(-Math.sin(yaw), 0, Math.cos(yaw)));
+            if (toEnd <= E_FINISH_DISTANCE || st.dashTicks <= E_LANDING_TICKS) {
                 st.dashLandingTicks = E_LANDING_TICKS;
                 st.dashAutoLanding = true;
                 landing = true;
             }
         }
-        double remaining = Math.max(0, E_MAX_DISTANCE - st.dashTravelled);
+        double remaining = Math.min(Math.max(0, E_MAX_DISTANCE - st.dashTravelled), Math.max(0, toEnd));
         double factor = landing
                 ? (st.dashAutoLanding ? Mth.clamp(remaining / E_FINISH_DISTANCE, 0.25, 1.0)
                 : st.dashLandingTicks / (double) E_LANDING_TICKS)
                 : Math.min(1.0, st.dashAge / (double) E_ACCEL_TICKS);
-        double speed = Math.min(E_SPEED_PER_TICK * factor, E_MAX_DISTANCE - st.dashTravelled);
+        // 0.48.5：速度再夹一层 remaining，保证不会越过锁定终点（终点由 CastLock.DASH 决定）。
+        double speed = Math.min(E_SPEED_PER_TICK * factor,
+                Math.min(E_MAX_DISTANCE - st.dashTravelled, remaining));
         Vec3 horizontal = st.dashDir.scale(Math.max(0, speed));
         Vec3 next = before.add(horizontal);
         double ground = groundBelow(level, entity, next);
@@ -997,6 +1039,8 @@ public final class CharizardCombat {
         entity.hurtMarked = true;
         entity.getNavigation().stop();
         st.cdE = Skill.cooldownTicks(false, 2);
+        // 0.48.5：落地后 2 tick 释放冲刺锁，然后把朝向交还预瞄（不在落地瞬间被鼠标猛地甩走）。
+        CastLock.finish(entity, 2);
     }
 
     // ------------------------------------------------------------ R 弹道
@@ -1132,6 +1176,7 @@ public final class CharizardCombat {
     // ------------------------------------------------------------ 释放入口
 
     private static int cooldownFor(PokemonEntity entity, Skill skill) {
+        if (ExpansionCombat.supports(entity)) return ExpansionCombat.cooldown(entity, skill.ordinal());
         if (CharizardManager.isVenusaur(entity)) return VenusaurCombat.cooldown(entity, skill.ordinal());
         if (CharizardManager.isBlastoise(entity)) return BlastoiseCombat.cooldown(entity, skill.ordinal());
         if (CharizardManager.isPikachu(entity)) return PikachuCombat.cooldown(entity, skill.ordinal());
@@ -1142,6 +1187,7 @@ public final class CharizardCombat {
     }
 
     public static int channelFor(PokemonEntity entity) {
+        if (ExpansionCombat.supports(entity)) return ExpansionCombat.channel(entity);
         if (CharizardManager.isVenusaur(entity)) return VenusaurCombat.channel(entity);
         if (CharizardManager.isBlastoise(entity)) return BlastoiseCombat.channel(entity);
         if (CharizardManager.isPikachu(entity)) return PikachuCombat.channel(entity);
@@ -1173,9 +1219,11 @@ public final class CharizardCombat {
     }
 
     public static boolean canCastForBot(PokemonEntity entity, Skill skill) {
-        if (entity == null || skill == null || !com.pkmoba.duel.BotDuelService.isBot(entity)) return false;
+        if (entity == null || skill == null || !com.pkmoba.duel.BotDuelService.isBot(entity)
+                || ExpansionControl.sleeping(entity)) return false;
         if (CharizardManager.isVenusaur(entity)) return VenusaurCombat.canCastForBot(entity, skill);
         if (CharizardManager.isBlastoise(entity)) return BlastoiseCombat.canCastForBot(entity, skill);
+        if (ExpansionCombat.supports(entity)) return ExpansionCombat.canCastForBot(entity, skill);
         if (CharizardManager.isPikachu(entity)) return PikachuCombat.canCastForBot(entity, skill);
         State state = STATES.get(entity.getUUID());
         int cooldown = state == null ? 0 : switch (skill) {
@@ -1231,7 +1279,9 @@ public final class CharizardCombat {
                 || com.pkmoba.pokemon.BallThrow.locked(entity)
                 || !Double.isFinite(aim.x) || !Double.isFinite(aim.y)
                 || !Double.isFinite(aim.z) || entity.distanceToSqr(aim) > 512.0 * 512.0) return;
-        if (CharizardManager.isVenusaur(entity)) {
+        if (ExpansionCombat.supports(entity)) {
+            ExpansionCombat.castForBot(entity, skill, aim);
+        } else if (CharizardManager.isVenusaur(entity)) {
             VenusaurCombat.castForBot(entity, skill, aim);
         } else if (CharizardManager.isBlastoise(entity)) {
             BlastoiseCombat.castForBot(entity, skill, aim);
@@ -1253,6 +1303,11 @@ public final class CharizardCombat {
                 || !Double.isFinite(aim.x) || !Double.isFinite(aim.y) || !Double.isFinite(aim.z)
                 || entity.distanceToSqr(aim) > 512.0 * 512.0
                 || com.pkmoba.pokemon.BallThrow.locked(entity)) return;
+        if (entity != null && ExpansionControl.sleeping(entity)) return;
+        if (ExpansionCombat.supports(entity)) {
+            ExpansionCombat.cast(player, entity, skill, aim);
+            return;
+        }
         if (CharizardManager.isVenusaur(entity)) {
             VenusaurCombat.cast(player, entity, skill, aim);
             return;
@@ -1312,8 +1367,10 @@ public final class CharizardCombat {
                 st.channel = 1;
                 st.channelTicks = 0;
                 st.channelAim = aim;
-                // 0.38.1：不再 snap 转身 —— 模型由 AimTracker 以 6°/tick 慢慢转向光标，
-                // 火焰方向取模型当前朝向，所以是"转身慢慢喷过去"，不是瞬间甩头。
+                // 0.48.5（取代 0.38.1 的"不 snap、火焰跟模型"）：确认施法这一帧就把<b>喷火方向</b>钉死
+                // （用户："确认施法锁方向"）：前摇/喷吐期间鼠标再动、AI 或旧移动指令都改不了它，
+                // 喷火射线与锥形伤害只读锁定值；CastLock 顺手做了一次起手 snap，模型第一帧就朝锁定方向。
+                CastLock.begin(entity, CastLock.Shape.LINE, aimDirection(entity, aim), null, Q_CHANNEL_TICKS);
                 sound(level, entity.position(), "cobblemon:move.flamethrower.actor");
                 // 0.38.3：动作交给客户端 CharizardSkillAnimator（q_windup -> q_sustain），
                 // 服务端只控制节奏（Q_WINDUP_TICKS 后出火），所以不再播 Cobblemon 的 special。
@@ -1329,6 +1386,9 @@ public final class CharizardCombat {
                 st.channel = 2;
                 st.channelTicks = 0;
                 st.channelAim = aim;
+                // 0.48.5：落点（合法坐标，tornadoCenter 已夹到场地内/地面上）与面向一起钉死；
+                // 前摇结束直接用锁定落点成区，不再重读鼠标（"落点锁合法坐标"）。
+                CastLock.begin(entity, CastLock.Shape.POINT, aimDirection(entity, aim), center, W_WINDUP_TICKS);
                 // 先把落点告诉客户端（负半径 = 预告），前摇期间它在那里画"聚集"
                 sendTornadoPreview(level, entity, center);
                 sound(level, entity.position(), "cobblemon:move.flamethrower.actor");
@@ -1338,6 +1398,14 @@ public final class CharizardCombat {
                 Vec3 dir = aimDirection(entity, aim);
                 FacingService.snap(entity, FacingService.Priority.CHANNEL, dir);
                 st.dashDir = dir;
+                // 0.48.5：位移锁方向 + 锁终点。终点取射程末端、夹回场地内并贴地，
+                // 飞行过程中既不转向也不再吃新鼠标（旧的 8°/tick 追鼠标会让轨迹画弧）。
+                Vec3 travelEnd = entity.position().add(dir.scale(E_MAX_DISTANCE));
+                double endGround = groundBelow(level, entity, travelEnd);
+                Vec3 dashEnd = clampToArena(entity, new Vec3(travelEnd.x,
+                        Double.isFinite(endGround) ? endGround : entity.getY(), travelEnd.z));
+                CastLock.begin(entity, CastLock.Shape.DASH, dir, dashEnd,
+                        70 + E_LANDING_TICKS);
                 st.dashTicks = 70;
                 st.dashAge = 0;
                 st.dashLandingTicks = 0;
@@ -1356,10 +1424,15 @@ public final class CharizardCombat {
                 st.channel = 4;
                 st.channelTicks = 0;
                 st.channelAim = aim;
+                // 0.48.5：出手方向在确认施法时锁定（"弹道锁方向"），蓄力期间模型朝向 = 锁定朝向，
+                // 蓄满直接沿它发射 —— 不会再出现"伤害方向和自己看到的方向不一致"。
+                CastLock.begin(entity, CastLock.Shape.LINE, aimDirection(entity, aim), null, R_CHARGE_TICKS);
                 // 0.39：定身型大招起手清掉排队中的地面指令，避免"蓄力结束朝旧点位自己走"。
                 com.pkmoba.move.MoveOrderService.clear(entity);
                 entity.getNavigation().stop();
-                // 0.38.1：不 snap。蓄力期间模型慢慢转向光标，出手弹道沿"出手瞬间的模型朝向"。
+                // 0.38.1 的"蓄力期间模型慢慢转向光标、出手沿出手瞬间模型朝向"已被 0.48.5 取代：
+                // 方向在确认施法时锁定（CastLock 里已经 snap），蓄力期间模型朝向 = 锁定朝向，
+                // 弹道与模型看到的方向严格一致，不会出现"头朝一边、火球飞另一边"。
                 sound(level, entity.position(), "cobblemon:move.fireblast.actor");
                 // 0.38.3：蓄力/出手动作由客户端 CharizardSkillAnimator（r_charge -> r_blast）负责，
                 // 这里不再播 special，避免"喷完又播一个动作"。
@@ -1670,7 +1743,9 @@ public final class CharizardCombat {
                 // 看起来就是"HUD 不同步"。阵亡帧已由 markDead 按真实上限精确补过，不再重复下发。
                 continue;
             }
-            if (CharizardManager.isBlastoise(entity)) {
+            if (ExpansionCombat.supports(entity)) {
+                ExpansionCombat.syncHud(player, entity);
+            } else if (CharizardManager.isBlastoise(entity)) {
                 BlastoiseCombat.syncHud(player, entity);
             } else if (CharizardManager.isVenusaur(entity)) {
                 VenusaurCombat.syncHud(player, entity);
@@ -1686,7 +1761,8 @@ public final class CharizardCombat {
     public static void syncPlayer(ServerPlayer player) {
         PokemonEntity entity = CharizardManager.getControlled(player);
         if (entity == null) return;
-        if (CharizardManager.isBlastoise(entity)) BlastoiseCombat.syncHud(player, entity);
+        if (ExpansionCombat.supports(entity)) ExpansionCombat.syncHud(player, entity);
+        else if (CharizardManager.isBlastoise(entity)) BlastoiseCombat.syncHud(player, entity);
         else if (CharizardManager.isVenusaur(entity)) VenusaurCombat.syncHud(player, entity);
         else if (CharizardManager.isPikachu(entity)) PikachuCombat.syncHud(player, entity);
         else sendState(player, entity);

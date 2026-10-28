@@ -71,7 +71,7 @@ public final class PlayerSelectScreen extends Screen {
         graphics.fill(0, 0, width, height, 0xC0000000);
         int x = left(), y = top(), w = panelWidth(), h = panelHeight();
         BattleMenuScreen.drawPanel(graphics, x, y, w, h);
-        graphics.drawCenteredString(font, title, width / 2, y + 12, BattleMenuScreen.TEXT);
+        PixelUi.centered(graphics, font, title, width / 2, y + 12, BattleMenuScreen.TEXT);
         String hint;
         if (isChallenge()) {
             hint = "点击玩家发送挑战（对方有 10 秒时间接受）";
@@ -81,9 +81,9 @@ public final class PlayerSelectScreen extends Screen {
         } else {
             hint = firstPlayer == null ? "先选择第一位玩家" : "已选：" + firstPlayer + "；再选择一位";
         }
-        graphics.drawCenteredString(font, hint, width / 2, y + 29, BattleMenuScreen.TEXT);
+        PixelUi.centered(graphics, font, hint, width / 2, y + 29, BattleMenuScreen.TEXT);
         if (players.isEmpty()) {
-            graphics.drawCenteredString(font, "暂无可选玩家", width / 2, y + 52, BattleMenuScreen.MUTED);
+            PixelUi.centered(graphics, font, "暂无可选玩家", width / 2, y + 52, BattleMenuScreen.MUTED);
         }
         for (int row = 0; row < rows(); row++) {
             int index = page * rows() + row;
@@ -99,7 +99,7 @@ public final class PlayerSelectScreen extends Screen {
         int navY = y + h - 45;
         BattleMenuScreen.drawButton(graphics, font, "上一页", x + 16, navY, 64, 20,
                 BattleMenuScreen.inside(mouseX, mouseY, x + 16, navY, 64, 20), false, page > 0);
-        graphics.drawCenteredString(font, (page + 1) + " / " + pages(), width / 2, navY + 6, BattleMenuScreen.TEXT);
+        PixelUi.centered(graphics, font, (page + 1) + " / " + pages(), width / 2, navY + 6, BattleMenuScreen.TEXT);
         BattleMenuScreen.drawButton(graphics, font, "下一页", x + w - 80, navY, 64, 20,
                 BattleMenuScreen.inside(mouseX, mouseY, x + w - 80, navY, 64, 20), false, page + 1 < pages());
         BattleMenuScreen.drawButton(graphics, font, isChallenge() ? "关闭" : "关闭",

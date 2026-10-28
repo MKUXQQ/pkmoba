@@ -9,7 +9,8 @@
     "PokemonDesignHealthCurveMixin",
     "ControlledPokemonAttackBlockMixin",
     "ControlledPokemonDamageGateMixin",
-    "PokemonSkillInvulnerabilityMixin"
+    "PokemonSkillInvulnerabilityMixin",
+    "PokemonExpansionMovementMixin"
   ],
   "client": [
     "CameraMixin",

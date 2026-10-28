@@ -346,6 +346,8 @@ public final class BlastoiseCombat {
     public static void reset(PokemonEntity entity) {
         State state = entity == null ? null : STATES.remove(entity.getUUID());
         if (state != null) state.reset();
+        // 0.48.5：状态表里已经取不到实体（或本来就没有状态）时，锁也要清。
+        CastLock.release(entity);
     }
 
     public static int cooldown(PokemonEntity entity, int slot) {
@@ -482,7 +484,8 @@ public final class BlastoiseCombat {
             lockedDir = Vec3.ZERO;
             spoutOrigin = Vec3.ZERO;
             spinHitAt.clear();
-            FacingService.clear(entity);
+            // 0.48.5：死亡 / 换人 / 对局结束统一释放施法锁（release 内部会清 FacingService）。
+            CastLock.release(entity);
         }
 
         // ---- 每 tick ----
@@ -512,7 +515,9 @@ public final class BlastoiseCombat {
         }
 
         private void updateAim(PokemonEntity entity, Vec3 aim) {
-            // Q 引导要能微调炮口方向；W 旋转位移时也允许用鼠标控制转向。
+            // 0.48.5：施法锁定期间不再接受新鼠标 —— 方向/落点在确认施法那一帧已定，
+            // 否则"引导中鼠标一转，炮口和伤害就跟着漂"（用户："确认施法锁方向，别被新鼠标覆盖"）。
+            if (channel != CHANNEL_CANNON && CastLock.active(entity)) return;
             if (channel != CHANNEL_CANNON && channel != CHANNEL_SPIN && channel != CHANNEL_SPOUT) return;
             if (!validAim(entity, aim)) return;
             aimPoint = aim;
@@ -545,6 +550,23 @@ public final class BlastoiseCombat {
             skillTicks = 0;
             surfHits.clear();
             FacingService.snap(entity, FacingService.Priority.CHANNEL, dir);
+            // 0.48.5：确认施法这一帧钉死本技能的几何量（见 CastLock）：
+            //   Q 水炮 = 直线（落点 = 起手时的合法瞄准点）；
+            //   W 旋转 / R 喷水 = 自身中心 AOE（只锁面向，落点跟着自己走）；
+            //   E 冲浪 = 位移（方向 + 终点都锁，途中不再 8°/tick 追鼠标画弧）。
+            switch (skill) {
+                case Q -> CastLock.release(entity); // Q alone continuously steers toward the mouse.
+                case W -> CastLock.begin(entity, CastLock.Shape.SELF, dir, null, -1);
+                case E -> {
+                    Vec3 travelEnd = entity.position().add(dir.scale(SURF_STEP * SURF_DASH_TICKS));
+                    double ground = CharizardCombat.groundBelow(level, entity, travelEnd);
+                    // 0.48.5：按"这只宝可梦所属场地"裁剪（多房间并发时不能拿全局边界裁别人的终点）。
+                    Vec3 surfEnd = CharizardCombat.clampToArena(entity, new Vec3(travelEnd.x,
+                            Double.isFinite(ground) ? ground : entity.getY(), travelEnd.z));
+                    CastLock.begin(entity, CastLock.Shape.DASH, dir, surfEnd, -1);
+                }
+                case R -> CastLock.begin(entity, CastLock.Shape.SELF, dir, null, -1);
+            }
             switch (skill) {
                 case Q -> {
                     channel = CHANNEL_CANNON;
@@ -593,6 +615,9 @@ public final class BlastoiseCombat {
             // 引导结束/被打断时把施法锁定与残余速度一起清掉：保证角色立刻能移动、能普攻、能放别的技能。
             entity.getNavigation().stop();
             entity.setDeltaMovement(0, entity.getDeltaMovement().y, 0);
+            // 0.48.5：收招再锁 2 tick 再交还预瞄（不要一结束就被鼠标猛地甩走）；
+            // 施法锁本身由 AimTracker 每 tick 重申，到期自动释放。
+            CastLock.finish(entity, 2);
             FacingService.clear(entity);
         }
 
@@ -600,13 +625,14 @@ public final class BlastoiseCombat {
 
         private void tickCannon(ServerLevel level, PokemonEntity entity) {
             holdPosition(entity);
-            // 只从鼠标方向驱动一次整身转向；不锁敌，不让行走/普攻再争夺朝向。
+            // Q is a steerable channel: model, barrel anchors, visuals and damage use the same latest aim.
             Vec3 steer = aimPoint == null ? CharizardCombat.modelForward(entity)
                     : CharizardCombat.aimDirection(entity, aimPoint);
-            FacingService.snap(entity, FacingService.Priority.CHANNEL, steer);
+            FacingService.force(entity, steer);
+            Vec3 lockedPoint = aimPoint;
             Vec3 mid = cannonMuzzle(entity, true).lerp(cannonMuzzle(entity, false), 0.5);
-            // 炮口到鼠标落点的三维方向直接用于伤害和视觉，不等待模型插值追上。
-            Vec3 toAim = aimPoint == null ? steer : aimPoint.subtract(mid);
+            // 炮口到锁定落点的三维方向直接用于伤害和视觉，不等待模型插值追上。
+            Vec3 toAim = lockedPoint == null ? steer : lockedPoint.subtract(mid);
             Vec3 forward = toAim.lengthSqr() < 0.04 ? steer : toAim.normalize();
             if (skillTicks < CANNON_CHARGE_TICKS) {
                 if (skillTicks % 2 == 0) {
@@ -622,7 +648,7 @@ public final class BlastoiseCombat {
                 Set<UUID> claimed = new HashSet<>();
                 // Both barrels converge on one mouse-directed point. Never extend a barrel ray
                 // past that point, otherwise the two jets cross and separate again.
-                double reach = aimPoint == null ? CANNON_RANGE
+                double reach = lockedPoint == null ? CANNON_RANGE
                         : Math.max(0.75, Math.min(CANNON_RANGE, toAim.length()));
                 Vec3 end = clip(level, entity, mid, mid.add(forward.scale(reach)));
                 // Stop the entire paired stream at the nearest obstruction seen by either barrel.
@@ -794,11 +820,12 @@ public final class BlastoiseCombat {
                 if (skillTicks >= SURF_TICKS) stopSurf(level, entity);
                 return;
             }
-            // 阶段 3：乘浪冲刺（14 tick × 0.44 ≈ 6 格），途中允许有限转向。
-            // E 允许"有限转向"：每 tick 最多把锁定方向往瞄准方向掰 8°。
-            Vec3 steer = steerDirection(entity);
-            lockedDir = rotateTowards(lockedDir, steer, SURF_STEER_DEG_PER_TICK);
-            Vec3 dir = lockedDir;
+            // 阶段 3：乘浪冲刺（14 tick × 0.44 ≈ 6 格）。
+            // 0.48.5：位移锁方向 —— 方向取自施法那一帧（CastLock），途中鼠标/AI 都改不了，
+            // 轨迹是直线、终点就是起手时算好的合法落点。
+            Vec3 dir = CastLock.dirOr(entity, lockedDir.lengthSqr() > 1.0E-8
+                    ? lockedDir : CharizardCombat.modelForward(entity));
+            lockedDir = dir;
             FacingService.request(entity, FacingService.Priority.CHANNEL, dir, 60.0F);
             Vec3 before = entity.position();
             // 前方 0.3 格撞墙：提前结束（已结算的伤害保留）。
@@ -810,10 +837,23 @@ public final class BlastoiseCombat {
                 return;
             }
             Vec3 next = before.add(dir.scale(SURF_STEP));
+            // 0.48.5：终点真的按施法锁定值（CastLock.DASH 的 point）走 —— 最后一步直接落到锁定终点，
+            // 不是"只记了一笔然后按固定 tick 数乱飘"。锁定被硬清时退回按步长前进。
+            Vec3 lockEnd = CastLock.point(entity);
+            boolean reachedEnd = false;
+            if (lockEnd != null) {
+                double toEnd = Math.sqrt((lockEnd.x - before.x) * (lockEnd.x - before.x)
+                        + (lockEnd.z - before.z) * (lockEnd.z - before.z));
+                if (toEnd <= SURF_STEP) {
+                    next = new Vec3(lockEnd.x, before.y, lockEnd.z);
+                    reachedEnd = true;
+                }
+            }
             double ground = CharizardCombat.groundBelow(level, entity, next);
             double dy = Double.isFinite(ground) ? Mth.clamp(ground - before.y, -0.2, 0.15) : 0.0;
             Vec3 wanted = new Vec3(next.x, before.y + dy, next.z);
-            Vec3 clamped = CharizardCombat.clampToArena(wanted);
+            // 0.48.5：按本实体所属场地裁剪（多房间并发时不能用全局边界）。
+            Vec3 clamped = CharizardCombat.clampToArena(entity, wanted);
             // 出界：贴边结束。
             boolean outOfArena = clamped.distanceToSqr(wanted) > 1.0E-6;
             Vec3 delta = new Vec3(clamped.x - before.x, clamped.y - before.y, clamped.z - before.z);
@@ -827,7 +867,7 @@ public final class BlastoiseCombat {
             // 0.38.1：服务端也要出水花（第三人称/没装客户端特效的玩家都能看到），每 2 tick 一次。
             if (skillTicks % 2 == 0) surfSpray(level, entity);
             skillTicks++;
-            if (outOfArena || skillTicks >= SURF_TICKS) stopSurf(level, entity);
+            if (reachedEnd || outOfArena || skillTicks >= SURF_TICKS) stopSurf(level, entity);
         }
 
         /**
@@ -991,17 +1031,10 @@ public final class BlastoiseCombat {
 
         private void tickSpoutWindup(ServerLevel level, PokemonEntity entity) {
             holdPosition(entity);
-            // 阶段 1/6 蓄力：原地不动，但可以调整朝向（鼠标带动模型缓慢转向）；
-            // 只有"喷发瞬间"才把方向锁死 —— 对应水箭龟.txt「可调整朝向 / 喷发时锁方向」。
-            Vec3 want = aimPoint != null
-                    ? horizontal(aimPoint.subtract(entity.position()))
-                    : lockedDir;
-            if (want.lengthSqr() < 1.0E-8) {
-                want = CharizardCombat.modelForward(entity);
-            }
-            FacingService.request(entity, FacingService.Priority.CHANNEL, want, 40.0F);
-            // 0.38.1：telegraph 与释放方向都用模型正前方，保证扇形和水从同一处出。
-            Vec3 dir = CharizardCombat.modelForward(entity);
+            // 0.48.5：喷水从确认施法起就锁面向（不再"蓄力期间还能用鼠标调朝向"），
+            // 蓄力、喷发、收招看到的都是同一个方向，扇形伤害也与它一致。
+            Vec3 dir = CastLock.dirOr(entity, CharizardCombat.modelForward(entity));
+            FacingService.request(entity, FacingService.Priority.CHANNEL, dir, 40.0F);
             Vec3 from = mouth(entity, dir);
             if (skillTicks % 2 == 0) visual(level, entity, 5, from, dir, 0, 0.55);
             if (skillTicks % 4 == 0) spoutTelegraph(level, entity, dir);
@@ -1012,8 +1045,8 @@ public final class BlastoiseCombat {
         /** 前摇结束：恢复行动、广播降雨区域，雨滴由服务端独立结算。 */
         private void releaseSpout(ServerLevel level, PokemonEntity entity) {
             // 0.38.1：扇形中心 = 释放瞬间的模型正前方（之后整轮锁定，不逐 tick 变）。
-            // 释放瞬间锁定扇形区域：之后整轮不再跟随转向。
-            Vec3 dir = CharizardCombat.modelForward(entity);
+            // 0.48.5：方向改读施法锁定值 —— 与蓄力 telegraph、模型朝向完全一致。
+            Vec3 dir = CastLock.dirOr(entity, CharizardCombat.modelForward(entity));
             lockedDir = dir;
             Vec3 origin = spoutOrigin.lengthSqr() > 1.0E-8 ? spoutOrigin : entity.position();
             long seed = entity.getRandom().nextLong();

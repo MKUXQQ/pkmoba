@@ -489,7 +489,7 @@ public final class TargetOverlay {
             poseStack.mulPose(cameraRotation);
             poseStack.scale((float) scale, (float) -scale, (float) scale);
             float width = mc.font.width(text);
-            mc.font.drawInBatch(text, -width * 0.5F, -mc.font.lineHeight * 0.5F, color, true,
+            mc.font.drawInBatch(text, -width * 0.5F, -mc.font.lineHeight * 0.5F, color, false,
                     poseStack.last().pose(), context.consumers(), Font.DisplayMode.SEE_THROUGH,
                     0, LightTexture.FULL_BRIGHT);
             poseStack.popPose();

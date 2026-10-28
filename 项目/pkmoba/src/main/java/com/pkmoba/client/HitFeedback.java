@@ -485,8 +485,7 @@ public final class HitFeedback {
             int tw = mc.font.width(text);
             int x = (w - tw) / 2;
             int y = h / 2 - 54;
-            graphics.drawString(mc.font, text, x + 1, y + 1, (int) (alpha * 0.55F) << 24, false);
-            graphics.drawString(mc.font, text, x, y, (alpha << 24) | (killColor & 0xFFFFFF), true);
+            graphics.drawString(mc.font, text, x, y, (alpha << 24) | (killColor & 0xFFFFFF), false);
             int lineWidth = tw + 44;
             int lx = (w - lineWidth) / 2;
             graphics.fill(lx, y + 13, lx + lineWidth, y + 14, (alpha << 24) | (killColor & 0xFFFFFF));

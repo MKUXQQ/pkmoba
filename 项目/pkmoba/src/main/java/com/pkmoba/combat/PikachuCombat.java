@@ -180,6 +180,23 @@ public final class PikachuCombat {
             sendCue(level, entity, "r_charge", current.start, new Vec3(0, 0, 0));
             sendCue(level, entity, "r_warn", current.field, new Vec3(R_RADIUS, 0, 0));
         }
+        // 0.48.5：确认施法这一帧把方向/落点钉死（CastLock）。之后 tick 里每 tick 重申的就是这份值，
+        // 鼠标再动、AI 或旧移动指令都改不了；伤害/特效/模型朝向读的是同一份，不会再对不上。
+        switch (index) {
+            case 0 -> CastLock.begin(entity, CastLock.Shape.LINE, current.direction, current.aim, Q_TELEGRAPH_TICKS);
+            case 1 -> CastLock.begin(entity, CastLock.Shape.POINT, current.direction, current.field,
+                    W_TELEGRAPH_TICKS + W_TRAVEL_TICKS);
+            case 2 -> {
+                Vec3 travelEnd = entity.position().add(current.direction.scale(E_RANGE));
+                double ground = CharizardCombat.groundBelow(level, entity, travelEnd);
+                // 0.48.5：按"这只宝可梦所属场地"裁剪（多房间并发时不能拿全局边界裁别人的终点）。
+                Vec3 dashEnd = CharizardCombat.clampToArena(entity, new Vec3(travelEnd.x,
+                        Double.isFinite(ground) ? ground : entity.getY(), travelEnd.z));
+                CastLock.begin(entity, CastLock.Shape.DASH, current.direction, dashEnd, E_DASH_TICKS);
+            }
+            default -> CastLock.begin(entity, CastLock.Shape.POINT, current.direction, current.field,
+                    R_CHARGE_TICKS + 12);
+        }
         syncHud(player, entity);
     }
 
@@ -213,7 +230,9 @@ public final class PikachuCombat {
             if (current.elapsed % 2 == 0) sendCue(level, entity, "r_warn", current.field,
                     new Vec3(R_RADIUS, current.elapsed / (double) R_CHARGE_TICKS, 0));
         }
-        FacingService.request(entity, FacingService.Priority.CHANNEL, current.direction, 360.0F);
+        // 0.48.5：方向读施法锁定值（起手那一帧已定），每 tick 重申同一份，鼠标不能中途改向。
+        FacingService.request(entity, FacingService.Priority.CHANNEL,
+                CastLock.dirOr(entity, current.direction), 360.0F);
         if (current.skillIndex == 3 && current.elapsed < R_CHARGE_TICKS)
             sparkCloud(level, entity.position().add(0, entity.getBbHeight() * 0.65, 0), 6, 0.42);
         switch (current.skillIndex) {
@@ -294,6 +313,19 @@ public final class PikachuCombat {
 
     private static void tickQuickAttack(ServerLevel level, PokemonEntity entity, State current) {
         Vec3 step = current.direction.scale(E_RANGE / E_DASH_TICKS);
+        // 0.48.5：E 冲刺的真实路径也按施法锁定终点收（CastLock.DASH 的 point）——
+        // 起手时终点可能被场地边界夹短（多房间各裁各的），后续 tick 不能还按 E_RANGE 一路冲过头。
+        // 锁定被硬清（死亡/收回）时退回原来的固定步长。
+        Vec3 lockEnd = CastLock.point(entity);
+        if (lockEnd != null) {
+            double dx = lockEnd.x - entity.getX();
+            double dz = lockEnd.z - entity.getZ();
+            double toEnd = Math.sqrt(dx * dx + dz * dz);
+            double stepLen = Math.sqrt(step.x * step.x + step.z * step.z);
+            if (toEnd <= stepLen) {
+                step = new Vec3(dx, 0.0, dz);
+            }
+        }
         if (level.noCollision(entity, entity.getBoundingBox().move(step))) {
             Vec3 next = entity.position().add(step);
             entity.setPos(next.x, next.y, next.z);
@@ -433,6 +465,8 @@ public final class PikachuCombat {
         current.elapsed = 0;
         current.hit.clear();
         current.detonated = false;
+        // 0.48.5：收招再锁 2 tick 再交还预瞄（避免释放瞬间模型被鼠标甩走）。
+        CastLock.finish(entity, 2);
         FacingService.clear(entity);
         // Let impact textures finish their short client lifetime. Only cancellation sends clear.
     }
@@ -449,6 +483,8 @@ public final class PikachuCombat {
         current.detonated = false;
         current.hit.clear();
         clearSlowFrom(entity.getUUID());
+        // 0.48.5：取消/死亡/换人时直接释放施法锁（不是 finish，不能留 2 tick）。
+        CastLock.release(entity);
         FacingService.clear(entity);
         if (active && entity.level() instanceof ServerLevel level) sendCue(level, entity, "clear", entity.position(), Vec3.ZERO);
     }
@@ -468,6 +504,8 @@ public final class PikachuCombat {
         for (State current : new ArrayList<>(STATES.values())) current.skillIndex = -1;
         STATES.clear();
         SLOW_SOURCES.clear();
+        // 0.48.5：对局结束/全员收回时把施法锁与朝向仲裁一起清掉。
+        CastLock.clearAll();
     }
 
     public static void syncHud(ServerPlayer player, PokemonEntity entity) {

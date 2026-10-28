@@ -40,7 +40,7 @@ public final class RoomManager {
     public enum State { WAITING, READY, COUNTDOWN, FIGHTING, ENDED }
 
     /** 确认队伍后提供完整入场预告。 */
-    private static final int COUNTDOWN_TICKS = 20 * 10;
+    private static final int COUNTDOWN_TICKS = 20 * 5;
     /** 对局结束到房间恢复的等待：3 秒。 */
     private static final int END_LINGER_TICKS = 20 * 3;
 
@@ -54,14 +54,20 @@ public final class RoomManager {
         public UUID red;
         public UUID blue;
         public UUID bot;
+        public List<String> botRoster = List.of();
         public final java.util.Set<UUID> ready = new java.util.HashSet<>();
         public State state = State.WAITING;
         public int countdown;
         public int endTicks;
+        public final Map<UUID, List<String>> rosters = new java.util.HashMap<>();
+        public RoomSettingsStore.Settings settings;
+        public final Map<UUID, java.util.Set<String>> revealed = new java.util.HashMap<>();
 
         Room(int id, String arenaName) {
             this.id = id;
             this.arenaName = arenaName;
+            this.settings = server == null ? new RoomSettingsStore.Settings()
+                    : RoomSettingsStore.get(server).settings(arenaName);
         }
 
         @Nullable
@@ -108,6 +114,8 @@ public final class RoomManager {
         net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STOPPED.register(stopped -> {
             ROOMS.clear();
             LANDING.clear();
+            JOIN_ATTEMPTS.clear();
+            com.pkmoba.pokemon.ProfileStore.get(stopped).clearBattles();
             ArenaStore.clearDrafts();
             server = null;
         });
@@ -159,6 +167,12 @@ public final class RoomManager {
 
     /** 加入房间：自动补空位（红先、蓝后）。 */
     public static void join(ServerPlayer player, int roomId) {
+        join(player, roomId, "");
+    }
+
+    private static final Map<UUID, Long> JOIN_ATTEMPTS = new java.util.HashMap<>();
+
+    public static void join(ServerPlayer player, int roomId, String password) {
         reconcile(player.server);
         Room room = ROOMS.get(roomId);
         if (room == null) {
@@ -186,6 +200,20 @@ public final class RoomManager {
             player.sendSystemMessage(Component.literal("你正在对局中，结束之后才能进房间。"));
             return;
         }
+        if (room.settings.passwordProtected()) {
+            long now = player.server.getTickCount();
+            if (now < JOIN_ATTEMPTS.getOrDefault(player.getUUID(), 0L)) {
+                player.sendSystemMessage(Component.literal("请稍等后重试加入。"));
+                return;
+            }
+            JOIN_ATTEMPTS.put(player.getUUID(), now + 40);
+            if (password == null || password.length() > 32 || !RoomRules.verifyPassword(password,
+                    room.settings.passwordSalt, room.settings.passwordHash)) {
+                player.sendSystemMessage(Component.literal("房间密码错误。"));
+                return;
+            }
+        }
+        room.rosters.put(player.getUUID(), defaultRoster(player, room));
         if (room.red == null) {
             room.red = player.getUUID();
         } else {
@@ -212,10 +240,11 @@ public final class RoomManager {
             player.sendSystemMessage(Component.literal("你不在任何房间里。"));
             return;
         }
-        if (room.state == State.FIGHTING || room.state == State.COUNTDOWN) {
+        if (room.state == State.FIGHTING) {
             player.sendSystemMessage(Component.literal("对局已开始，不能退出房间。"));
             return;
         }
+        cancelCountdown(room);
         removeMember(room, player.getUUID());
         player.sendSystemMessage(Component.literal("已退出房间 #" + room.id + "。"));
         broadcast();
@@ -225,7 +254,9 @@ public final class RoomManager {
         Room room = roomOf(player.getUUID());
         if (room == null || room.id != roomId || !player.getUUID().equals(room.host)
                 || room.full() || (room.state != State.WAITING && room.state != State.READY)) return;
+        room.ready.clear();
         room.bot = UUID.randomUUID();
+        room.botRoster = BotDuelService.randomTeam();
         if (room.red == null) room.red = room.bot; else room.blue = room.bot;
         room.state = State.READY;
         broadcast();
@@ -238,17 +269,18 @@ public final class RoomManager {
 
     public static void ready(ServerPlayer player) {
         Room room = roomOf(player.getUUID());
-        if (room == null || (room.state != State.WAITING && room.state != State.READY)) return;
-        var profile = com.pkmoba.pokemon.ProfileStore.get(player.server).profile(player.getUUID());
-        if (profile.team.isEmpty()) {
-            player.sendSystemMessage(Component.literal("请先准备至少一只宝可梦再确认队伍。"));
+        if (room == null || room.state == State.FIGHTING || room.state == State.ENDED) return;
+        if (room.state == State.COUNTDOWN || room.ready.contains(player.getUUID())) {
+            cancelCountdown(room);
+            room.ready.remove(player.getUUID());
+            broadcast();
             return;
         }
-        if (!DuelManager.hasTeam(player)) return;
+        if (!validRoster(player, room)) return;
         room.ready.add(player.getUUID());
-        player.sendSystemMessage(Component.literal("已确认队伍并准备。双方准备后由房主开始，入场倒计时 10 秒；倒下后有 20 秒按 C 换宠。"));
+        player.sendSystemMessage(Component.literal("已准备，双方就绪后自动倒计时 5 秒。"));
         ServerPlayer host = playerOf(player.server, room.host);
-        if (host != null && allReady(room)) host.sendSystemMessage(Component.literal("双方已准备！按 H 进入房间，点击开始对战。"));
+        if (host != null && allReady(room)) { start(host); return; }
         broadcast();
     }
 
@@ -271,9 +303,7 @@ public final class RoomManager {
             player.sendSystemMessage(Component.literal("房间状态不允许开始（当前：" + stateName(room.state) + "）。"));
             return;
         }
-        if (room.bot != null && !room.ready.contains(player.getUUID())) {
-            ready(player);
-        }
+        if (!validRoster(player, room)) return;
         if (!allReady(room)) {
             player.sendSystemMessage(Component.literal("请双方先确认队伍并点击准备，再开始对战。"));
             return;
@@ -285,36 +315,10 @@ public final class RoomManager {
         }
         ServerPlayer red = playerOf(player.server, room.red);
         ServerPlayer blue = playerOf(player.server, room.blue);
-        if (room.bot != null) {
-            if (!DuelManager.hasTeam(player)) {
-                player.sendSystemMessage(Component.literal("请先准备可出战的宝可梦队伍。"));
-                return;
-            }
-            ServerPlayer human = playerOf(player.server, room.host);
-            if (human == null || !BotDuelService.start(human, room.bot, arena, room.host.equals(room.red))) {
-                player.sendSystemMessage(Component.literal("训练对战无法开始，请确认队伍和竞技场可用。"));
-                return;
-            }
-            room.state = State.FIGHTING;
-            room.countdown = 0;
-            return;
-        }
-        if (red == null || blue == null) {
-            player.sendSystemMessage(Component.literal("有一方玩家不在线。"));
-            return;
-        }
-        if (!DuelManager.hasTeam(red) || !DuelManager.hasTeam(blue)) {
-            player.sendSystemMessage(Component.literal("有一方还没有宝可梦队伍。"));
-            return;
-        }
-        if (!DuelManager.startRoom(red, blue, arena)) {
-            player.sendSystemMessage(Component.literal("开局失败：请确认双方队伍与竞技场可用。"));
-            return;
-        }
-        room.state = State.FIGHTING;
-        room.countdown = 0;
-        applyLanding(red);
-        applyLanding(blue);
+        if (room.bot == null && (red == null || blue == null || !validRoster(red, room) || !validRoster(blue, room))) return;
+        room.revealed.clear();
+        room.state = State.COUNTDOWN;
+        room.countdown = COUNTDOWN_TICKS;
         broadcast();
     }
 
@@ -322,14 +326,21 @@ public final class RoomManager {
 
     private static void tick(MinecraftServer running) {
         server = running;
+        if (running.getTickCount() % 200 == 0) JOIN_ATTEMPTS.entrySet().removeIf(entry -> entry.getValue() < running.getTickCount());
         if (ROOMS.isEmpty()) return;
         boolean changed = false;
         List<Room> snapshot = new ArrayList<>(ROOMS.values());
         for (Room room : snapshot) {
             switch (room.state) {
                 case COUNTDOWN -> {
-                    beginMatch(running, room);
-                    changed = true;
+                    if (!allReady(room)) { cancelCountdown(room); changed = true; break; }
+                    room.countdown--;
+                    if (room.countdown <= 0) beginMatch(running, room);
+                    else if (room.countdown % 20 == 0) {
+                        title(playerOf(running, room.red), Integer.toString(room.countdown / 20), "准备开局 · 可取消准备返回编辑");
+                        title(playerOf(running, room.blue), Integer.toString(room.countdown / 20), "准备开局 · 可取消准备返回编辑");
+                    }
+                    if (room.countdown % 20 == 0) changed = true;
                 }
                 case FIGHTING -> {
                     ServerPlayer red = playerOf(running, room.red);
@@ -372,22 +383,36 @@ public final class RoomManager {
         ArenaStore.Arena arena = ArenaStore.get(running).byName(room.arenaName);
         if (room.bot != null) {
             ServerPlayer human = playerOf(running, room.host);
-            if (human == null || !BotDuelService.start(human, room.bot, arena, room.host.equals(room.red))) {
+            if (human == null || !validRoster(human, room)
+                    || !com.pkmoba.pokemon.ProfileStore.get(running).beginBattle(human.getUUID(), room.rosters.get(human.getUUID()))) {
+                room.ready.clear(); room.state = State.READY; room.countdown = 0;
+                return;
+            }
+            if (!BotDuelService.start(human, room.bot, arena, room.host.equals(room.red))) {
+                com.pkmoba.pokemon.ProfileStore.get(running).endBattle(human.getUUID());
                 room.state = State.READY;
+                room.ready.clear();
+                room.countdown = 0;
                 return;
             }
             room.state = State.FIGHTING;
             room.countdown = 0;
             applyLanding(human);
-            title(human, "选择出战", "C 确定成员 · X 召唤后开始倒计时");
+            title(human, "选择出战", "X 召唤首发 · 不再叠加入场倒计时");
+            broadcast();
             return;
         }
         if (red == null || blue == null || arena == null) {
             room.state = State.WAITING;
+            room.countdown = 0;
+            room.ready.clear();
             return;
         }
-        if (!DuelManager.startRoom(red, blue, arena)) {
+        if (!validRoster(red, room) || !validRoster(blue, room)
+                || !DuelManager.startRoom(red, blue, arena, room.rosters.get(red.getUUID()), room.rosters.get(blue.getUUID()))) {
             room.state = State.READY;
+            room.countdown = 0;
+            room.ready.clear();
             red.sendSystemMessage(Component.literal("开局失败：请确认双方都有宝可梦队伍。"));
             blue.sendSystemMessage(Component.literal("开局失败：请确认双方都有宝可梦队伍。"));
             return;
@@ -454,6 +479,8 @@ public final class RoomManager {
     public static void onQuit(ServerPlayer player) {
         Room room = roomOf(player.getUUID());
         if (room == null) return;
+        if (room.state == State.FIGHTING) DuelManager.cancelArena(player.server, room.arenaName);
+        cancelCountdown(room);
         removeMember(room, player.getUUID());
         broadcast();
     }
@@ -468,6 +495,8 @@ public final class RoomManager {
         if (player.equals(room.red)) room.red = null;
         if (player.equals(room.blue)) room.blue = null;
         room.ready.clear();
+        room.rosters.remove(player);
+        room.countdown = 0;
         room.joinOrder.remove(player);
         LANDING.remove(player);
         // 房主离开：按加入顺序把房主交给最早的下一位成员。
@@ -493,6 +522,7 @@ public final class RoomManager {
         room.bot = null;
         room.ready.clear();
         room.joinOrder.clear();
+        room.rosters.clear();
         room.state = State.WAITING;
         room.countdown = 0;
         room.endTicks = 0;
@@ -606,11 +636,17 @@ public final class RoomManager {
                     room.state.ordinal(), seconds, room.state == State.WAITING && !room.full()
                     && roomOf(me) == null && !DuelManager.inMatch(player), startable,
                     idOf(room.host), idOf(room.red), idOf(room.blue),
-                    teamOf(running, room, room.red), teamOf(running, room, room.blue)));
+                    me.equals(room.red) ? teamOf(running, room, room.red) : List.of(),
+                    me.equals(room.blue) ? teamOf(running, room, room.blue) : List.of(),
+                    2, room.settings.capacity, room.settings.passwordProtected(),
+                    room.settings.displayName.isBlank() ? room.arenaName : room.settings.displayName,
+                    visibleRoster(room, room.red, me), visibleRoster(room, room.blue, me),
+                    room.ready.contains(me), room.ready.size(), room.settings.visibility));
         }
         if (!ServerPlayNetworking.canSend(player, RoomListPayload.TYPE)) return;
         ServerPlayNetworking.send(player, new RoomListPayload(views, roomIdOf(player.getUUID()),
-                sideOf(player.getUUID()), ArenaStore.get(running).names()));
+                sideOf(player.getUUID()), ArenaStore.get(running).names(),
+                List.copyOf(com.pkmoba.pokemon.ProfileStore.get(running).collection(player.getUUID()).favorites)));
     }
 
     /** 玩家 UUID → 倒计时里选定的出战落点（方案 §三.2）。 */
@@ -652,8 +688,9 @@ public final class RoomManager {
 
     /** 倒计时结束：把宝可梦挪到玩家选定的落点（没选就留在点位组的宝可梦点）。 */
     private static void applyLanding(ServerPlayer player) {
+        if (player == null) return;
         Vec3 point = LANDING.remove(player.getUUID());
-        if (point == null || player == null) return;
+        if (point == null) return;
         com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity =
                 com.pkmoba.charizard.CharizardManager.getControlled(player);
         if (entity == null) return;
@@ -664,8 +701,172 @@ public final class RoomManager {
 
     private static List<String> teamOf(MinecraftServer running, Room room, UUID id) {
         if (id == null) return List.of();
-        if (id.equals(room.bot)) return BotDuelService.teamForDisplay();
-        return List.copyOf(com.pkmoba.pokemon.ProfileStore.get(running).profile(id).team);
+        if (id.equals(room.bot)) return room.botRoster;
+        return List.copyOf(com.pkmoba.pokemon.ProfileStore.get(running).collection(id).team);
+    }
+
+    private static List<String> visibleRoster(Room room, UUID id, UUID viewer) {
+        return RosterVisibility.filter(rosterOf(room, id), viewer.equals(id), room.settings.visibility,
+                room.state == State.FIGHTING || room.state == State.ENDED,
+                room.revealed.getOrDefault(id, java.util.Set.of()));
+    }
+
+    /** Called when an entity actually deploys, never when merely selected. */
+    public static void reveal(UUID owner, String species) {
+        Room room = roomOf(owner);
+        if (room == null || room.state != State.FIGHTING) return;
+        if (room.revealed.computeIfAbsent(owner, ignored -> new java.util.HashSet<>()).add(species)) broadcast();
+    }
+
+    private static List<String> rosterOf(Room room, UUID id) {
+        if (id == null) return List.of();
+        if (id.equals(room.bot)) return room.botRoster.stream().limit(room.settings.capacity).toList();
+        return List.copyOf(room.rosters.getOrDefault(id, List.of()));
+    }
+
+    private static List<String> defaultRoster(ServerPlayer player, Room room) {
+        return com.pkmoba.pokemon.ProfileStore.get(player.server).collection(player.getUUID()).team.stream()
+                .filter(id -> com.pkmoba.pokemon.SpeciesRegistry.parse(id) != null).limit(room.settings.capacity).toList();
+    }
+
+    private static boolean validRoster(ServerPlayer player, Room room) {
+        try {
+            List<String> roster = RoomRules.roster(room.rosters.getOrDefault(player.getUUID(), List.of()),
+                    com.pkmoba.pokemon.ProfileStore.get(player.server).collection(player.getUUID()).team,
+                    com.pkmoba.pokemon.SpeciesRegistry.ids(), room.settings.capacity);
+            if (roster.isEmpty()) throw new IllegalArgumentException("empty roster");
+            return true;
+        } catch (IllegalArgumentException ex) {
+            room.ready.remove(player.getUUID());
+            player.sendSystemMessage(Component.literal("请先选择合法的本场阵容（1 至 " + room.settings.capacity + " 只已拥有宝可梦）。"));
+            return false;
+        }
+    }
+
+    private static void cancelCountdown(Room room) {
+        if (room.state == State.COUNTDOWN) {
+            room.state = room.full() ? State.READY : State.WAITING;
+            room.countdown = 0;
+            for (UUID id : room.joinOrder) LANDING.remove(id);
+        }
+    }
+
+    public static boolean collectionMutationAllowed(ServerPlayer player) {
+        Room room = roomOf(player.getUUID());
+        if (room != null && (room.state == State.COUNTDOWN || room.state == State.FIGHTING || room.state == State.ENDED)) {
+            player.sendSystemMessage(Component.literal("开局倒计时或对局中不能修改或治疗收藏，请先取消准备。"));
+            return false;
+        }
+        if (DuelManager.inMatch(player)) {
+            player.sendSystemMessage(Component.literal("对局中不能修改或治疗收藏。"));
+            return false;
+        }
+        return true;
+    }
+
+    public static void collectionChanged(ServerPlayer player) {
+        Room room = roomOf(player.getUUID());
+        if (room != null) {
+            room.ready.remove(player.getUUID());
+            List<String> owned = com.pkmoba.pokemon.ProfileStore.get(player.server).collection(player.getUUID()).team;
+            room.rosters.put(player.getUUID(), room.rosters.getOrDefault(player.getUUID(), List.of()).stream()
+                    .filter(owned::contains).limit(room.settings.capacity).toList());
+            broadcast();
+        }
+    }
+
+    private static void configure(ServerPlayer player, int roomId, String action, String arg) {
+        Room room = roomOf(player.getUUID());
+        if (room == null || room.id != roomId || room.state == State.FIGHTING || room.state == State.ENDED) return;
+        if (!java.util.Set.of("SET_ROSTER", "TOGGLE_ROSTER", "FAVORITE").contains(action) && !player.getUUID().equals(room.host)) {
+            player.sendSystemMessage(Component.literal("只有房主可以修改房间设置。"));
+            return;
+        }
+        if (room.state == State.COUNTDOWN) {
+            player.sendSystemMessage(Component.literal("请先取消准备，再编辑房间或阵容。"));
+            return;
+        }
+        try {
+            switch (action) {
+                case "SET_VISIBILITY" -> room.settings.visibility = RosterVisibility.validate(Integer.parseInt(arg));
+                case "FAVORITE" -> {
+                    var species = com.pkmoba.pokemon.SpeciesRegistry.parse(arg);
+                    if (species == null) throw new IllegalArgumentException("species");
+                    var store = com.pkmoba.pokemon.ProfileStore.get(player.server);
+                    var stars = store.collection(player.getUUID()).favorites;
+                    if (!stars.remove(species.toString())) stars.add(species.toString());
+                    store.setDirty();
+                    sendSnapshot(player);
+                    return;
+                }
+                case "TOGGLE_ROSTER" -> {
+                    var species = com.pkmoba.pokemon.SpeciesRegistry.parse(arg);
+                    if (species == null) throw new IllegalArgumentException("species");
+                    String id = species.toString();
+                    List<String> roster = new ArrayList<>(room.rosters.getOrDefault(player.getUUID(), List.of()));
+                    if (!roster.remove(id)) {
+                        if (roster.size() >= room.settings.capacity) {
+                            player.sendSystemMessage(Component.literal("已达本场上限，请先取消一只。"));
+                            sendSnapshot(player);
+                            return;
+                        }
+                        var owned = com.pkmoba.pokemon.ProfileStore.get(player.server).collection(player.getUUID());
+                        if (!owned.team.contains(id) && !com.pkmoba.pokemon.TeamService.addSpecies(player, id)) return;
+                        roster.add(id);
+                    }
+                    room.rosters.put(player.getUUID(), List.copyOf(roster));
+                    room.ready.remove(player.getUUID());
+                    broadcast();
+                    return;
+                }
+                case "SET_NAME" -> room.settings.displayName = RoomRules.displayName(arg);
+                case "SET_CAPACITY" -> {
+                    room.settings.capacity = RoomRules.capacity(Integer.parseInt(arg));
+                    room.rosters.replaceAll((id, roster) -> roster.stream().limit(room.settings.capacity).toList());
+                }
+                case "SET_PASSWORD" -> {
+                    if (arg.length() > 32) throw new IllegalArgumentException("password length");
+                    long now = player.server.getTickCount();
+                    if (now < JOIN_ATTEMPTS.getOrDefault(player.getUUID(), 0L)) {
+                        player.sendSystemMessage(Component.literal("请稍等后再修改密码。"));
+                        return;
+                    }
+                    JOIN_ATTEMPTS.put(player.getUUID(), now + 40);
+                    room.settings.passwordSalt = arg.isEmpty() ? "" : RoomRules.newSalt();
+                    room.settings.passwordHash = arg.isEmpty() ? "" : RoomRules.passwordHash(arg, room.settings.passwordSalt);
+                }
+                case "SET_ROSTER" -> {
+                    List<String> ids = new ArrayList<>();
+                    for (String raw : RoomRules.parseRoster(arg)) {
+                        var id = com.pkmoba.pokemon.SpeciesRegistry.parse(raw);
+                        if (id == null) throw new IllegalArgumentException("species");
+                        ids.add(id.toString());
+                    }
+                    room.rosters.put(player.getUUID(), RoomRules.roster(ids,
+                            com.pkmoba.pokemon.ProfileStore.get(player.server).collection(player.getUUID()).team,
+                            com.pkmoba.pokemon.SpeciesRegistry.ids(), room.settings.capacity));
+                    room.ready.remove(player.getUUID());
+                    broadcast();
+                    return;
+                }
+                default -> { return; }
+            }
+            room.ready.clear();
+            RoomSettingsStore.get(player.server).markDirtyAndSave();
+            String summary = switch (action) {
+                case "SET_NAME" -> "房名已更新";
+                case "SET_CAPACITY" -> "本场携带上限改为 " + room.settings.capacity;
+                case "SET_PASSWORD" -> room.settings.passwordProtected() ? "房间已设置密码" : "房间改为公开加入";
+                default -> "房间规则已更新";
+            };
+            for (UUID member : room.joinOrder) {
+                ServerPlayer recipient = playerOf(player.server, member);
+                if (recipient != null) recipient.sendSystemMessage(Component.literal(summary + "，双方准备已取消。"));
+            }
+            broadcast();
+        } catch (IllegalArgumentException ex) {
+            player.sendSystemMessage(Component.literal("设置无效：请检查房名、密码、容量或本场阵容。"));
+        }
     }
 
     private static String idOf(UUID id) {
@@ -690,8 +891,17 @@ public final class RoomManager {
         String action = payload.action() == null ? "" : payload.action();
         switch (action) {
             case "OPEN" -> open(player);
-            case "CREATE" -> create(player, payload.arg());
-            case "JOIN" -> join(player, payload.roomId());
+            case "CREATE" -> { if (player.hasPermissions(2)) create(player, payload.arg()); }
+            case "JOIN" -> join(player, payload.roomId(), payload.arg());
+            case "SET_NAME", "SET_PASSWORD", "SET_CAPACITY", "SET_ROSTER", "SET_VISIBILITY", "TOGGLE_ROSTER", "FAVORITE" -> configure(player, payload.roomId(), action, payload.arg());
+            case "UNREADY", "CANCEL_COUNTDOWN" -> {
+                Room room = roomOf(player.getUUID());
+                if (room != null && room.state != State.FIGHTING && room.state != State.ENDED) {
+                    cancelCountdown(room);
+                    room.ready.remove(player.getUUID());
+                    broadcast();
+                }
+            }
             case "LEAVE" -> leave(player);
             case "READY" -> ready(player);
             case "START" -> start(player);
@@ -699,8 +909,8 @@ public final class RoomManager {
             case "SELECT" -> {
                 if (!inCountdown(player)) {
                     player.sendSystemMessage(Component.literal("只有在开局倒计时期间才能选宝可梦。"));
-                } else if (!com.pkmoba.pokemon.TeamService.choose(player, payload.arg())) {
-                    PkmobaMod.LOGGER.warn("[pkmoba] 倒计时选宝可梦失败：{}", payload.arg());
+                } else {
+                    player.sendSystemMessage(Component.literal("请先取消准备，再编辑本场阵容与首发。"));
                 }
             }
             case "LANDING" -> landing(player, payload.arg());

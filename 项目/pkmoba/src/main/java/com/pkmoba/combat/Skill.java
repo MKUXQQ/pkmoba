@@ -23,9 +23,16 @@ public enum Skill {
     private static boolean species(String id, String name) { return name.equals(id) || ("cobblemon:" + name).equals(id); }
 
     public static String translationKey(PokemonEntity pokemon, int index) {
+        var expansion = ExpansionCombat.species(pokemon);
+        if (expansion != null) return translationKey(expansion.id(), index);
         return translationKey(isBlastoise(pokemon), isVenusaur(pokemon), isPikachu(pokemon), index);
     }
     public static String translationKey(String id, int index) {
+        var expansion = ExpansionRoster.find(id);
+        if (expansion != null) {
+            if (index < 0 || index > 3) throw new IndexOutOfBoundsException(index);
+            return "skill.pkmoba." + expansion.id() + "." + "qwer".charAt(index);
+        }
         return translationKey(isBlastoise(id), isVenusaur(id), isPikachu(id), index);
     }
     private static String translationKey(boolean blastoise, boolean venusaur, boolean pikachu, int index) {
@@ -45,15 +52,31 @@ public enum Skill {
     private static final int[] VENUSAUR_COOLDOWNS = {100, 140, 160, 320};
     private static final int[] PIKACHU_COOLDOWNS = {60, 120, 100, 320};
 
-    public static int cost(PokemonEntity pokemon, int index) { return cost(isBlastoise(pokemon), isVenusaur(pokemon), isPikachu(pokemon), index); }
-    public static int cost(String id, int index) { return cost(isBlastoise(id), isVenusaur(id), isPikachu(id), index); }
+    public static int cost(PokemonEntity pokemon, int index) {
+        var expansion = ExpansionCombat.species(pokemon);
+        return expansion == null ? cost(isBlastoise(pokemon), isVenusaur(pokemon), isPikachu(pokemon), index)
+                : index < 0 || index > 3 ? 0 : expansion.move(index).cost();
+    }
+    public static int cost(String id, int index) {
+        var expansion = ExpansionRoster.find(id);
+        return expansion == null ? cost(isBlastoise(id), isVenusaur(id), isPikachu(id), index)
+                : index < 0 || index > 3 ? 0 : expansion.move(index).cost();
+    }
     public static int cost(boolean blastoise, int index) { return cost(blastoise, false, false, index); }
     private static int cost(boolean blastoise, boolean venusaur, boolean pikachu, int index) {
         int[] table = pikachu ? PIKACHU_COSTS : venusaur ? VENUSAUR_COSTS : blastoise ? BLASTOISE_COSTS : CHARIZARD_COSTS;
         return index < 0 || index >= table.length ? 0 : table[index];
     }
-    public static int cooldownTicks(PokemonEntity pokemon, int index) { return cooldownTicks(isBlastoise(pokemon), isVenusaur(pokemon), isPikachu(pokemon), index); }
-    public static int cooldownTicks(String id, int index) { return cooldownTicks(isBlastoise(id), isVenusaur(id), isPikachu(id), index); }
+    public static int cooldownTicks(PokemonEntity pokemon, int index) {
+        var expansion = ExpansionCombat.species(pokemon);
+        return expansion == null ? cooldownTicks(isBlastoise(pokemon), isVenusaur(pokemon), isPikachu(pokemon), index)
+                : index < 0 || index > 3 ? 40 : expansion.move(index).cooldown();
+    }
+    public static int cooldownTicks(String id, int index) {
+        var expansion = ExpansionRoster.find(id);
+        return expansion == null ? cooldownTicks(isBlastoise(id), isVenusaur(id), isPikachu(id), index)
+                : index < 0 || index > 3 ? 40 : expansion.move(index).cooldown();
+    }
     public static int cooldownTicks(boolean blastoise, int index) { return cooldownTicks(blastoise, false, false, index); }
     private static int cooldownTicks(boolean blastoise, boolean venusaur, boolean pikachu, int index) {
         int[] table = pikachu ? PIKACHU_COOLDOWNS : venusaur ? VENUSAUR_COOLDOWNS : blastoise ? BLASTOISE_COOLDOWNS : CHARIZARD_COOLDOWNS;

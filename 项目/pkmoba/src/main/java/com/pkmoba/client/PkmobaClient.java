@@ -35,11 +35,12 @@ public class PkmobaClient implements ClientModInitializer {
         CharizardSkillAnimator.init();
         HudOverlay.init();
         SkillHud.init();
-        PartyHud.init();
+        // No extra party HUD: Cobblemon owns the vanilla party display.
         VenusaurEffects.init();
         RemoteSkillAnimations.init();
         BodyAnchorStabilizer.init();
         PikachuEffects.init();
+        ExpansionEffects.init();
         SelectionOutlineRenderer.init();
         // m04660：普通攻击与普攻白圈已整体删除，不再注册 AttackRangeRenderer。
         ClickMarker.init();
@@ -133,7 +134,7 @@ public class PkmobaClient implements ClientModInitializer {
                 context.client().execute(() -> {
                     // 0.39：命中反馈复用同一个 EffectPayload（effectId 前缀 pkmoba:hit/），
                     // 由 HitFeedback 解析，命中包不再当普通粒子特效处理。
-                    if (SwitchZoneRenderer.accept(payload) || RemoteSkillAnimations.accept(payload) || PikachuEffects.accept(payload)) return;
+                    if (ExpansionEffects.accept(payload) || SwitchZoneRenderer.accept(payload) || RemoteSkillAnimations.accept(payload) || PikachuEffects.accept(payload)) return;
                     if (HitFeedback.handle(payload)) {
                         TargetOverlay.captureHit(payload);
                         return;
@@ -323,6 +324,7 @@ public class PkmobaClient implements ClientModInitializer {
 
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             ClientState.reset();
+            ClientRooms.reset();
             GodView.reset();
             ChallengePopupScreen.reset();
             // 0.39：断开时清掉震屏/顿帧/斩杀提示并停掉所有循环音（否则残留实例会跨世界播放）

@@ -9,19 +9,27 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 鼠标瞄准点缓存 + "模型常驻朝鼠标"的每 tick 转向。
+ * 鼠标瞄准点缓存 + "模型常驻朝鼠标预瞄"的每 tick 转向（0.48.5 重写）。
  *
- * <p>为什么需要它：0.38 只在引导（channel != 0）时才让模型转向光标，站着不动时模型还是
- * 朝向移动方向。用户 m00858 要求「模型时时刻刻看着鼠标点击的方向」，所以：
+ * <p>职责分成两层：
  * <ol>
- *   <li>客户端每 tick 发一次 {@code AimPayload}（不只是引导期间），服务端存下最新瞄准点；</li>
- *   <li>服务端每 tick 以约 6°/tick 的低速把模型转向瞄准点 —— 转得慢，视觉上是"慢慢转过去"
- *       而不是瞬间扭头；技能方向统一取 {@code CharizardCombat.modelForward(entity)}，
- *       于是喷火/水炮就自然跟着模型缓慢扫动，而不是被光标拽着瞬移。</li>
+ *   <li><b>缓存</b>：客户端每 tick 发一次 {@code AimPayload}（不只是引导期间），这里只存最新瞄准点；</li>
+ *   <li><b>预瞄</b>：每 tick 以 {@link #AIM_TURN_PER_TICK} 限速把模型（头 + 身体同时）转向瞄准点。
+ *       只要还有新鲜的瞄准数据，<b>任何两只宝可梦（双方、玩家或 bot）</b>都会持续朝鼠标方向，
+ *       不再区分"站着 / 走着 / 施法收招后"。</li>
  * </ol>
  *
- * <p>与 {@link FacingService} 的关系：这里不直接写旋转角度，只以 {@code Priority.AIM}
- * 提交请求，由 FacingService 统一仲裁（引导中的 CHANNEL 优先级更高，会压过本类）。
+ * <p>0.48.5 修掉的两个"预瞄不生效"根因：
+ * <ul>
+ *   <li>原 {@code track} 在 {@code MoveOrderService.hasOrder(entity)} 时直接 return ——
+ *       只要还挂着移动目的地，模型就一直朝行走方向（用户："只有引导时才看鼠标"）；</li>
+ *   <li>原 {@code track} 对草系直接 return（"引导外用移动终点朝向"的旧设定）。
+ *       现在统一走预瞄，移动方向不再写朝向（见 {@code MoveOrderService.faceTowards}）。</li>
+ * </ul>
+ *
+ * <p>与 {@link CastLock} 的关系：施法锁生效期间方向在"确认施法"那一帧已钉死，
+ * 这里先调 {@link CastLock#tick} 重申锁定朝向并直接返回，<b>新鼠标不会改正在引导的技能</b>；
+ * 锁定到期后本类立刻接手，用限速把朝向平滑接回鼠标（不瞬移）。
  */
 public final class AimTracker {
 
@@ -60,20 +68,39 @@ public final class AimTracker {
         return entry.aim();
     }
 
+    /** 是否有新鲜瞄准数据（供移动服务等判断"朝向该不该交给预瞄"）。 */
+    public static boolean hasFreshAim(@Nullable PokemonEntity entity) {
+        return aimOf(entity) != null;
+    }
+
     /**
-     * 每 tick 调用：让模型低速转向最新的鼠标瞄准点。
+     * 每 tick 调用（{@code CharizardCombat.tick} 对每只受控宝可梦执行，位于 tickEntity 之后）。
      *
-     * <p>引导中的 CHANNEL 优先级更高，同一 tick 里会先占位，本请求会被 FacingService 忽略。
+     * <p>顺序很重要：先处理施法锁（它必须是本 tick 最后一个写朝向的人），再走预瞄。
      */
     public static void track(@Nullable PokemonEntity entity) {
-        // Venusaur faces the move destination outside casts; casts claim CHANNEL priority.
-        if (entity != null && Skill.isVenusaur(entity)) return;
-        // 移动目标到达前，移动方向持续优先；静止后恢复常驻鼠标瞄准。
-        if (entity != null && com.pkmoba.move.MoveOrderService.hasOrder(entity)) {
+        if (entity == null) {
+            return;
+        }
+        // 死亡 / 收回 / 已移除：顺手把三张表清干净（死亡、撤回、取消路径的统一兜底）。
+        if (!entity.isAlive() || entity.isRemoved()) {
+            CastLock.release(entity);
+            clear(entity);
+            return;
+        }
+        // 施法锁：到期则释放（收招结束 → 下一行预瞄平滑接手），否则重申锁定朝向。
+        CastLock.tick(entity);
+        if (CastLock.active(entity)) {
+            // 起手 / 引导 / 收招：方向已在确认施法时锁定，忽略新鼠标，也不让 AI / 旧移动改朝向。
             return;
         }
         Vec3 aim = aimOf(entity);
         if (aim == null) {
+            return;
+        }
+        // 0.48.5：直线被挡、只能走原版寻路（A*）时，朝向让给寻路 —— 原版是"朝哪转就往哪走"，
+        // 这时候硬锁鼠标会让它斜着蹭墙。直线行走（绝大多数情况）不受影响，照样边走边跟鼠标。
+        if (com.pkmoba.move.MoveOrderService.navigationSteering(entity)) {
             return;
         }
         double dx = aim.x - entity.getX();
@@ -91,6 +118,7 @@ public final class AimTracker {
         }
     }
 
+    /** 清空全部瞄准缓存（对局开始/结束、全员收回）。 */
     public static void clearAll() {
         ENTRIES.clear();
     }

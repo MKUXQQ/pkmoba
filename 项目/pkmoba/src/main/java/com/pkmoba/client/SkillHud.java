@@ -141,7 +141,8 @@ public final class SkillHud {
         if (!(entity instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon) || !pokemon.isAlive()) return null;
         String species = pokemon.getPokemon().getSpecies().getResourceIdentifier().toString();
         return species.equals("cobblemon:charizard") || species.equals("cobblemon:blastoise")
-                || species.equals("cobblemon:venusaur") || species.equals("cobblemon:pikachu") ? pokemon : null;
+                || species.equals("cobblemon:venusaur") || species.equals("cobblemon:pikachu")
+                || com.pkmoba.combat.ExpansionRoster.find(species)!=null ? pokemon : null;
     }
 
     /**
@@ -405,7 +406,8 @@ public final class SkillHud {
         // channel 4/6 有服务端下发的 charge（大字爆炎/加农水炮/喷水前摇），其余引导只画满条提示。
         int channel = ClientState.getChannel();
         int guidedSlot = SkillKeys.slotForChannel(speciesId, channel);
-        boolean chargeBar = channel == 4 || channel == 6 || (electric && channel == 14);
+        boolean chargeBar = channel == 4 || channel == 6 || (electric && channel == 14)
+                || com.pkmoba.combat.ExpansionRoster.find(speciesId) != null;
         float charge = Math.max(0.0F, Math.min(1.0F, ClientState.getCharge()));
         boolean casting = channel != 0;
         long now = Util.getMillis();

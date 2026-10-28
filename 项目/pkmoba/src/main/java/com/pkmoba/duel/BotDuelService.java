@@ -34,11 +34,10 @@ import java.util.UUID;
 /** Room-only training opponents. Bot identities never enter the real player list or profiles. */
 public final class BotDuelService {
     public static final String BOT_NAME = "训练人机";
-    private static final List<String> TEAM = List.of("charizard", "blastoise", "venusaur", "pikachu");
     private static final Map<UUID, Match> MATCHES = new LinkedHashMap<>();
     private static final int SWITCH_TICKS = 20 * 20;
     private static final int BOT_REPLACEMENT_TICKS = 2 * 20;
-    private static final int ENTRY_COUNTDOWN_TICKS = 10 * 20;
+    private static final int ENTRY_COUNTDOWN_TICKS = 5 * 20;
 
     private static final class Match {
         final UUID human;
@@ -47,6 +46,8 @@ public final class BotDuelService {
         final boolean humanRed;
         final ServerPlayer actor;
         final long entryStartsAt;
+        final int teamSize;
+        final List<String> team;
         UUID humanEntity;
         UUID botEntity;
         int botIndex;
@@ -62,7 +63,6 @@ public final class BotDuelService {
         Skill lastSkill;
         Skill chargedIntent;
         long chargedIntentUntil;
-        Skill nextCharged = Skill.W;
         long nextIntentLog;
         final long[] lastCastAt = new long[4];
         boolean initialSummonPending = true;
@@ -74,7 +74,20 @@ public final class BotDuelService {
             this.humanRed = humanRed;
             this.actor = new ServerPlayer(player.server, level, new GameProfile(bot, "PkmobaBot"), ClientInformation.createDefault());
             this.actor.setPos(botPoint());
-            this.entryStartsAt = player.server.getTickCount() + ENTRY_COUNTDOWN_TICKS;
+            RoomManager.Room room = RoomManager.roomOf(player.getUUID());
+            // 队伍来自候选池（SpeciesRegistry + 扩展引擎），但只保留真正能生成的物种：
+            // spawnMatchEntity 对未注册物种一律返回 null，留空位会让 bot 早早"没牌可出"。
+            List<String> roster = (room == null ? randomTeam() : room.botRoster).stream()
+                    .map(id -> id.substring(id.indexOf(':') + 1))
+                    .filter(path -> com.pkmoba.pokemon.SpeciesRegistry.contains(
+                            ResourceLocation.fromNamespaceAndPath("cobblemon", path)))
+                    .toList();
+            this.team = roster.isEmpty()
+                    ? com.pkmoba.pokemon.SpeciesRegistry.ids().stream()
+                            .map(id -> id.substring(id.indexOf(':') + 1)).toList()
+                    : roster;
+            this.teamSize = room == null ? team.size() : Math.min(team.size(), room.settings.capacity);
+            this.entryStartsAt = player.server.getTickCount() + (room == null ? ENTRY_COUNTDOWN_TICKS : 0);
             this.protectedUntil = entryStartsAt;
         }
         Vec3 humanPoint() { return humanRed ? arena.redPlayer : arena.bluePlayer; }
@@ -82,8 +95,23 @@ public final class BotDuelService {
         Vec3 botPoint() { return humanRed ? arena.bluePlayer : arena.redPlayer; }
     }
 
+    public static List<String> randomTeam() {
+        List<String> team = new ArrayList<>(teamForDisplay());
+        java.util.Collections.shuffle(team);
+        return List.copyOf(team);
+    }
+
+    /**
+     * 机器人候选物种（{@code cobblemon:<path>} 形式）。
+     *
+     * <p>直接跟着 {@link com.pkmoba.pokemon.SpeciesRegistry} 走：注册表里有谁，bot 就能选谁，
+     * 新增物种不需要再回来改这里。注意 {@code CharizardManager.spawnMatchEntity} 同样以
+     * {@code SpeciesRegistry.contains} 为闸门，所以"扩 bot 池"的正确做法是把新物种注册进
+     * SpeciesRegistry（那里一改，bot 队伍、选择界面、指令补全同时生效）。
+     * 队伍长度仍由房间容量 {@code room.settings.capacity} 截断（见 {@link Match#teamSize}）。
+     */
     public static List<String> teamForDisplay() {
-        return TEAM.stream().map(id -> "cobblemon:" + id).toList();
+        return com.pkmoba.pokemon.SpeciesRegistry.ids();
     }
 
     private BotDuelService() {}
@@ -151,6 +179,10 @@ public final class BotDuelService {
 
     public static boolean start(ServerPlayer human, UUID bot, ArenaStore.Arena arena, boolean humanRed) {
         if (bot == null || inMatch(human) || DuelManager.inMatch(human) || arena == null || !arena.complete()) return false;
+        RoomManager.Room room = RoomManager.roomOf(human.getUUID());
+        if (room == null || !bot.equals(room.bot) || !human.getUUID().equals(room.host)
+                || room.state != RoomManager.State.COUNTDOWN || room.countdown > 0
+                || !room.ready.contains(human.getUUID())) return false;
         var roster = ProfileStore.get(human.server).profile(human.getUUID());
         if (roster.team.isEmpty() || roster.team.stream().allMatch(roster.fainted::contains)) {
             human.sendSystemMessage(Component.literal("你的队伍没有可出战宝可梦，请先复活。"));
@@ -160,12 +192,13 @@ public final class BotDuelService {
         ServerLevel level = dimension == null ? human.serverLevel() : human.server.getLevel(ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, dimension));
         if (level == null) return false;
         // Fresh matches start with the full roster restored, regardless of free-play HP history.
-        TeamService.healPartyForBattle(human);
         com.pkmoba.pokemon.BallThrow.clearPlayer(human.getUUID());
-        for (PokemonEntity existing : new ArrayList<>(CharizardManager.getActiveList(human))) {
-            CharizardCombat.reset(existing);
-        }
+        com.pkmoba.combat.BattleStateReset.resetParticipants(CharizardManager.getActiveList(human));
+        // 新开局不接受上一局/自由场景留下的暂存点数与冷却（与 DuelManager 的 1v1 开局保持一致）。
+        com.pkmoba.combat.BattleStateReset.releaseReserves(human.getUUID());
+        com.pkmoba.combat.BattleStateReset.releaseReserves(bot);
         CharizardManager.discardAllControlled(human);
+        TeamService.healPartyForBattle(human);
         Match match = new Match(human, bot, arena, humanRed, level);
         MATCHES.put(human.getUUID(), match);
         Vec3 p = match.humanPoint();
@@ -183,19 +216,29 @@ public final class BotDuelService {
         ServerGodMode.setActive(human, true);
         TeamService.sendTeamState(human);
         human.sendSystemMessage(Component.literal("训练对战已创建。倒计时结束后即可选择宝可梦并召唤。"));
-        sendCountdown(human, ENTRY_COUNTDOWN_TICKS);
+        int remaining = (int) Math.max(0, match.entryStartsAt - human.server.getTickCount());
+        if (remaining > 0) sendCountdown(human, remaining);
         return true;
     }
 
     private static boolean spawnBot(Match match) {
-        if (match.botIndex >= TEAM.size()) return false;
-        PokemonEntity entity = CharizardManager.spawnMatchEntity(match.actor.serverLevel(), match.botPoint(),
-                ResourceLocation.fromNamespaceAndPath("cobblemon", TEAM.get(match.botIndex)));
+        PokemonEntity entity = null;
+        while (entity == null && match.botIndex < match.teamSize) {
+            ResourceLocation species = ResourceLocation.fromNamespaceAndPath("cobblemon", match.team.get(match.botIndex));
+            entity = CharizardManager.spawnMatchEntity(match.actor.serverLevel(), match.botPoint(), species);
+            if (entity == null) {
+                // 队伍里混进了还没实装/未注册的物种：跳过它换下一只，别让整局开不起来。
+                com.pkmoba.PkmobaMod.LOGGER.warn("[pkmoba-bot] roster species not spawnable, skipping {}",
+                        match.team.get(match.botIndex));
+                match.botIndex++;
+            }
+        }
         if (entity == null) return false;
         CharizardCombat.reset(entity);
         float designMax = CharizardCombat.maxHpFor(entity);
         com.pkmoba.combat.PokemonHp.healToFull(entity, designMax);
         CharizardManager.registerControlled(match.bot, entity);
+        RoomManager.reveal(match.bot, "cobblemon:" + match.team.get(match.botIndex));
         match.botEntity = entity.getUUID();
         match.botDeadline = 0;
         match.nextSkill = 0;
@@ -315,7 +358,7 @@ public final class BotDuelService {
                 CharizardManager.unregisterControlled(match.bot);
                 match.botEntity = null;
                 match.botIndex++;
-                if (match.botIndex >= TEAM.size()) { finish(server, match, true, "机器人队伍全部倒下"); continue; }
+                if (match.botIndex >= match.teamSize) { finish(server, match, true, "机器人队伍全部倒下"); continue; }
                 match.botDeadline = now + BOT_REPLACEMENT_TICKS;
                 match.protectedUntil = match.botDeadline;
                 showTitle(human, "机器人宝可梦倒下了", "下一只即将出战");
@@ -348,38 +391,47 @@ public final class BotDuelService {
         Vec3 velocity = opponent.getDeltaMovement().multiply(1, 0, 1);
         if (velocity.lengthSqr() > .36) velocity = velocity.normalize().scale(.6);
         Vec3 target = opponent.getBoundingBox().getCenter().add(velocity.scale(3));
+        // Teleport is an escape, not a dash into the enemy. Only its cast aim is reversed.
+        Vec3 escapeAim = bot.position().add(bot.position().subtract(opponent.position())
+                .multiply(1,0,1).normalize().scale(7));
         CharizardCombat.updateAimForBot(bot, target);
         if (match.lastSpecies != speciesIndex(bot)) {
             match.lastSpecies = speciesIndex(bot);
             match.lastSkill = null;
             match.chargedIntent = null;
+            match.nextSkill = 0;
             java.util.Arrays.fill(match.lastCastAt, 0);
         }
 
         int channel = CharizardCombat.channelFor(bot);
-        // A committed charged cast owns resource saving and approach until it starts.
-        // Otherwise 1 bean/sec is immediately spent on cheap Q/E and R never reaches its cost.
+        // 攒豆预约：只在"冷却已经好了、但豆子还不够"的瞬间才成立（下一秒就可能放得起的技能才值得省豆）。
+        // 用 match.nextSkill 作 0..3 轮转游标，四个技能公平轮流，R 不会再被 W 永久饿死。
         if (channel == 0) {
-            if (match.chargedIntent != null && (now >= match.chargedIntentUntil
-                    || !CharizardCombat.readyForBot(bot, match.chargedIntent))) {
-                // Expired approaches must hand over their turn rather than immediately
-                // selecting the same failed W again and starving R forever.
-                match.nextCharged = match.chargedIntent == Skill.W ? Skill.R : Skill.W;
-                match.chargedIntent = null;
+            if (match.chargedIntent != null
+                    && (now >= match.chargedIntentUntil
+                            || !CharizardCombat.readyForBot(bot, match.chargedIntent))) {
+                match.chargedIntent = null; // 过期或冷却中途失效：交还决策权
             }
             if (match.chargedIntent == null) {
-                Skill first = (speciesIndex(bot) == 0 || Skill.isBlastoise(bot)) ? match.nextCharged : Skill.R;
-                Skill second = first == Skill.W ? Skill.R : Skill.W;
-                for (Skill candidate : new Skill[] { first, second }) {
-                    if (candidate == Skill.W && speciesIndex(bot) != 0 && !Skill.isBlastoise(bot)) continue;
-                    if (!CharizardCombat.readyForBot(bot, candidate)) continue;
-                    long last = match.lastCastAt[candidate.ordinal()];
-                    if (last > 0 && now - last < 160) continue;
-                    match.chargedIntent = candidate;
-                    match.chargedIntentUntil = now + 240;
+                Skill best = null;
+                double bestScore = Double.NEGATIVE_INFINITY;
+                boolean sightNow = bot.hasLineOfSight(opponent);
+                for (int offset = 0; offset < 4; offset++) {
+                    Skill candidate = Skill.values()[(match.nextSkill + offset) % 4];
+                    if (!CharizardCombat.readyForBot(bot, candidate)) continue;   // 冷却没好：不必预约
+                    if (CharizardCombat.canCastForBot(bot, candidate)) continue;  // 已经放得起：让通用循环直接放
+                    if (requiresSight(bot, candidate) && !sightNow) continue;
+                    if (distance > skillRange(bot, candidate)) continue;
+                    double score = skillScore(bot, candidate, distance, opponent) - offset * 0.25;
+                    if (score > bestScore) { bestScore = score; best = candidate; }
+                }
+                if (best != null) {
+                    match.chargedIntent = best;
+                    // 最贵 4 豆 = 80 tick，留出余量；到点就交还决策权，不会无限空等。
+                    match.chargedIntentUntil = now + 140;
+                    match.nextSkill = (best.ordinal() + 1) % 4;
                     com.pkmoba.PkmobaMod.LOGGER.info("[pkmoba-bot] intent entity={} species={} skill={} tick={} range={}",
-                            bot.getId(), bot.getPokemon().getSpecies().getResourceIdentifier(), candidate, now, skillRange(bot, candidate));
-                    break;
+                            bot.getId(), bot.getPokemon().getSpecies().getResourceIdentifier(), best, now, skillRange(bot, best));
                 }
             }
         }
@@ -392,6 +444,8 @@ public final class BotDuelService {
             // Rapid Spin only hits at contact range. Do not back away while it is active.
             double desired = spinning ? 1.5 : match.chargedIntent != null
                     ? Math.max(2.0, skillRange(bot, match.chargedIntent) - 1.5) : desiredRange(bot);
+            // 残血风筝：低于 35% 时多退两格，用射程换时间，而不是贴在对手脸上对拼。
+            if (!spinning && bot.getHealth() <= bot.getMaxHealth() * .35) desired += 2.0;
             Vec3 away = bot.position().subtract(opponent.position()).multiply(1, 0, 1);
             if (distance > desired + 1.0) bot.getNavigation().moveTo(opponent, spinning ? 1.25 : 1.15);
             else if (!spinning && distance < Math.max(1.8, desired - 2.2) && away.lengthSqr() > .001) {
@@ -405,24 +459,25 @@ public final class BotDuelService {
         boolean sight = bot.hasLineOfSight(opponent);
         if (match.chargedIntent != null) {
             Skill intent = match.chargedIntent;
-            if ((sight || (speciesIndex(bot) == 0 && intent == Skill.W))
-                    && distance <= skillRange(bot, intent) && distance >= minimumRange(bot, intent)
-                    && CharizardCombat.tryCastForBot(bot, intent, target)) {
+            boolean inRange = distance <= skillRange(bot, intent) && distance >= minimumRange(bot, intent);
+            boolean visible = !requiresSight(bot, intent) || sight;
+            Vec3 intentAim = isBlink(bot, intent) ? escapeAim : target;
+            if (inRange && visible && CharizardCombat.tryCastForBot(bot, intent, intentAim)) {
                 match.lastSkill = intent;
                 match.lastCastAt[intent.ordinal()] = now;
-                match.nextCharged = intent == Skill.W ? Skill.R : Skill.W;
+                match.nextSkill = (intent.ordinal() + 1) % 4;
                 match.chargedIntent = null;
             } else if (now >= match.nextIntentLog) {
                 match.nextIntentLog = now + 80;
                 com.pkmoba.PkmobaMod.LOGGER.info("[pkmoba-bot] waiting entity={} skill={} tick={} distance={} affordable={} channel={} navDone={}",
                         bot.getId(), intent, now, distance, CharizardCombat.canCastForBot(bot, intent), channel, bot.getNavigation().isDone());
             }
-            return; // Do not drain reserved beans with a different cheap cast.
+            return; // 攒豆期间不乱花豆（最多 140 tick 后由上面的到期逻辑交还决策权）
         }
         Skill selected = null;
         double selectedScore = Double.NEGATIVE_INFINITY;
         for (Skill skill : Skill.values()) {
-            if (!sight && !(speciesIndex(bot) == 0 && skill == Skill.W)) continue;
+            if (requiresSight(bot, skill) && !sight) continue;
             if (!CharizardCombat.canCastForBot(bot, skill)) continue;
             if (distance > skillRange(bot, skill) || distance < minimumRange(bot, skill)) continue;
             double score = skillScore(bot, skill, distance, opponent);
@@ -431,22 +486,62 @@ public final class BotDuelService {
             long idle = match.lastCastAt[skill.ordinal()] == 0 ? 180 : now - match.lastCastAt[skill.ordinal()];
             score += Math.min(2.5, idle / 100.0);
             if (skill == match.lastSkill) score -= 1.2;
+            // 轮转加成：轮到谁就给谁一点分，保证 Q/W/E/R 都会被真正用出来。
+            if (skill.ordinal() == match.nextSkill) score += 0.9;
             if (score > selectedScore) { selectedScore = score; selected = skill; }
         }
-        if (selected != null && CharizardCombat.tryCastForBot(bot, selected, target)) {
+        boolean escape = isBlink(bot, selected);
+        if (selected != null && CharizardCombat.tryCastForBot(bot, selected, escape ? escapeAim : target)) {
             match.lastSkill = selected;
             match.lastCastAt[selected.ordinal()] = now;
+            match.nextSkill = (selected.ordinal() + 1) % 4;
         }
+    }
+
+    /**
+     * 这个技能是否必须"看得见对手"才能起手。
+     *
+     * <p>自身增益 / 落点 / 位移 / 墙类只需要坐标或自己，对被墙挡住的扩展物种不该再一刀切要求视线
+     * （旧写法让 abomasnow 的白雾、gardevoir 的瞬间移动这类技能经常因为看不见人而永远不选）。
+     */
+    private static boolean requiresSight(PokemonEntity bot, Skill skill) {
+        if (speciesIndex(bot) == 0) return skill != Skill.W;                     // 喷火龙 W 是落点旋风
+        if (Skill.isBlastoise(bot)) return skill == Skill.Q || skill == Skill.R; // 水刃/水炮是直线弹道
+        var expansion = com.pkmoba.combat.ExpansionCombat.species(bot);
+        if (expansion == null) return true;                                      // 妙蛙花/皮卡丘保守处理
+        var move = expansion.move(skill.ordinal());
+        if (move == null) return true;
+        return switch (move.shape()) {
+            case SELF, BUFF, BLINK, POINT, WALL -> false;
+            case LINE, CONE, DASH -> true;
+        };
+    }
+
+    /** 位移类技能（扩展物种的 BLINK）要往"逃离方向"放，而不是朝着对手放。 */
+    private static boolean isBlink(PokemonEntity bot, @Nullable Skill skill) {
+        if (skill == null) return false;
+        var expansion = com.pkmoba.combat.ExpansionCombat.species(bot);
+        return expansion != null
+                && expansion.move(skill.ordinal()).shape() == com.pkmoba.combat.ExpansionRoster.Shape.BLINK;
     }
 
     private static int speciesIndex(PokemonEntity pokemon) {
         if (com.pkmoba.combat.Skill.isBlastoise(pokemon)) return 1;
         if (com.pkmoba.combat.Skill.isVenusaur(pokemon)) return 2;
         if (com.pkmoba.combat.Skill.isPikachu(pokemon)) return 3;
+        var expansion = com.pkmoba.combat.ExpansionCombat.species(pokemon);
+        if (expansion != null) return 4 + com.pkmoba.combat.ExpansionRoster.ALL.indexOf(expansion);
         return 0;
     }
 
     private static double desiredRange(PokemonEntity pokemon) {
+        var expansion = com.pkmoba.combat.ExpansionCombat.species(pokemon);
+        if (expansion != null) return switch (expansion.id()) {
+            case "lucario", "blaziken", "scizor", "garchomp" -> 2.6;
+            case "tyranitar" -> 3.0;
+            case "abomasnow" -> 6.0;
+            default -> 9.0;
+        };
         if (Skill.isBlastoise(pokemon)) {
             if (CharizardCombat.canCastForBot(pokemon, Skill.Q)) return 8.5;
             if (CharizardCombat.canCastForBot(pokemon, Skill.R)) return 4.8;
@@ -457,6 +552,16 @@ public final class BotDuelService {
     }
 
     private static double skillRange(PokemonEntity pokemon, Skill skill) {
+        var expansion = com.pkmoba.combat.ExpansionCombat.species(pokemon);
+        if (expansion != null) {
+            var move = expansion.move(skill.ordinal());
+            return switch (move.shape()) {
+                case BUFF -> 8;
+                case SELF -> move.radius();
+                case BLINK -> 5;
+                default -> move.range();
+            };
+        }
         if (com.pkmoba.combat.Skill.isPikachu(pokemon)) return switch (skill) {
             case Q -> com.pkmoba.combat.PikachuCombat.Q_RANGE;
             case W -> com.pkmoba.combat.PikachuCombat.W_RANGE;
@@ -482,6 +587,27 @@ public final class BotDuelService {
     }
 
     private static double skillScore(PokemonEntity pokemon, Skill skill, double distance, PokemonEntity target) {
+        var expansion = com.pkmoba.combat.ExpansionCombat.species(pokemon);
+        if (expansion != null) {
+            var move = expansion.move(skill.ordinal());
+            double score = 5 - Math.abs(distance - Math.min(move.range()*.75,8))*.25;
+            switch (move.shape()) {
+                case CONE, SELF -> score += distance < 4 ? 2 : 0;
+                case DASH -> score += distance > 4 ? 1.4 : -.8;
+                case BUFF -> score = 7;
+                case BLINK -> score = distance < 4 ? 8 : -4;
+                case WALL -> score += 1;
+                default -> { }
+            }
+            if (expansion.id().equals("gengar")) {
+                boolean sleeping = com.pkmoba.combat.ExpansionControl.sleeping(target);
+                // 催眠术（E）是食梦（R）的前置：目标已经睡着时先别再补一发催眠把它打醒。
+                if (skill == Skill.E) score += sleeping ? -4.0 : 2.0;
+                // 食梦（R）在目标睡着时最赚；没睡也有基础伤害，所以只降分、不禁用（方案要求）。
+                if (skill == Skill.R) score += sleeping ? 5.0 : -3.5;
+            }
+            return score;
+        }
         if (com.pkmoba.combat.Skill.isPikachu(pokemon)) {
             double desired = switch (skill) { case Q -> 10; case W -> 5; case E -> 7; case R -> 8; };
             double score = 5 - Math.abs(distance - desired) * 0.45;
@@ -525,11 +651,11 @@ public final class BotDuelService {
 
     private static void sendHud(ServerPlayer human, Match match, @Nullable PokemonEntity bot) {
         if (!ServerPlayNetworking.canSend(human, DuelStatePayload.TYPE)) return;
-        String species = TEAM.get(Math.min(match.botIndex, TEAM.size() - 1));
+        String species = match.team.get(Math.min(match.botIndex, match.team.size() - 1));
         ServerPlayNetworking.send(human, new DuelStatePayload(true, bot == null ? 0 : bot.getHealth(),
                 bot == null ? CharizardCombat.maxHpFor("cobblemon:" + species) : bot.getMaxHealth(),
                 match.bot, BOT_NAME, com.pkmoba.pokemon.SpeciesRegistry.displayName(ResourceLocation.fromNamespaceAndPath("cobblemon", species)),
-                species, Math.max(0, TEAM.size() - match.botIndex)));
+                species, Math.max(0, match.teamSize - match.botIndex)));
     }
 
     public static int cancelArena(MinecraftServer server, String arena) {
@@ -544,12 +670,16 @@ public final class BotDuelService {
     private static void finish(MinecraftServer server, Match match, @Nullable Boolean won, String reason) {
         if (MATCHES.remove(match.human) == null) return;
         ServerPlayer human = server.getPlayerList().getPlayer(match.human);
+        ProfileStore.get(server).endBattle(match.human);
         discard(server, match.humanEntity);
         discard(server, match.botEntity);
         discard(server, match.humanDying);
         discard(server, match.botDying);
         CharizardManager.unregisterControlled(match.human);
         CharizardManager.unregisterControlled(match.bot);
+        // 训练对战结算即终态：人和 bot 的暂存点数/冷却都作废（否则下一局会继承上一局的资源）。
+        com.pkmoba.combat.BattleStateReset.releaseReserves(match.human);
+        com.pkmoba.combat.BattleStateReset.releaseReserves(match.bot);
         if (human != null) {
             com.pkmoba.pokemon.BallThrow.clearPlayer(match.human);
             ServerGodMode.setActive(human, false);
@@ -569,6 +699,6 @@ public final class BotDuelService {
 
     private static void discard(MinecraftServer server, @Nullable UUID id) {
         PokemonEntity entity = find(server, id);
-        if (entity != null) { CharizardCombat.reset(entity); entity.getNavigation().stop(); entity.discard(); }
+        if (entity != null) { com.pkmoba.combat.BattleStateReset.reset(entity); entity.getNavigation().stop(); entity.discard(); }
     }
 }

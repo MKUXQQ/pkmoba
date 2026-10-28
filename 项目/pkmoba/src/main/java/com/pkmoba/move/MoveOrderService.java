@@ -255,12 +255,12 @@ public final class MoveOrderService {
     private static double navigationSpeed(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity) {
         double attr = entity.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED);
         if (attr <= 1.0E-4) {
-            return NAV_SPEED * com.pkmoba.combat.VenusaurCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.PikachuCombat.movementSpeedMultiplier(entity);
+            return NAV_SPEED * com.pkmoba.combat.VenusaurCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.PikachuCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.ExpansionCombat.movementMultiplier(entity);
         }
         // 属性单位是"格/秒"，乘 20 得"格/tick"；目标速度除以它即得 modifier。
         double modifier = WALK_SPEED * 20.0 / attr;
         return net.minecraft.util.Mth.clamp(modifier, 0.8, 3.0)
-                * com.pkmoba.combat.VenusaurCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.PikachuCombat.movementSpeedMultiplier(entity);
+                * com.pkmoba.combat.VenusaurCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.PikachuCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.ExpansionCombat.movementMultiplier(entity);
     }
 
     /**
@@ -270,7 +270,7 @@ public final class MoveOrderService {
                                         Order order, Vec3 flatDir, double horizontal) {
         // 距离远时用疾跑速度：既不拖沓，也不会因为"一直点远处"而显得比近处慢。
         double speed = (horizontal > 6.0 ? SPRINT_SPEED : WALK_SPEED)
-                * com.pkmoba.combat.VenusaurCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.PikachuCombat.movementSpeedMultiplier(entity);
+                * com.pkmoba.combat.VenusaurCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.PikachuCombat.movementSpeedMultiplier(entity) * com.pkmoba.combat.ExpansionCombat.movementMultiplier(entity);
         double step = Math.min(horizontal, speed);
         double width = Math.max(0.35, entity.getBbWidth() * 0.5);
         Vec3 probe = new Vec3(flatDir.x * Math.max(step, 0.4), 0, flatDir.z * Math.max(step, 0.4));
@@ -335,7 +335,7 @@ public final class MoveOrderService {
         // 身体盒：从脚底 +0.02 起算，绝不埋进地面（这是旧版恒 false 的那个 Bug）
         net.minecraft.world.phys.AABB feet = new net.minecraft.world.phys.AABB(
                 -width, 0.02, -width, width, 1.4, width).move(at);
-        return level.noCollision(entity, feet);
+        return level.noCollision(entity, feet) && !com.pkmoba.combat.ExpansionWalls.blocked(entity, feet);
     }
 
     /** 台阶抬升后避免身体卡在地面里。 */
@@ -357,8 +357,17 @@ public final class MoveOrderService {
      * <p>0.38 起不再自己写 {@code setYRot/setYHeadRot/setYBodyRot/hurtMarked}，
      * 统一交给 {@link com.pkmoba.combat.FacingService}（MOVE 优先级，最低），
      * 避免与普攻/引导技能在同 tick 抢写朝向 —— 那正是"模型头乱晃"的根因。
+     *
+     * <p>0.48.5：预瞄（{@link com.pkmoba.combat.AimTracker}）与施法锁（{@link com.pkmoba.combat.CastLock}）
+     * 生效时这里直接不写朝向，移动照旧 —— "边走边跟鼠标"由预瞄负责。
      */
     private static void faceTowards(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity, Vec3 flatDir) {
+        // 0.48.5：朝向让位给"预瞄 / 施法锁"。
+        // 有新鲜鼠标瞄准点时，移动方向不再写朝向（用户："平时头身体跟鼠标，不能被旧移动覆盖"）；
+        // 施法锁定期间更不能让走路把正在引导的方向拧走。
+        if (com.pkmoba.combat.CastLock.active(entity) || com.pkmoba.combat.AimTracker.hasFreshAim(entity)) {
+            return;
+        }
         com.pkmoba.combat.FacingService.request(entity,
                 com.pkmoba.combat.FacingService.Priority.MOVE, flatDir, TURN_PER_TICK);
     }
@@ -367,6 +376,21 @@ public final class MoveOrderService {
     public static void clear() {
         ORDERS.clear();
         com.pkmoba.combat.FacingService.clear();
+    }
+
+    /**
+     * 0.48.5：这只宝可梦当前是否由<b>原版寻路</b>在驱动移动（直线被挡后的 A* 兜底）。
+     *
+     * <p>原版 {@code PathNavigation} 是"先转身、再朝身体正前方走"（{@code MoveControl} 改 yRot，
+     * {@code travel} 沿 yRot 位移）。如果这时候还强行把朝向锁到鼠标，它会一边往鼠标方向斜着走、
+     * 一边被寻路往回拧，表现为蹭墙/走不动。所以这种兜底路线里朝向让给寻路；
+     * 直线行走（绝大多数情况）依旧"边走边跟鼠标"。
+     */
+    public static boolean navigationSteering(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity) {
+        if (entity == null) return false;
+        Order order = ORDERS.get(entity.getUUID());
+        if (order == null || order.target == null) return false;
+        return !entity.getNavigation().isDone();
     }
 
     /** Whether this entity currently has a pending ground-move destination. */

@@ -66,9 +66,9 @@ public final class ChallengePopupScreen extends Screen {
         int x = left(), y = top(), w = panelWidth(), h = panelHeight();
         BattleMenuScreen.drawPanel(graphics, x, y, w, h);
 
-        graphics.drawCenteredString(font, "收到 1v1 挑战", width / 2, y + 12, BattleMenuScreen.TEXT);
-        graphics.drawCenteredString(font, "挑战者：" + challengerName, width / 2, y + 30, BattleMenuScreen.TEXT);
-        graphics.drawCenteredString(font, "是否接受对方的宝可梦对战？",
+        PixelUi.centered(graphics, font, "收到 1v1 挑战", width / 2, y + 12, BattleMenuScreen.TEXT);
+        PixelUi.centered(graphics, font, "挑战者：" + challengerName, width / 2, y + 30, BattleMenuScreen.TEXT);
+        PixelUi.centered(graphics, font, "是否接受对方的宝可梦对战？",
                 width / 2, y + 46, BattleMenuScreen.TEXT);
 
         int btnW = (w - 42) / 2;
@@ -80,7 +80,7 @@ public final class ChallengePopupScreen extends Screen {
 
         String countdown = "剩余时间：" + secondsLeft + " 秒";
         int color = secondsLeft <= 3 ? 0xFFC94F3D : BattleMenuScreen.TEXT;
-        graphics.drawCenteredString(font, countdown, width / 2, y + h - 30, color);
+        PixelUi.centered(graphics, font, countdown, width / 2, y + h - 30, color);
     }
 
     @Override
