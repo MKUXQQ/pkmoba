@@ -531,6 +531,12 @@ public final class CharizardManager {
     /** Spawn a match participant without replacing the training singleton. Caller owns rollback/cleanup. */
     @Nullable
     public static PokemonEntity spawnMatchEntity(ServerLevel level, Vec3 pos, ResourceLocation speciesId) {
+        return spawnMatchEntityExact(level, groundPos(level, pos), speciesId);
+    }
+
+    /** Does not search another floor. The caller has validated the authoritative requested position. */
+    @Nullable
+    public static PokemonEntity spawnMatchEntityExact(ServerLevel level, Vec3 pos, ResourceLocation speciesId) {
         if (!com.pkmoba.pokemon.SpeciesRegistry.contains(speciesId)) return null;
         Species species = PokemonSpecies.getByIdentifier(speciesId);
         if (species == null) return null;
@@ -538,7 +544,12 @@ public final class CharizardManager {
         pokemon.setSpecies(species);
         pokemon.setLevel(50);
         if ("pikachu".equals(speciesId.getPath())) pokemon.setScaleModifier(2.0F);
-        return pokemon.sendOut(level, groundPos(level, pos), null, e -> {
+        return pokemon.sendOut(level, pos, null, e -> {
+            e.setPos(pos.x, pos.y, pos.z);
+            if (level.getBlockCollisions(e, e.getBoundingBox().deflate(.001)).iterator().hasNext()) {
+                e.discard();
+                return Unit.INSTANCE;
+            }
             e.setPersistenceRequired();
             e.setInvulnerable(false);
             // 对局双方统一血量：Cobblemon 默认按等级/种族算的血太少，导致"打一下就死"。

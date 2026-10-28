@@ -86,7 +86,16 @@ public final class ProfileStore extends SavedData {
     }
 
     public PlayerProfile collection(UUID id) {
-        return profiles.computeIfAbsent(id, PlayerProfile::new);
+        PlayerProfile profile = profiles.computeIfAbsent(id, PlayerProfile::new);
+        boolean changed = false;
+        for (String species : SpeciesRegistry.ids()) {
+            if (!profile.team.contains(species)) {
+                profile.team.add(species);
+                changed = true;
+            }
+        }
+        if (changed) setDirty();
+        return profile;
     }
 
     public boolean beginBattle(UUID id, java.util.List<String> roster) {

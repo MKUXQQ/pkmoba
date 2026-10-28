@@ -119,6 +119,36 @@ def check_icons() -> None:
     print()
 
 
+def check_effects() -> None:
+    """Verify all 128 runtime material references, transparent edges and reproducibility."""
+    from generate_expansion_textures import render_effect_sheet, render_icon
+    print('== Expansion material sheets (128 per-move + 32 compatibility) ==')
+    checked = 0
+    for species, _ in EXPANSION_SPECIES:
+        for kind in ('orb', 'slash', 'ring', 'field'):
+            for prefix in ('', 'q_', 'w_', 'e_', 'r_'):
+                name = f'{species}_{prefix}{kind}.png'
+                path = ASSETS / 'textures/effect' / name
+                if not path.exists():
+                    fail('Missing effect ' + name)
+                    continue
+                with Image.open(path) as im:
+                    rgba = im.convert('RGBA')
+                    if rgba.size != (128,128) or not rgba.getchannel('A').getbbox():
+                        fail('Invalid effect size/content ' + name)
+                    if any(rgba.getpixel(p)[3] != 0 for p in ((0,0),(127,0),(0,127),(127,127))):
+                        fail('Effect corners must be transparent: ' + name)
+                    if rgba.tobytes() != render_effect_sheet(species, prefix + kind).tobytes():
+                        fail('Stale generated effect ' + name)
+                checked += 1
+        for index, slot in enumerate(SLOTS):
+            with Image.open(SKILLS / f'{species}_{slot}.png') as im:
+                if im.convert('RGBA').tobytes() != render_icon(species, index).tobytes():
+                    fail(f'Stale generated icon {species}_{slot}')
+    print(f'  {checked}/160 sheets; 32 icons compared to deterministic generator')
+    print()
+
+
 def check_lang_and_registry() -> None:
     print("== 文案 / 注册表 ==")
     for lang in ("zh_cn", "en_us"):
@@ -253,6 +283,7 @@ def main() -> int:
         return 1
     check_portraits()
     check_icons()
+    check_effects()
     check_lang_and_registry()
     check_layout()
 

@@ -262,6 +262,31 @@ public final class RoomManager {
         broadcast();
     }
 
+    /** Host-only seat removal; never tear down a running match through a lobby action. */
+    public static void removeBot(ServerPlayer player, int roomId) {
+        Room room = roomOf(player.getUUID());
+        if (room == null || room.id != roomId || !player.getUUID().equals(room.host)
+                || room.bot == null || (room.state != State.WAITING && room.state != State.READY
+                && room.state != State.COUNTDOWN)) {
+            sendSnapshot(player);
+            return;
+        }
+        cancelCountdown(room);
+        UUID bot = room.bot;
+        if (bot.equals(room.red)) room.red = null;
+        if (bot.equals(room.blue)) room.blue = null;
+        room.rosters.remove(bot);
+        room.revealed.remove(bot);
+        LANDING.remove(bot);
+        room.bot = null;
+        room.botRoster = List.of();
+        room.ready.clear();
+        room.countdown = 0;
+        room.state = State.WAITING;
+        player.sendSystemMessage(Component.literal("人机已移出房间，准备状态已重置。"));
+        broadcast();
+    }
+
     private static boolean allReady(Room room) {
         return room.full() && (room.red.equals(room.bot) || room.ready.contains(room.red))
                 && (room.blue.equals(room.bot) || room.ready.contains(room.blue));
@@ -639,9 +664,9 @@ public final class RoomManager {
                     me.equals(room.red) ? teamOf(running, room, room.red) : List.of(),
                     me.equals(room.blue) ? teamOf(running, room, room.blue) : List.of(),
                     2, room.settings.capacity, room.settings.passwordProtected(),
-                    room.settings.displayName.isBlank() ? room.arenaName : room.settings.displayName,
+                    RoomRules.arenaDisplayName(room.settings.displayName.isBlank() ? room.arenaName : room.settings.displayName),
                     visibleRoster(room, room.red, me), visibleRoster(room, room.blue, me),
-                    room.ready.contains(me), room.ready.size(), room.settings.visibility));
+                    room.ready.contains(me), room.ready.size(), room.settings.visibility, idOf(room.bot)));
         }
         if (!ServerPlayNetworking.canSend(player, RoomListPayload.TYPE)) return;
         ServerPlayNetworking.send(player, new RoomListPayload(views, roomIdOf(player.getUUID()),
@@ -906,6 +931,7 @@ public final class RoomManager {
             case "READY" -> ready(player);
             case "START" -> start(player);
             case "ADD_BOT" -> addBot(player, payload.roomId());
+            case "REMOVE_BOT" -> removeBot(player, payload.roomId());
             case "SELECT" -> {
                 if (!inCountdown(player)) {
                     player.sendSystemMessage(Component.literal("只有在开局倒计时期间才能选宝可梦。"));

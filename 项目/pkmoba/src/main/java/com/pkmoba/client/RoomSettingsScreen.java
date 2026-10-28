@@ -51,8 +51,8 @@ public final class RoomSettingsScreen extends Screen {
         PixelUi.panel(g, x, y, w, panelHeight(), PixelUi.PAPER);
         PixelUi.ball(g, x + 12, y + 10, 1);
         g.drawString(font, "房间设置 · " + (canEdit() ? "房主" : "只读"), x + 32, y + 13, PixelUi.TEXT, false);
-        String[] tabs = {"基础", "对战规则", "成员权限", "高级"};
-        int tabW = (w - 24) / 4;
+        String[] tabs = {"基础", "对战规则"};
+        int tabW = (w - 24) / 2;
         for (int i = 0; i < tabs.length; i++) PixelUi.button(g, font, x + 12 + i * tabW, y + 31,
                 tabW - 2, 18, tabs[i], tab == i, true);
         if (tab == 0) {
@@ -81,33 +81,17 @@ public final class RoomSettingsScreen extends Screen {
             int controlY = cy + (compact ? 31 : 42);
             PixelUi.button(g, font, x + 12, controlY, 26, 20, "−", hit(mx, my, x + 12, controlY, 26, 20), canEdit() && capacity > 1);
             PixelUi.centered(g, font, capacity + " 只", x + w / 2, controlY + 6, PixelUi.TEXT);
-            PixelUi.button(g, font, x + w - 38, controlY, 26, 20, "+", hit(mx, my, x + w - 38, controlY, 26, 20), canEdit() && capacity < 6);
+            PixelUi.button(g, font, x + w - 38, controlY, 26, 20, "+", hit(mx, my, x + w - 38, controlY, 26, 20), canEdit() && capacity < com.pkmoba.pokemon.SpeciesRegistry.ids().size());
             int privacyY = cy + (compact ? 54 : 70);
             PixelUi.button(g, font, x + 12, privacyY, w - 24, 20,
                     "阵容：" + visibilityLabel(room.visibility()) + "（点击切换）",
                     hit(mx, my, x + 12, privacyY, w - 24, 20), canEdit());
             if (!compact) PixelUi.button(g, font, x + 12, cy + 106, w - 24, 20, "保存出战上限", hit(mx, my, x + 12, cy + 106, w - 24, 20), canEdit() && capacityDirty);
             else if (capacityDirty) g.drawString(font, "调整后自动提交", x + 12, cy + 78, PixelUi.GREEN, false);
-        } else if (tab == 2) {
-            int mineReady = room.ready() ? 1 : 0;
-            int opponentReady = Math.max(0, room.readyCount() - mineReady);
-            lines(g, new String[]{"房主：" + room.host(), "红方：" + (room.red().isEmpty() ? "空位" : room.red()),
-                    "蓝方：" + (room.blue().isEmpty() ? "空位" : room.blue()),
-                    "我方" + (room.ready() ? "已准备" : "未准备") + " · 对方" + (opponentReady > 0 ? "已准备" : "未准备"),
-                    "房主可改设置；成员仅改本人本场阵容", "仅显示权限；当前无踢人/多人开关"}, cy, compactShift() > 0);
-        } else {
-            lines(g, new String[]{"房间 #" + room.id() + " · 固定 1v1", "场地：" + room.arena(),
-                    "准备：" + room.readyCount() + " / 2 · " + ClientRooms.status(room),
-                    "隐私：" + (room.passwordProtected() ? "密码验证（不显示原密码）" : "公开"),
-                    "设置持久保存；成员与对局不持久保存", "所有操作均由服务端校验"}, cy, compactShift() > 0);
         }
         PixelUi.button(g, font, x + 12, footerY(), w - 24, 20, "返回房间", hit(mx, my, x + 12, footerY(), w - 24, 20), true);
     }
     private void line(GuiGraphics g, String s, int y) { g.drawString(font, PixelUi.fit(font, s, panelWidth() - 24), left() + 12, y, PixelUi.MUTED, false); }
-    private void lines(GuiGraphics g, String[] text, int y, boolean compact) {
-        int step = compact ? 14 : 22;
-        for (int i = 0; i < text.length; i++) line(g, text[i], y + i * step);
-    }
     private void field(GuiGraphics g, int y, String value, boolean focused) {
         PixelUi.frame(g, left() + 12, y, panelWidth() - 24, 20, focused && canEdit() ? PixelUi.GRASS : PixelUi.CREAM, PixelUi.INK);
         g.drawString(font, PixelUi.fit(font, value + (focused && canEdit() ? "_" : ""), panelWidth() - 36), left() + 18, y + 6, canEdit() ? PixelUi.TEXT : PixelUi.MUTED, false);
@@ -129,9 +113,9 @@ public final class RoomSettingsScreen extends Screen {
     }
     @Override public boolean mouseClicked(double mx, double my, int button) {
         if (button != 0) return super.mouseClicked(mx, my, button);
-        int x = left(), w = panelWidth(), cy = contentY(), tabW = (w - 24) / 4;
+        int x = left(), w = panelWidth(), cy = contentY(), tabW = (w - 24) / 2;
         if (hit(mx, my, x + 12, footerY(), w - 24, 20)) { onClose(); return true; }
-        if (hit(mx, my, x + 12, top() + 31, tabW * 4, 18)) { tab = Math.min(3, ((int) mx - x - 12) / tabW); activeField = 0; notice = ""; return true; }
+        if (hit(mx, my, x + 12, top() + 31, tabW * 2, 18)) { tab = Math.min(1, ((int) mx - x - 12) / tabW); activeField = 0; notice = ""; return true; }
         if (!canEdit()) return true;
         if (tab == 0) {
             boolean compact = compactShift() > 0;
@@ -166,7 +150,7 @@ public final class RoomSettingsScreen extends Screen {
                 return true;
             }
             if (hit(mx, my, x + 12, controlY, 26, 20)) { capacity = Math.max(1, capacity - 1); capacityDirty = true; }
-            else if (hit(mx, my, x + w - 38, controlY, 26, 20)) { capacity = Math.min(6, capacity + 1); capacityDirty = true; }
+            else if (hit(mx, my, x + w - 38, controlY, 26, 20)) { capacity = Math.min(com.pkmoba.pokemon.SpeciesRegistry.ids().size(), capacity + 1); capacityDirty = true; }
             if (compact && capacityDirty) {
                 ClientRooms.send("SET_CAPACITY", room.id(), Integer.toString(capacity));
                 capacityDirty = false;

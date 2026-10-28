@@ -98,8 +98,7 @@ public final class MoveOrderService {
         // 用户反馈"释放大招期间仍然会响应其他移动指令、结束后还朝旧点位走过去"——根因是
         // 指令被收下后存在 Order 里，引导结束（blocksMovement 变 false）的下一 tick 就被执行了。
         // 这里直接拒收，客户端 ack(false) 会给出红叉反馈，不会让人以为点了没反应。
-        if (com.pkmoba.combat.CharizardCombat.blocksMovement(entity)
-                || com.pkmoba.pokemon.BallThrow.locked(entity)) {
+        if (playerOrderLocked(entity)) {
             ack(player, pos, false);
             return;
         }
@@ -129,6 +128,12 @@ public final class MoveOrderService {
         ack(player, pos, true);
     }
 
+    /** Blocks ground orders without disabling displacement implemented by the skill itself. */
+    public static boolean playerOrderLocked(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity) {
+        return com.pkmoba.combat.CharizardCombat.blocksMovement(entity)
+                || com.pkmoba.pokemon.BallThrow.locked(entity);
+    }
+
     private static void ack(ServerPlayer player, Vec3 pos, boolean accepted) {
         if (ServerPlayNetworking.canSend(player, MoveAckPayload.TYPE)) {
             ServerPlayNetworking.send(player, new MoveAckPayload(pos.x, pos.y, pos.z, accepted));
@@ -154,8 +159,7 @@ public final class MoveOrderService {
             order.lastNavGoal = null;
             order.repathCooldown = 0;
         }
-        entity.getNavigation().stop();
-        entity.setDeltaMovement(0.0, entity.getDeltaMovement().y, 0.0);
+        // Clearing a stale destination must not cancel skill-owned displacement or ordinary movement.
     }
 
     private static void tick(MinecraftServer server) {
@@ -184,12 +188,12 @@ public final class MoveOrderService {
         // 施法中由技能接管位移：原地施法（用户 m02984/m03603："释放技能的时候不能乱动"）。
         // 0.39.5：连排队中的落点也一起丢掉，否则引导结束的下一 tick 会突然继续走，
         // 看起来就像"释放技能的时候宝可梦在乱动"。
-        if (com.pkmoba.combat.CharizardCombat.blocksMovement(entity)) {
+        if (playerOrderLocked(entity)) {
             order.target = null;
             order.lastNavGoal = null;
             order.repathCooldown = 0;
             entity.getNavigation().stop();
-            entity.setDeltaMovement(0.0, entity.getDeltaMovement().y, 0.0);
+            // Skill-driven dash/surf velocity belongs to combat, not the ground-order service.
             return;
         }
 
@@ -362,12 +366,8 @@ public final class MoveOrderService {
      * 生效时这里直接不写朝向，移动照旧 —— "边走边跟鼠标"由预瞄负责。
      */
     private static void faceTowards(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity, Vec3 flatDir) {
-        // 0.48.5：朝向让位给"预瞄 / 施法锁"。
-        // 有新鲜鼠标瞄准点时，移动方向不再写朝向（用户："平时头身体跟鼠标，不能被旧移动覆盖"）；
-        // 施法锁定期间更不能让走路把正在引导的方向拧走。
-        if (com.pkmoba.combat.CastLock.active(entity) || com.pkmoba.combat.AimTracker.hasFreshAim(entity)) {
-            return;
-        }
+        // Active path movement owns facing; cast lock remains absolute during a skill animation.
+        if (com.pkmoba.combat.CastLock.active(entity)) return;
         com.pkmoba.combat.FacingService.request(entity,
                 com.pkmoba.combat.FacingService.Priority.MOVE, flatDir, TURN_PER_TICK);
     }

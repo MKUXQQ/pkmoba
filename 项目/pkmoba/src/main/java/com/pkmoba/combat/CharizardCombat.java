@@ -88,9 +88,9 @@ public final class CharizardCombat {
     /** W 每跳伤害（10 跳合计 30）。 */
     private static final float W_TICK_DAMAGE = 3.0F;
     /** R 中心命中伤害。 */
-    private static final float R_DAMAGE_CENTER = 44.0F;
+    private static final float R_DAMAGE_CENTER = 32.0F;
     /** R 边缘最低伤害（线性衰减）。 */
-    private static final float R_DAMAGE_EDGE = 30.0F;
+    private static final float R_DAMAGE_EDGE = 22.0F;
 
     private static final double Q_RANGE = 11.0;
     private static final double Q_HALF_ANGLE = 20.0;
@@ -433,8 +433,15 @@ public final class CharizardCombat {
                         PikachuCombat.updateAim(entity, aim);
                     } else {
                         State st = s(entity);
-                        if (st.channel == 0 && st.dashTicks == 0) {
+                        if (st.channel == 0 || st.channel == 1 || st.dashTicks > 0) {
                             st.channelAim = aim;
+                            if (st.channel == 1 || st.dashTicks > 0) {
+                                Vec3 direction = aimDirection(entity, aim);
+                                Vec3 destination = st.dashTicks > 0
+                                        ? entity.position().add(direction.scale(Math.max(0, E_MAX_DISTANCE - st.dashTravelled)))
+                                        : null;
+                                CastLock.steer(entity, direction, destination);
+                            }
                         }
                     }
                 }));
@@ -482,10 +489,9 @@ public final class CharizardCombat {
 
     public static boolean blocksMovement(PokemonEntity entity) {
         State st = peek(entity);
-        boolean busy = st != null && (st.channel == 4 || st.dashTicks > 0);
-        return busy || BlastoiseCombat.blocksMovement(entity) || VenusaurCombat.blocksMovement(entity)
-                || PikachuCombat.blocksMovement(entity)
-                || (entity != null && ExpansionCombat.blocksMovement(entity));
+        // Cast channels lock only their snapshotted geometry; only the legacy flight dash owns locomotion.
+        boolean busy = st != null && st.dashTicks > 0;
+        return busy || (entity != null && ExpansionCombat.blocksMovement(entity));
     }
 
     private static boolean authorizedActor(ServerPlayer player, PokemonEntity entity) {
@@ -1206,7 +1212,9 @@ public final class CharizardCombat {
         else {
             State state = s(entity);
             state.channelAim = aim;
-            FacingService.request(entity, FacingService.Priority.CHANNEL, aimDirection(entity, aim), 90);
+            if (state.channel != 0) {
+                FacingService.request(entity, FacingService.Priority.CHANNEL, aimDirection(entity, aim), 90);
+            }
         }
     }
 
@@ -1512,10 +1520,10 @@ public final class CharizardCombat {
             if (d > radius) continue;
             double t = radius <= 0 ? 0 : d / radius;
             float amount = (float) (R_DAMAGE_CENTER - (R_DAMAGE_CENTER - R_DAMAGE_EDGE) * t);
-            // 0.39：R 大字爆是终极大招，命中反馈按 ULTIMATE 走（最强顿帧/震屏/推镜）。
+            // R 与 Q/W/E 同为普通技能，不触发终极技震屏/顿帧。
             float hpBefore = target.getHealth();
             hurt(level, entity, target, amount,
-                    EffectPayload.Element.FIRE, EffectPayload.Power.ULTIMATE);
+                    EffectPayload.Element.FIRE, EffectPayload.Power.HEAVY);
             if (com.pkmoba.duel.BotDuelService.isBot(entity)) {
                 PkmobaMod.LOGGER.info("[pkmoba-bot] hit skill=R source={} target={} hp={}->{} center={}",
                         entity.getId(), target.getId(), hpBefore, target.getHealth(), center);

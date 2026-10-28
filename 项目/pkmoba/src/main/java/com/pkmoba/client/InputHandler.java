@@ -44,7 +44,7 @@ public final class InputHandler {
         // 手动换宝可梦：默认 C（0.31 起从 G 改成 C，避免和常用键冲突）
         switchPokemonKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
                 KEY_SWITCH_POKEMON, InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_C, KEY_CATEGORY));
-        // X：把宝可梦召唤到准星指向的地面点
+        // X：向准星方向投出宝可梦，服务端将距离限制在 3-8 格
         summonPokemonKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
                 KEY_SUMMON_POKEMON, InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_X, KEY_CATEGORY));
 
@@ -79,11 +79,14 @@ public final class InputHandler {
         while (summonPokemonKey.consumeClick()) {
             if (mc.screen == null && mc.player != null && mc.level != null
                     && ClientPlayNetworking.canSend(com.pkmoba.network.SummonPayload.TYPE)) {
-                net.minecraft.world.phys.Vec3 look = mc.player.getLookAngle();
-                net.minecraft.world.phys.Vec3 flat = new net.minecraft.world.phys.Vec3(look.x, 0, look.z);
-                if (flat.lengthSqr() < 1.0E-4) flat = new net.minecraft.world.phys.Vec3(0, 0, 1);
-                flat = flat.normalize().scale(5.0);
-                net.minecraft.world.phys.Vec3 point = mc.player.position().add(flat);
+                net.minecraft.world.phys.Vec3 eye = mc.player.getEyePosition();
+                net.minecraft.world.phys.Vec3 end = eye.add(mc.player.getLookAngle().scale(8.0));
+                var hit = mc.level.clip(new net.minecraft.world.level.ClipContext(eye, end,
+                        net.minecraft.world.level.ClipContext.Block.COLLIDER,
+                        net.minecraft.world.level.ClipContext.Fluid.ANY, mc.player));
+                // Coordinates are an aim hint only; the server independently derives its 8-block target.
+                net.minecraft.world.phys.Vec3 point = hit.getType() == net.minecraft.world.phys.HitResult.Type.MISS
+                        ? end : hit.getLocation();
                 ClientPlayNetworking.send(new com.pkmoba.network.SummonPayload(
                         point.x, point.y, point.z));
             }

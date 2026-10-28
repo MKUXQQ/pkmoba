@@ -113,6 +113,8 @@ public class PkmobaMod implements ModInitializer {
                                         context.player(), payload.species());
                                 case "DELETE" -> com.pkmoba.pokemon.TeamService.deleteFromPicker(
                                         context.player(), payload.species());
+                                case "CONFIRM" -> com.pkmoba.duel.DuelManager.confirmPartyPokemon(
+                                        context.player(), payload.species());
                                 case "SWITCH" -> com.pkmoba.duel.DuelManager.selectPartyPokemon(
                                         context.player(), payload.species());
                                 case "RECALL" -> com.pkmoba.duel.DuelManager.recallPartyPokemon(
@@ -148,13 +150,9 @@ public class PkmobaMod implements ModInitializer {
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
                 server.execute(() -> {
                     CharizardManager.broadcastSync(server);
-                    // 没有选择过宝可梦：自动弹开局选择界面
-                    com.pkmoba.pokemon.PlayerProfile profile =
-                            com.pkmoba.pokemon.ProfileStore.get(server).profile(handler.getPlayer().getUUID());
-                    if (!profile.hasStarter()) {
-                        com.pkmoba.pokemon.TeamService.sendStarterList(handler.getPlayer());
-                    }
-                    // 已选过宝可梦：先把队伍状态下发，HUD 才能立刻显示"我选的是哪只"
+                    // Initialize the player's unlocked collection without changing any match roster.
+                    com.pkmoba.pokemon.ProfileStore.get(server).collection(handler.getPlayer().getUUID());
+                    // Send team state so the HUD immediately reflects the current selection.
                     com.pkmoba.pokemon.TeamService.sendTeamState(handler.getPlayer());
                 }));
 

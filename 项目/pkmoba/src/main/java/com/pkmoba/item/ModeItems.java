@@ -49,9 +49,8 @@ public final class ModeItems {
             ResourceLocation.fromNamespaceAndPath(PkmobaMod.MOD_ID, "main"),
             CreativeModeTab.builder(CreativeModeTab.Row.BOTTOM, 7)
                     .title(Component.translatable("itemGroup.pkmoba"))
-                    .icon(() -> new ItemStack(SPECIES_SWITCH))
+                    .icon(() -> new ItemStack(PLAYER_MARKER))
                     .displayItems((params, output) -> {
-                        output.accept(SPECIES_SWITCH);
                         output.accept(PLAYER_MARKER);
                         // m05418：宝可梦放置点已删除
                         output.accept(BOUNDARY_MARKER);
@@ -63,7 +62,6 @@ public final class ModeItems {
 
     public static void init() {
         ItemGroupEvents.modifyEntriesEvent(CreativeModeTabs.TOOLS_AND_UTILITIES).register(entries -> {
-            entries.accept(SPECIES_SWITCH);
             entries.accept(PLAYER_MARKER);
             entries.accept(POKEMON_MARKER);
             entries.accept(BOUNDARY_MARKER);
@@ -91,7 +89,7 @@ public final class ModeItems {
                 return InteractionResultHolder.success(stack);
             }
             if (stack.is(SPECIES_SWITCH)) {
-                TeamService.openPicker(serverPlayer);
+                serverPlayer.sendSystemMessage(Component.literal("所有已实装宝可梦已自动解锁，按 C 管理队伍；按 H 配置本场阵容。"));
                 return InteractionResultHolder.success(stack);
             }
             return InteractionResultHolder.pass(stack);

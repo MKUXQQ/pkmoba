@@ -13,6 +13,7 @@ public final class RoomDetailScreen extends Screen {
     private RoomListPayload.RoomView room;
     private boolean leaving;
     private int requestTicks;
+    private int ownRosterScroll, opponentRosterScroll;
 
     public RoomDetailScreen(RoomListPayload.RoomView room) {
         super(Component.literal("房间"));
@@ -40,6 +41,10 @@ public final class RoomDetailScreen extends Screen {
     private boolean hit(double mx, double my, int x, int y, int w, int h) { return mx >= x && mx < x + w && my >= y && my < y + h; }
     private List<String> ownRoster() { return ClientRooms.isBlue(room) ? room.blueRoster() : room.redRoster(); }
     private String opponentName() { return ClientRooms.isBlue(room) ? room.red() : room.blue(); }
+    private boolean canRemoveBot() {
+        return room.hasBot() && ClientRooms.isHost(room) && !leaving && requestTicks == 0
+                && room.state() <= 2;
+    }
 
     @Override public void render(GuiGraphics g, int mx, int my, float delta) {
         g.fill(0, 0, width, height, 0xB0252A20);
@@ -80,7 +85,11 @@ public final class RoomDetailScreen extends Screen {
         g.fill(x + 3, y + 3, x + w - 3, y + 17, blue ? 0xFFDEE6EB : 0xFFF0DDD1);
         int opponentReady = Math.max(0, room.readyCount() - (room.ready() ? 1 : 0));
         boolean ready = mine ? room.ready() : opponentReady > 0;
-        g.drawString(font, (mine ? "我方" : "对方") + " · " + (blue ? "蓝" : "红") + (ready ? " · 已准备" : ""), x + 7, y + 6, color, false);
+        boolean botSeat = room.isBot(id);
+        String sideLabel = (mine ? "我方" : "对方") + " · " + (blue ? "蓝" : "红") + (ready ? " · 已准备" : "");
+        g.drawString(font, PixelUi.fit(font, sideLabel, w - (botSeat ? 62 : 14)), x + 7, y + 6, color, false);
+        if (botSeat) PixelUi.button(g, font, x + w - 53, y + 3, 46, 14, "移出人机",
+                hit(mx, my, x + w - 53, y + 3, 46, 14), canRemoveBot());
         if (name.isEmpty()) {
             g.drawString(font, PixelUi.fit(font, "等待训练家加入", w - 16), x + 8, y + 27, PixelUi.MUTED, false);
             boolean botEnabled = !mine && editable() && ClientRooms.isHost(room) && requestTicks == 0;
@@ -90,9 +99,14 @@ public final class RoomDetailScreen extends Screen {
         RoomLobbyScreen.drawHead(g, name, id, x + 8, y + 22, 18);
         g.drawString(font, PixelUi.fit(font, name, w - 40), x + 32, y + 27, PixelUi.TEXT, false);
         if (roster.isEmpty()) g.drawString(font, "尚未配置本场阵容", x + 8, y + 48, PixelUi.MUTED, false);
-        int count = Math.min(6, roster.size()), size = Math.min(24, Math.max(12, (w - 16) / Math.max(1, Math.min(3, count)) - 8));
+        int count = roster.size(), size = Math.min(24, Math.max(12, (w - 16) / 3 - 8));
+        int rowStep = size + 15, viewport = Math.max(1, h - 48);
+        int maxScroll = Math.max(0, ((count + 2) / 3) * rowStep - viewport);
+        int scroll = Math.max(0, Math.min(mine ? ownRosterScroll : opponentRosterScroll, maxScroll));
+        if (mine) ownRosterScroll = scroll; else opponentRosterScroll = scroll;
+        g.enableScissor(x + 4, y + 44, x + w - 4, y + h - 3);
         for (int i = 0; i < count; i++) {
-            int px = x + 8 + (i % 3) * ((w - 16) / 3), py = y + 46 + (i / 3) * (size + 15);
+            int px = x + 8 + (i % 3) * ((w - 16) / 3), py = y + 46 + (i / 3) * rowStep - scroll;
             ResourceLocation species = ResourceLocation.tryParse(roster.get(i));
             var entry = com.pkmoba.pokemon.SpeciesRegistry.byId(species);
             if (roster.get(i).equals("hidden")) {
@@ -102,6 +116,22 @@ public final class RoomDetailScreen extends Screen {
             if (entry != null) g.blit(ResourceLocation.fromNamespaceAndPath("pkmoba", entry.portrait()), px, py, size, size, 0F, 0F, 64, 64, 64, 64);
             if (h >= 115) g.drawString(font, PixelUi.fit(font, roster.get(i).equals("hidden") ? "未公开" : com.pkmoba.pokemon.SpeciesRegistry.displayName(species), (w - 16) / 3 - 2), px, py + size + 2, PixelUi.TEXT, false);
         }
+        g.disableScissor();
+        if (maxScroll > 0) {
+            int thumb = Math.max(6, viewport * viewport / (viewport + maxScroll));
+            int ty = y + 45 + (viewport - thumb) * scroll / maxScroll;
+            g.fill(x + w - 5, ty, x + w - 3, ty + thumb, PixelUi.GREEN);
+        }
+    }
+    @Override public boolean mouseScrolled(double mx, double my, double sx, double sy) {
+        int colW = (panelWidth() - 30) / 2;
+        if (hit(mx, my, left() + 10, top() + 77, colW, sideHeight() - 46)) {
+            ownRosterScroll = Math.max(0, ownRosterScroll - (int) (sy * 24)); return true;
+        }
+        if (hit(mx, my, left() + 20 + colW, top() + 77, colW, sideHeight() - 46)) {
+            opponentRosterScroll = Math.max(0, opponentRosterScroll - (int) (sy * 24)); return true;
+        }
+        return super.mouseScrolled(mx, my, sx, sy);
     }
     @Override public boolean mouseClicked(double mx, double my, int button) {
         if (button != 0) return super.mouseClicked(mx, my, button);
@@ -125,7 +155,12 @@ public final class RoomDetailScreen extends Screen {
             else if (editable() && i == 2) { leaving = true; ClientRooms.send("LEAVE", roomId, ""); }
             return true;
         }
-        int colW = (w - 30) / 2, bx = x + 20 + colW + 8, by = top() + 33 + sideHeight() - 27;
+        int colW = (w - 30) / 2;
+        int opponentX = x + 20 + colW;
+        if (canRemoveBot() && hit(mx, my, opponentX + colW - 53, top() + 36, 46, 14)) {
+            ClientRooms.send("REMOVE_BOT", roomId, ""); requestTicks = 40; return true;
+        }
+        int bx = opponentX + 8, by = top() + 33 + sideHeight() - 27;
         if (opponentName().isEmpty() && editable() && ClientRooms.isHost(room) && requestTicks == 0 && hit(mx, my, bx, by, colW - 16, 20)) {
             ClientRooms.send("ADD_BOT", roomId, ""); requestTicks = 60; return true;
         }

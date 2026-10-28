@@ -15,9 +15,17 @@ public final class RoomRulesCheck {
     }
     public static void main(String[] args) {
         var owned = List.of("cobblemon:charizard", "cobblemon:blastoise", "cobblemon:venusaur", "cobblemon:pikachu");
-        check(RoomRules.capacity(1) == 1 && RoomRules.capacity(6) == 6, "capacity endpoints");
+        int registered = com.pkmoba.pokemon.SpeciesRegistry.ids().size();
+        check(RoomRules.capacity(1) == 1 && RoomRules.capacity(registered) == registered, "capacity endpoints");
+        check(RoomRules.capacity(7) == 7, "capacity beyond old six cap");
+        var allSpecies = com.pkmoba.pokemon.SpeciesRegistry.ids();
+        check(RoomRules.roster(allSpecies, allSpecies, allSpecies, registered).equals(allSpecies), "full registry roster accepted");
+        check(RoomRules.species(allSpecies, allSpecies).size() == registered, "full species allowlist accepted");
+        check(RoomRules.arenaDisplayName("arena1").equals("一号竞技场"), "display alias");
+        check(RoomRules.arenaDisplayName("Arena1").equals("一号竞技场"), "case insensitive alias");
+        check(RoomRules.arenaDisplayName("custom").equals("custom"), "custom arena unchanged");
         rejects(() -> RoomRules.capacity(0), "zero capacity");
-        rejects(() -> RoomRules.capacity(7), "oversized capacity");
+        rejects(() -> RoomRules.capacity(registered + 1), "oversized capacity");
         rejects(() -> RoomRules.capacity(-1), "negative capacity");
         check(RoomRules.displayName("  test room  ").equals("test room"), "name trimming");
         check(RoomRules.displayName(null).isEmpty(), "empty default name");

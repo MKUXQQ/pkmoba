@@ -42,7 +42,7 @@ public final class VenusaurCombat {
     public static final double Q_RANGE = 14.0, Q_RADIUS = 1.25, W_RANGE = 16.0,
             E_RANGE = 22.0, E_RADIUS = 0.36, R_RANGE = 15.0, R_RADIUS = 4.0;
     public static final float Q_DAMAGE = 20, W_LEAF_DAMAGE = 8, E_DAMAGE = 28,
-            R_BURST_DAMAGE = 20, R_POISON_DAMAGE = 4;
+            R_BURST_DAMAGE = 18, R_POISON_DAMAGE = 2;
     public static final int Q_HIT_TICK = 20, Q_CAST_TICKS = 30,
             R_CHARGE_TICKS = 30, R_CAST_TICKS = 48, R_FIELD_TICKS = 70;
     /**
@@ -205,7 +205,8 @@ public final class VenusaurCombat {
     public static boolean isChanneling(PokemonEntity entity) { return channel(entity) != 0; }
     public static boolean blocksBasicAttack(PokemonEntity entity) { return isChanneling(entity); }
     public static boolean basicBlocked(PokemonEntity entity) { return blocksBasicAttack(entity); }
-    public static boolean blocksMovement(PokemonEntity entity) { return channel(entity) == 3; }
+    // CastLock snapshots geometry; Venusaur skills do not root ordinary movement.
+    public static boolean blocksMovement(PokemonEntity entity) { return false; }
     public static int channel(PokemonEntity entity) {
         State state = entity == null ? null : STATES.get(entity.getUUID());
         return state == null ? 0 : state.channel;
@@ -476,7 +477,7 @@ public final class VenusaurCombat {
             for (LivingEntity target : enemies(level, entity, center, R_RADIUS)) {
                 CombatDamage.apply(level, entity, target, R_BURST_DAMAGE,
                         com.pkmoba.network.EffectPayload.Element.PHYSICAL,
-                        com.pkmoba.network.EffectPayload.Power.ULTIMATE, TypeEffectiveness.MoveType.POISON);
+                        com.pkmoba.network.EffectPayload.Power.HEAVY, TypeEffectiveness.MoveType.POISON);
                 slow(entity, target, false, now + 60);
             }
             flowerCenter = center;

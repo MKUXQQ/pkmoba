@@ -61,9 +61,9 @@ public final class ExpansionCombat {
         State s = STATES.get(entity.getUUID());
         if (ExpansionControl.sleeping(entity)) return true;
         if (s == null || s.skill < 0) return false;
-        // Sandstorm and deployed snow fields do not root their caster for their whole lifespan.
-        String id = species(entity).id();
-        return !(id.equals("tyranitar") && s.skill == 2 && s.age > species(entity).move(2).windup());
+        // CastLock owns the snapshotted geometry only; ordinary ground movement remains available.
+        // Dash displacement is driven by the skill tick itself, while sleep remains a true root.
+        return false;
     }
     public static int channel(PokemonEntity entity) {
         State s = entity == null ? null : STATES.get(entity.getUUID());
@@ -99,7 +99,9 @@ public final class ExpansionCombat {
         s.projectile = launchPoint(entity,s.direction);
         s.launch=s.projectile;
         s.hit.clear(); s.target = null; s.stopped = false; s.recoil = false;
-        MoveOrderService.cancelPending(entity); entity.getNavigation().stop(); entity.setDeltaMovement(Vec3.ZERO);
+        // Snapshot geometry and cancel only the stale destination. Movement remains available during casts;
+        // dash moves below own displacement for their active window.
+        MoveOrderService.cancelPending(entity);
         CastLock.Shape shape = switch (move.shape()) {
             case POINT, WALL, BLINK -> CastLock.Shape.POINT;
             case DASH -> CastLock.Shape.DASH;
@@ -123,10 +125,18 @@ public final class ExpansionCombat {
         }
         if(s.snow>0) {
             if(s.snow%10==0)for(LivingEntity target:around(level,entity,s.snowPoint,species(entity).move(3).radius())) {
-                if(CombatDamage.apply(level,entity,target,8,TypeEffectiveness.MoveType.ICE))
+                if(CombatDamage.apply(level,entity,target,species(entity).move(3).damage()/8.0F,TypeEffectiveness.MoveType.ICE))
                     ExpansionControl.slow(entity,target,15,Math.max(.4,.8-(80-s.snow)*.005));
             }
             s.snow--;
+        }
+        if (s.mist > 0) {
+            // White mist: everything inside the cloud is slowed while it lasts.
+            if (s.mist % 5 == 0) for (LivingEntity target : around(level, entity, s.mistPoint,
+                    species(entity).move(2).radius() * 1.35)) {
+                ExpansionControl.slow(entity, target, 20, .5);
+            }
+            s.mist--;
         }
         tickPoison(level, entity, s);
         if (DuelManager.isPreparing(entity) || !entity.isAlive()) { clearTransient(entity); return; }
@@ -134,7 +144,9 @@ public final class ExpansionCombat {
         if (s.skill < 0) return;
         var move = species(entity).move(s.skill);
         s.age++;
-        FacingService.request(entity, FacingService.Priority.CHANNEL, s.direction, 360);
+        // CastLock owns geometry only; ordinary movement may continue while the move executes.
+        // DASH handlers are the sole owners of skill displacement.
+        if (move.shape() != ExpansionRoster.Shape.DASH) FacingService.request(entity, FacingService.Priority.CHANNEL, s.direction, 360);
         if (s.age <= move.windup()) return;
         int t = s.age - move.windup();
         if (t == 1) cue(entity, s, "release", s.point, s.direction);
@@ -154,13 +166,15 @@ public final class ExpansionCombat {
     private static void lucario(ServerLevel l, PokemonEntity e, State s, int t, ExpansionRoster.Move m) {
         switch (s.skill) {
             case 0 -> projectile(l,e,s,m, .8, 1.4, 0);
-            case 1 -> { if (t == 1) for (LivingEntity target : cone(l,e,s,m)) if (hit(l,e,s,target,m.damage(),1)) ExpansionControl.slow(e,target,30,.65); }
-            case 2 -> dash(l,e,s,m,t,true);
+            case 1 -> { if (t == 1) { cue(e,s,"attack",e.position(),s.direction); for (LivingEntity target : meleeTargets(l,e,s.direction,m))
+                if (meleeHit(l,e,s,target,m.damage(),1)) ExpansionControl.slow(e,target,30,.65); } }
+            case 2 -> { if (t == 1) cue(e,s,"attack",e.position(),s.direction); dash(l,e,s,m,t,true); }
             case 3 -> {
-                if (s.target == null && t <= 10) dash(l,e,s,m,t,true);
+                if (t == 1) cue(e,s,"attack",e.position(),s.direction);
+                 if (s.target == null && t <= 10) dash(l,e,s,m,t,true);
                 LivingEntity target = s.target;
                 if (target != null && target.isAlive() && e.distanceTo(target) <= 3.5 && ExpansionGeometry.visible(l,e,e.getBoundingBox().getCenter(),target.getBoundingBox().getCenter()) && t % 5 == 0) {
-                    if (hit(l,e,s,target,11,6) && s.hit.getOrDefault(target.getUUID(),0) == 6)
+                    if (meleeHit(l,e,s,target,m.damage()/6.0F,6) && s.hit.getOrDefault(target.getUUID(),0) == 6)
                         target.push(s.direction.x * .65,.12,s.direction.z * .65);
                 }
             }
@@ -169,10 +183,17 @@ public final class ExpansionCombat {
     private static void abomasnow(ServerLevel l, PokemonEntity e, State s, int t, ExpansionRoster.Move m) {
         switch (s.skill) {
             case 0 -> projectile(l,e,s,m,.7,.8,30);
-            case 1 -> { if (t % 4 == 1) for (LivingEntity target : cone(l,e,s,m)) if (hit(l,e,s,target,6,5)) ExpansionControl.slow(e,target,8,.65); }
+            case 1 -> { if (t % 4 == 1) for (LivingEntity target : cone(l,e,s,m)) if (hit(l,e,s,target,6,5)) {
+                ExpansionControl.slow(e, target, 25, .55);
+                // Frostbite: briefly freezes the victim (ice overlay + pinned shiver).
+                target.setTicksFrozen(Math.min(140, target.getTicksFrozen() + 60));
+            } }
             case 2 -> { /* Temporary collision volume is maintained by ExpansionWalls, not map blocks. */
-                if (t == 1 && ExpansionWalls.create(e,s.point,s.direction,m.radius(),m.duration()))
+                if (t == 1 && ExpansionWalls.create(e,s.point,s.direction,m.radius(),m.duration())) {
+                    s.mist = m.duration();
+                    s.mistPoint = s.point;
                     cue(e,s,"wall",s.point,s.direction);
+                }
             }
             case 3 -> { if(t==1) {
                 s.snow=m.duration();s.snowPoint=s.point;cue(e,s,"field",s.point,s.direction);finish(e,s);
@@ -181,9 +202,9 @@ public final class ExpansionCombat {
     }
     private static void blaziken(ServerLevel l, PokemonEntity e, State s, int t, ExpansionRoster.Move m) {
         switch (s.skill) {
-            case 0 -> { if (t == 1) { ExpansionGeometry.move(e,s.direction.scale(.5)); coneHit(l,e,s,m,28,1); } }
-            case 1 -> { if (t == 1 || t == 10) { if(t == 10) ExpansionGeometry.move(e,s.direction.scale(.65)); coneHit(l,e,s,m,18,2); } }
-            case 2 -> { dash(l,e,s,m,t,false); if(t == m.duration()) s.speed = 60; }
+            case 0 -> { if (t == 1) { cue(e,s,"attack",e.position(),s.direction); ExpansionGeometry.move(e,s.direction.scale(.5)); meleeHitAll(l,e,s,m,28,1); } }
+            case 1 -> { if (t == 1 || t == 10) { cue(e,s,"attack",e.position(),s.direction); if(t == 10) ExpansionGeometry.move(e,s.direction.scale(.65)); meleeHitAll(l,e,s,m,18,2); } }
+            case 2 -> { if (t == 1) cue(e,s,"attack",e.position(),s.direction); dash(l,e,s,m,t,false); if(t == m.duration()) s.speed = 60; }
             case 3 -> { dash(l,e,s,m,t,true); if(s.target != null && !s.recoil) {
                 s.recoil = true; e.setHealth(Math.max(1,e.getHealth() - 8));
             } }
@@ -197,13 +218,19 @@ public final class ExpansionCombat {
                 for(LivingEntity target : around(l,e,s.point,m.radius()))
                     if(hit(l,e,s,target,m.damage(),1)) s.poison.put(target.getUUID(),61);
             } }
-            case 2 -> { if(t == 1) for(LivingEntity target : cone(l,e,s,m)) ExpansionControl.sleep(e,target,30); }
+            case 2 -> { if (t == 1) for (LivingEntity target : cone(l,e,s,m)) {
+                // Hypnosis lands 90% of the time and pins the victim in place for five seconds.
+                if (e.getRandom().nextFloat() < .9F && ExpansionControl.sleep(e, target, 100)) {
+                    cue(e, s, "impact", target.position(), s.direction);
+                }
+            } }
             case 3 -> {
+                if (t == 1) cue(e,s,"attack",e.position(),s.direction);
                 dash(l,e,s,m,t,true);
                 if(s.target != null && !s.recoil) {
                     s.recoil = true;
                     // Sleep eligibility is captured before the initial hit wakes the target.
-                    if(s.dream) { CombatDamage.apply(l,e,s.target,18,TypeEffectiveness.MoveType.PSYCHIC); e.heal(12); cue(e,s,"heal",s.target.position(),e.position()); }
+                    if(s.dream) { CombatDamage.apply(l,e,s.target,10,TypeEffectiveness.MoveType.PSYCHIC); e.heal(12); cue(e,s,"heal",s.target.position(),e.position()); }
                 }
             }
         }
@@ -212,26 +239,26 @@ public final class ExpansionCombat {
         switch(s.skill) {
             case 0 -> { if(t == 1) for(LivingEntity target : around(l,e,s.point,m.radius()))
                 if(hit(l,e,s,target,m.damage(),1)) ExpansionControl.slow(e,target,30,.65); }
-            case 1 -> { if(t == 1) { ExpansionGeometry.move(e,s.direction.scale(.4)); coneHit(l,e,s,m,m.damage(),1); } }
+            case 1 -> { if(t == 1) { cue(e,s,"attack",e.position(),s.direction); ExpansionGeometry.move(e,s.direction.scale(.4)); meleeHitAll(l,e,s,m,m.damage(),1); } }
             case 2 -> { if(t==1) {s.sand=m.duration();cue(e,s,"field",e.position(),s.direction);finish(e,s);} }
             case 3 -> { if(t % 5 == 1) {
                 Vec3 spike = s.origin.add(s.direction.scale(2 + (t/5)*2.4));
                 cue(e,s,"spike",spike,s.direction);
                 for(LivingEntity target : around(l,e,spike,m.radius())) {
                     int n=s.hit.getOrDefault(target.getUUID(),0);
-                    hit(l,e,s,target,n == 0 ? 30 : n == 1 ? 18 : 12,4);
+                    hit(l,e,s,target,m.damage() * (n == 0 ? 0.45F : n == 1 ? 0.25F : 0.15F),4);
                 }
             } }
         }
     }
     private static void garchomp(ServerLevel l, PokemonEntity e, State s, int t, ExpansionRoster.Move m) {
         switch(s.skill) {
-            case 0 -> { if(t == 1 || t == 6) coneHit(l,e,s,m,15,2); }
-            case 1 -> { if(t == 1) for(LivingEntity target : around(l,e,e.position(),m.radius()))
-                if(hit(l,e,s,target,m.damage(),1)) ExpansionControl.slow(e,target,35,.6); }
+            case 0 -> { if(t == 1 || t == 6) { cue(e,s,"attack",e.position(),s.direction); meleeHitAll(l,e,s,m,15,2); } }
+            case 1 -> { if(t == 1) { cue(e,s,"attack",e.position(),s.direction); for(LivingEntity target : meleeTargets(l,e,s.direction,m))
+                if(meleeHit(l,e,s,target,m.damage(),1)) ExpansionControl.slow(e,target,35,.6); } }
             case 2 -> {
                 if(t < m.duration()) ExpansionGeometry.move(e,s.direction.scale(m.range()/(m.duration()-1)));
-                if(t == m.duration()) for(LivingEntity target : around(l,e,e.position(),m.radius())) hit(l,e,s,target,m.damage(),1);
+                if(t == m.duration()) { cue(e,s,"attack",e.position(),s.direction); for(LivingEntity target : meleeTargets(l,e,s.direction,m)) meleeHit(l,e,s,target,m.damage(),1); }
             }
             case 3 -> { dash(l,e,s,m,t,true); if(s.target != null && !s.recoil) {
                 s.recoil=true; s.target.push(s.direction.x*.7,.15,s.direction.z*.7);
@@ -240,14 +267,15 @@ public final class ExpansionCombat {
     }
     private static void scizor(ServerLevel l, PokemonEntity e, State s, int t, ExpansionRoster.Move m) {
         switch(s.skill) {
-            case 0 -> { dash(l,e,s,m,t,true); if(s.buff>0 && s.target != null && !s.recoil && t>=5 && e.distanceTo(s.target)<3.5
+            case 0 -> { if (t == 1) cue(e,s,"attack",e.position(),s.direction); dash(l,e,s,m,t,true); if(s.buff>0 && s.target != null && !s.recoil && t>=5 && e.distanceTo(s.target)<3.5
                     && ExpansionGeometry.visible(l,e,e.getBoundingBox().getCenter(),s.target.getBoundingBox().getCenter())) {
-                s.recoil=true; hit(l,e,s,s.target,10,2); cue(e,s,"followup",s.target.position(),s.direction);
+                s.recoil=true; meleeHit(l,e,s,s.target,10,2);
             } }
             case 1 -> { if(t==1 || t==8 || t==15) {
+                 cue(e,s,"attack",e.position(),s.direction);
                 for(LivingEntity target : cone(l,e,s,m)) {
                     int n=s.hit.getOrDefault(target.getUUID(),0);
-                    hit(l,e,s,target,10+n*2+(s.buff>0 && t==15?8:0),3);
+                    meleeHit(l,e,s,target,10+n*2+(s.buff>0 && t==15?8:0),3);
                 }
             } }
             case 2 -> { if(t<=9) dash(l,e,s,m,t,false); else ExpansionGeometry.move(e,s.direction.scale(-3.0/9)); }
@@ -300,6 +328,19 @@ public final class ExpansionCombat {
     private static void coneHit(ServerLevel l, PokemonEntity e, State s, ExpansionRoster.Move m, float amount, int cap) {
         for(LivingEntity target : cone(l,e,s,m)) hit(l,e,s,target,amount,cap);
     }
+    private static List<LivingEntity> meleeTargets(ServerLevel l, PokemonEntity e, Vec3 direction, ExpansionRoster.Move m) {
+        double radius = Math.max(1.15, Math.min(2.25, m.radius() + e.getBbWidth() * .35));
+        Vec3 center = e.position().add(direction.multiply(radius * .45, 0, radius * .45));
+        return around(l, e, center, radius);
+    }
+    private static void meleeHitAll(ServerLevel l, PokemonEntity e, State s, ExpansionRoster.Move m, float amount, int cap) {
+        for (LivingEntity target : meleeTargets(l, e, s.direction, m)) meleeHit(l, e, s, target, amount, cap);
+    }
+    private static boolean meleeHit(ServerLevel l, PokemonEntity e, State s, LivingEntity target, float amount, int cap) {
+        boolean ok = hit(l, e, s, target, amount, cap);
+        if (ok) cue(e, s, "melee", target.getBoundingBox().getCenter(), s.direction);
+        return ok;
+    }
     private static boolean hit(ServerLevel l, PokemonEntity e, State s, LivingEntity target, float amount, int cap) {
         int count=s.hit.getOrDefault(target.getUUID(),0);
         if(count>=cap || !CombatDamage.apply(l,e,target,amount,TypeEffectiveness.moveType(e,s.skill))) return false;
@@ -346,7 +387,11 @@ public final class ExpansionCombat {
         for(LivingEntity target:ExpansionGeometry.swept(l,e,from,to.add(s.direction.scale(.1)),.75)) {
             s.dream=ExpansionControl.sleeping(target);
             float amount=species(e).id().equals("lucario") && s.skill==3 ? 0 : m.damage();
-            if(amount==0 || hit(l,e,s,target,amount,1)) { s.target=target; if(stopOnHit) {s.stopped=true; break;} }
+            if(amount==0 || (hit(l,e,s,target,amount,1) && (species(e).id().equals("lucario") || species(e).id().equals("blaziken") || species(e).id().equals("gengar") || species(e).id().equals("garchomp") || species(e).id().equals("scizor")))) {
+                s.target=target;
+                if (amount > 0) cue(e,s,"melee",target.getBoundingBox().getCenter(),s.direction);
+                if(stopOnHit) {s.stopped=true; break;}
+            }
         }
         if(moved<speed*.5 || before.distanceTo(s.origin)>=m.range()) s.stopped=true;
     }
@@ -399,10 +444,10 @@ public final class ExpansionCombat {
         for(ServerPlayer player:level.players()) if(player.distanceToSqr(p)<128*128 && ServerPlayNetworking.canSend(player,EffectPayload.TYPE)) ServerPlayNetworking.send(player,payload);
     }
     private static final class State {
-        int skill=-1,age,regen,buff,speed,sand,snow; float points=10;
+        int skill=-1,age,regen,buff,speed,sand,snow,mist; float points=10;
         final int[] cd=new int[4];
         final Map<UUID,Integer> hit=new HashMap<>(),poison=new HashMap<>();
-        Vec3 origin=Vec3.ZERO,direction=new Vec3(0,0,1),point=Vec3.ZERO,projectile=Vec3.ZERO,launch=Vec3.ZERO,snowPoint=Vec3.ZERO;
+        Vec3 origin=Vec3.ZERO,direction=new Vec3(0,0,1),point=Vec3.ZERO,projectile=Vec3.ZERO,launch=Vec3.ZERO,snowPoint=Vec3.ZERO,mistPoint=Vec3.ZERO;
         LivingEntity target; boolean stopped,recoil,dream;
     }
 }

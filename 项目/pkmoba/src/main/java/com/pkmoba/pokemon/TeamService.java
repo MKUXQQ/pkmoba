@@ -27,8 +27,8 @@ import java.util.UUID;
  * 0.31 起：开局只有选中的那一只，其他成员必须用 {@code /mo pokemon add} 或添加道具扩充。
  */
 public final class TeamService {
-    /** 队伍上限。 */
-    public static final int MAX_TEAM = 6;
+    /** Collection roster includes every implemented species; battle rosters stay separately bounded by room rules. */
+    public static final int MAX_TEAM = SpeciesRegistry.all().size();
     /** {@code /mo remove all} 二次确认的有效期（tick）。 */
     private static final long CONFIRM_TICKS = 20L * 30L;
     /** 玩家 UUID → 确认过期时刻（服务器 tick）。 */
@@ -259,7 +259,7 @@ public final class TeamService {
             return false;
         }
         if (profile.team.size() >= MAX_TEAM) {
-            player.sendSystemMessage(Component.literal("队伍已满（上限 " + MAX_TEAM + " 只）。"));
+            player.sendSystemMessage(Component.literal("所有已实装宝可梦均已解锁。"));
             return false;
         }
         profile.team.add(species);
@@ -364,9 +364,15 @@ public final class TeamService {
         // 0.38：不再"先清掉旧实体"。多只可以同时在场，新召唤的这只追加登记并设为选中，
         // 之前那只继续留在场上按自己的状态行动（C 键可以再收回来）。
         ServerLevel level = player.serverLevel();
-        PokemonEntity entity = CharizardManager.spawnMatchEntity(level, pos, id);
-        if (entity == null) {
-            player.sendSystemMessage(Component.literal("宝可梦生成失败，请换个位置再试。"));
+        PokemonEntity entity = CharizardManager.spawnMatchEntityExact(level, pos, id);
+        if (entity != null && level.getBlockCollisions(entity,
+                entity.getBoundingBox().deflate(.001)).iterator().hasNext()) {
+            entity.discard();
+            player.displayClientMessage(Component.literal("该位置容不下这只宝可梦，召唤已取消。"), true);
+            return null;
+        }
+        if (entity == null || entity.isRemoved()) {
+            player.sendSystemMessage(Component.literal("宝可梦生成失败或原位置空间不足，请换个位置再试。"));
             sendTeamState(player);
             return null;
         }
@@ -668,7 +674,7 @@ public final class TeamService {
             return null;
         }
         ServerLevel level = player.serverLevel();
-        Vec3 safe = findGround(level, target);
+        Vec3 safe = partySummonPosition(player, target);
         if (safe == null) {
             player.sendSystemMessage(Component.literal("那里没有安全的地面，请换个位置。"));
             return null;
@@ -740,7 +746,7 @@ public final class TeamService {
             return null;
         }
         ServerLevel level = player.serverLevel();
-        Vec3 safe = findGround(level, target);
+        Vec3 safe = partySummonPosition(player, target);
         if (safe == null) {
             player.sendSystemMessage(Component.literal("那里没有安全的地面，请换个位置。"));
             return null;
@@ -774,6 +780,32 @@ public final class TeamService {
             com.pkmoba.duel.DuelManager.notifySummoned(player, entity);
         }
         return entity;
+    }
+
+    /** Preflight C-confirm before recalling anything; never inspect unloaded chunks or occupied feet/head. */
+    @Nullable
+    public static Vec3 partySummonPosition(ServerPlayer player, Vec3 target) {
+        if (player == null || target == null || !Double.isFinite(target.x)
+                || !Double.isFinite(target.y) || !Double.isFinite(target.z)
+                || target.distanceToSqr(player.position()) > 256.0 * 256.0) return null;
+        ServerLevel level = player.serverLevel();
+        var feet = net.minecraft.core.BlockPos.containing(target);
+        if (!level.hasChunkAt(feet) || !level.getWorldBorder().isWithinBounds(feet)
+                || target.y < level.getMinBuildHeight() || target.y + 2 >= level.getMaxBuildHeight()) return null;
+        // 逐格抬升兜底：X 键召唤要“随时随地都能放”，命中点被方块/水挡住时默认上升一格而不是拒绝。
+        for (int lift = 0; lift <= 4; lift++) {
+            Vec3 at = target.add(0, lift, 0);
+            var pos = net.minecraft.core.BlockPos.containing(at);
+            if (!level.hasChunkAt(pos) || !level.getWorldBorder().isWithinBounds(pos)
+                    || at.y < level.getMinBuildHeight() || at.y + 2 >= level.getMaxBuildHeight()) continue;
+            var box = new net.minecraft.world.phys.AABB(at.x-.3, at.y+.01, at.z-.3,
+                    at.x+.3, at.y+1.8, at.z+.3);
+            if (level.getBlockCollisions(null, box).iterator().hasNext()) continue;
+            if (!level.getFluidState(pos).isEmpty() || !level.getFluidState(pos.above()).isEmpty()) continue;
+            return at;
+        }
+        // 连抬 4 格都不行（极端封顶洞穴）：仍然给出抬高一格的位置，由实体物理自行贴合。
+        return target.add(0, 1, 0);
     }
 
     @Nullable

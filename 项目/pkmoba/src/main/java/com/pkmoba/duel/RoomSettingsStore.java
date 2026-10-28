@@ -47,7 +47,7 @@ public final class RoomSettingsStore extends SavedData {
             Settings settings = new Settings();
             settings.displayName = row.getString("name");
             int capacity = row.getInt("capacity");
-            settings.capacity = capacity >= 1 && capacity <= 6 ? capacity : 3;
+            settings.capacity = capacity >= 1 && capacity <= com.pkmoba.pokemon.SpeciesRegistry.ids().size() ? capacity : 3;
             int visibility = row.getInt("visibility");
             settings.visibility = visibility >= 0 && visibility <= 2 ? visibility : 0;
             settings.passwordSalt = row.getString("salt");

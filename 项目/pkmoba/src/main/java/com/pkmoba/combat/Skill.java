@@ -5,7 +5,7 @@ import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 /** Shared skill names, bean costs and server/HUD cooldowns. */
 public enum Skill {
     Q("skill.pkmoba.q", 3), W("skill.pkmoba.w", 3),
-    E("skill.pkmoba.e", 2), R("skill.pkmoba.r", 4);
+    E("skill.pkmoba.e", 2), R("skill.pkmoba.r", 3);
 
     public final String translationKey;
     public final int cost;
@@ -43,14 +43,14 @@ public enum Skill {
         return "skill.pkmoba." + (pikachu ? "pikachu." : venusaur ? "venusaur." : blastoise ? "blastoise." : "") + suffix;
     }
 
-    private static final int[] CHARIZARD_COSTS = {3, 3, 2, 4};
-    private static final int[] BLASTOISE_COSTS = {4, 2, 3, 4};
-    private static final int[] VENUSAUR_COSTS = {3, 3, 2, 4};
-    private static final int[] PIKACHU_COSTS = {2, 3, 2, 4};
-    private static final int[] CHARIZARD_COOLDOWNS = {90, 140, 140, 300};
-    private static final int[] BLASTOISE_COOLDOWNS = {100, 120, 140, 320};
-    private static final int[] VENUSAUR_COOLDOWNS = {100, 140, 160, 320};
-    private static final int[] PIKACHU_COOLDOWNS = {60, 120, 100, 320};
+    private static final int[] CHARIZARD_COSTS = {3, 3, 2, 3};
+    private static final int[] BLASTOISE_COSTS = {4, 2, 3, 3};
+    private static final int[] VENUSAUR_COSTS = {3, 3, 2, 3};
+    private static final int[] PIKACHU_COSTS = {2, 3, 2, 3};
+    private static final int[] CHARIZARD_COOLDOWNS = {90, 140, 140, 180};
+    private static final int[] BLASTOISE_COOLDOWNS = {100, 120, 140, 180};
+    private static final int[] VENUSAUR_COOLDOWNS = {100, 140, 160, 180};
+    private static final int[] PIKACHU_COOLDOWNS = {60, 120, 100, 180};
 
     public static int cost(PokemonEntity pokemon, int index) {
         var expansion = ExpansionCombat.species(pokemon);

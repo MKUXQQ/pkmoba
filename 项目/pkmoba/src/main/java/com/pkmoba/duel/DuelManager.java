@@ -61,6 +61,7 @@ public final class DuelManager {
         net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STOPPED.register(stopped -> {
             MATCHES.clear();
             INVITES.clear();
+            PARTY_CONFIRM_UNTIL.clear();
             server = null;
             lastTeamStatePush = 0;
         });
@@ -73,6 +74,8 @@ public final class DuelManager {
     private static void tick(MinecraftServer running) {
         server = running;
         long now = running.getTickCount();
+        PARTY_CONFIRM_UNTIL.entrySet().removeIf(entry -> entry.getValue() <= now
+                || running.getPlayerList().getPlayer(entry.getKey()) == null);
         if (now % 20 == 0) pushSwitchZones(running);
         INVITES.entrySet().removeIf(entry -> tickInvite(running, entry.getKey(), entry.getValue()));
         Iterator<Map.Entry<UUID, Match>> iterator = MATCHES.entrySet().iterator();
@@ -232,7 +235,8 @@ public final class DuelManager {
     private static void setPreparation(@Nullable PokemonEntity entity, boolean preparing) {
         if (entity == null) return;
         entity.setInvulnerable(preparing);
-        com.pkmoba.pokemon.BallThrow.releaseLock(entity);
+        // Preparation is already gated by isPreparing; do not erase a real 40t spawn lock.
+        // BallThrow expiry handles the lock independently once both sides are ready.
     }
 
     @Nullable
@@ -460,6 +464,91 @@ public final class DuelManager {
         return null;
     }
 
+    private static final Map<UUID, Long> PARTY_CONFIRM_UNTIL = new HashMap<>();
+
+    /** C confirmation is one server-thread transaction, not a client-side SWITCH then X race. */
+    public static void confirmPartyPokemon(ServerPlayer player, String rawSpecies) {
+        try {
+            ResourceLocation id = SpeciesRegistry.parse(rawSpecies);
+            if (id == null || !partyActionAllowed(player) || !canUseSwitchZone(player, null)) return;
+            long now = player.server.getTickCount();
+            if (PARTY_CONFIRM_UNTIL.getOrDefault(player.getUUID(), 0L) > now
+                    || com.pkmoba.pokemon.BallThrow.hasPending(player.getUUID())) return;
+            PlayerProfile profile = ProfileStore.get(player.server).profile(player.getUUID());
+            String species = id.toString();
+            if (!profile.team.contains(species) || profile.fainted.contains(species)) {
+                player.displayClientMessage(Component.literal("只能确认队伍中尚未倒下的宝可梦。"), true);
+                return;
+            }
+            PokemonEntity current = CharizardManager.getControlled(player);
+            if (current != null && current.level() != player.level()) return;
+            if (current != null && id.equals(current.getPokemon().getSpecies().getResourceIdentifier())) {
+                recallPartyPokemon(player, species);
+                if (CharizardManager.getControlled(player) != current)
+                    PARTY_CONFIRM_UNTIL.put(player.getUUID(), now + 40);
+                return;
+            }
+            if (TeamService.recallLocked(player, species)) {
+                player.displayClientMessage(Component.literal("这只宝可梦刚被收回，请稍等再出战。"), true);
+                return;
+            }
+            if (current == null) {
+                // 用户要求：场上没有自己释放的宝可梦时，C 只确认出战对象、不自动召唤，
+                // 召唤交给 X 键在准星位置完成（避免“C 直接把我脚下的宠物放出来”）。
+                if (!TeamService.choose(player, species)) return;
+                PARTY_CONFIRM_UNTIL.put(player.getUUID(), now + 40);
+                player.displayClientMessage(Component.literal(
+                        "已确定出战 " + com.pkmoba.pokemon.SpeciesRegistry.displayName(id)
+                                + "，按 X 在准星位置召唤。"), true);
+                return;
+            }
+            // Capture before recall. Never substitute the trainer's position for an existing Pokémon.
+            Vec3 requested = current.position();
+            Vec3 landing = TeamService.partySummonPosition(player, requested);
+            if (current != null && player.serverLevel().getBlockCollisions(current,
+                    current.getBoundingBox().deflate(.001)).iterator().hasNext()) {
+                player.displayClientMessage(Component.literal("原位置被方块占据，请先移到安全位置再换宠。"), true);
+                return;
+            }
+            if (landing == null || !canUseSwitchZone(player, landing)) {
+                player.displayClientMessage(Component.literal("请站在己方换宠区的安全地面上确认出战。"), true);
+                return;
+            }
+            RoomManager.Room room = RoomManager.roomOf(player.getUUID());
+            Match match = matchOf(player);
+            ArenaStore.Arena arena = match != null ? match.arena : room == null ? null
+                    : ArenaStore.get(player.server).byName(room.arenaName);
+            boolean red = room != null ? RoomManager.sideOf(player.getUUID()) != 2
+                    : match != null && match.a.equals(player.getUUID());
+            if (inMatch(player) && (arena == null || !arena.insideSwitchZone(player.position(), red)
+                    || !arena.insideBoundary(landing))) return;
+            String replaced = current == null ? null : TeamService.speciesOf(current);
+            int oldIndex = profile.activeIndex;
+            if (current != null) {
+                recallPartyPokemon(player, replaced);
+                if (CharizardManager.getControlled(player) == current) return;
+            }
+            if (!TeamService.choose(player, species)) return;
+            PokemonEntity summoned = TeamService.summonAt(player, landing);
+            if (summoned == null) {
+                profile.activeIndex = oldIndex;
+                // A larger replacement can fail the final species bbox test: restore the old one here,
+                // at precisely the captured position, not at the trainer or an alternate floor.
+                if (replaced != null) {
+                    PokemonEntity restored = TeamService.spawnSpecies(player, replaced, requested);
+                    if (restored != null) notifySummoned(player, restored);
+                }
+                ProfileStore.get(player.server).setDirty();
+                return;
+            }
+            PARTY_CONFIRM_UNTIL.put(player.getUUID(), now + 40);
+            com.pkmoba.pokemon.BallThrow.applyLock(summoned, com.pkmoba.pokemon.BallThrow.SPAWN_LOCK_TICKS);
+            // No implicit ability: the player has not chosen a skill or an aim point.
+        } finally {
+            TeamService.sendTeamState(player);
+        }
+    }
+
     /** 队伍面板确认出战。物种、拥有权、倒下和收回锁全部在服务器验证。 */
     public static void selectPartyPokemon(ServerPlayer player, String rawSpecies) {
         ResourceLocation id = SpeciesRegistry.parse(rawSpecies);
@@ -500,22 +589,47 @@ public final class DuelManager {
             TeamService.sendTeamState(player);
             return;
         }
-        if (!Double.isFinite(landing.x) || !Double.isFinite(landing.y) || !Double.isFinite(landing.z)
-                || !canUseSwitchZone(player, landing)) return;
+        if (!Double.isFinite(landing.x) || !Double.isFinite(landing.y) || !Double.isFinite(landing.z)) return;
+        Vec3 eye = player.getEyePosition();
+        Vec3 serverAimEnd = eye.add(player.getLookAngle().scale(8.0));
+        var serverAimHit = player.serverLevel().clip(new net.minecraft.world.level.ClipContext(eye, serverAimEnd,
+                net.minecraft.world.level.ClipContext.Block.COLLIDER,
+                net.minecraft.world.level.ClipContext.Fluid.ANY, player));
+        Vec3 serverAim = serverAimHit.getType() == net.minecraft.world.phys.HitResult.Type.MISS
+                ? serverAimEnd : serverAimHit.getLocation();
+        // Reject stale or forged hints, but use the server ray as the authoritative aim regardless.
+        if (landing.distanceToSqr(serverAim) > 1.5 * 1.5 || !canUseSwitchZone(player, serverAim)) return;
         RoomManager.Room room = RoomManager.roomOf(player.getUUID());
         ArenaStore.Arena arena = room == null ? null : ArenaStore.get(player.server).byName(room.arenaName);
         Match local = matchOf(player);
         if (arena == null && local != null) arena = local.arena;
-        if (inMatch(player) && arena != null && !arena.insideBoundary(landing)) {
+        if (inMatch(player) && (arena == null || !arena.insideBoundary(serverAim))) {
             player.displayClientMessage(Component.literal("请在竞技场边界内召唤。"), true);
             return;
         }
-        if (landing.distanceToSqr(player.position()) > 96 * 96) return;
         var level = player.serverLevel();
-        com.pkmoba.pokemon.BallThrow.throwBall(player, landing, at -> {
+        String throwingSpecies = ProfileStore.get(player.server).profile(player.getUUID()).activeSpecies();
+        if (throwingSpecies == null || throwingSpecies.isBlank()) {
+            // 世界内没有任何已确认的出战宝可梦：X 不召唤，只提示先确认出战。
+            player.displayClientMessage(Component.literal("请先在 C 菜单确认出战宝可梦，再按 X 召唤。"), true);
+            return;
+        }
+        if (TeamService.recallLocked(player, throwingSpecies)) {
+            player.displayClientMessage(Component.literal("宝可梦还在收回冷却中，请稍候。"), true);
+            return;
+        }
+        final ArenaStore.Arena throwingArena=arena;
+        com.pkmoba.pokemon.BallThrow.throwBallShort(player, at -> {
             if (player.hasDisconnected() || player.serverLevel() != level || !partyActionAllowed(player)
-                    || !canUseSwitchZone(player, at)) return;
-            if (CharizardManager.getControlled(player) == null) TeamService.summonAt(player, at);
+                    || !canUseSwitchZone(player, at)
+                    || !throwingSpecies.equals(ProfileStore.get(player.server).profile(player.getUUID()).activeSpecies())
+                    || TeamService.recallLocked(player, throwingSpecies)
+                    || (inMatch(player) && (throwingArena == null || !throwingArena.insideBoundary(at)))) return;
+            if (CharizardManager.getControlled(player) == null) {
+                PokemonEntity spawned=TeamService.summonAt(player, at);
+                if(spawned!=null) com.pkmoba.pokemon.BallThrow.applyLock(spawned,
+                        com.pkmoba.pokemon.BallThrow.SPAWN_LOCK_TICKS);
+            }
         });
     }
 
@@ -668,15 +782,15 @@ public final class DuelManager {
                 && (!match.awaitingInitialSummon || player.server.getTickCount() >= match.readyAt)) {
             PokemonEntity a = find(player.server, match.aEntity);
             PokemonEntity b = find(player.server, match.bEntity);
-            if (a != null) { a.setInvulnerable(false); com.pkmoba.pokemon.BallThrow.releaseLock(a); }
-            if (b != null) { b.setInvulnerable(false); com.pkmoba.pokemon.BallThrow.releaseLock(b); }
+            if (a != null) a.setInvulnerable(false);
+            if (b != null) b.setInvulnerable(false);
         }
         if (match.awaitingInitialSummon && player.server.getTickCount() >= match.readyAt) {
             match.awaitingInitialSummon = false;
             PokemonEntity a = find(player.server, match.aEntity);
             PokemonEntity b = find(player.server, match.bEntity);
-            if (a != null) { a.setInvulnerable(false); com.pkmoba.pokemon.BallThrow.releaseLock(a); }
-            if (b != null) { b.setInvulnerable(false); com.pkmoba.pokemon.BallThrow.releaseLock(b); }
+            if (a != null) a.setInvulnerable(false);
+            if (b != null) b.setInvulnerable(false);
             showTitle(player, "开始召唤", "C 选择出战 · X 召唤");
             ServerPlayer opponentPlayer = player.server.getPlayerList().getPlayer(
                     match.a.equals(player.getUUID()) ? match.b : match.a);

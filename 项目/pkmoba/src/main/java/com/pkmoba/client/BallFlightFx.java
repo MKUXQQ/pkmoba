@@ -33,8 +33,8 @@ import java.util.List;
 public final class BallFlightFx {
     /** 单个飞行中的球。 */
     private static final class Flight {
-        Vec3 from;
-        Vec3 to;
+        List<Vec3> points;
+        net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension;
         long startNanos;
         int durationTicks;
         long seed;
@@ -61,8 +61,11 @@ public final class BallFlightFx {
     }
 
     /** 收到服务端广播后登记一次飞行。 */
-    public static void start(double fx, double fy, double fz, double tx, double ty, double tz,
-                             int durationTicks, String itemId, long seed) {
+    public static void start(long seed, List<Vec3> points) {
+        FLIGHTS.removeIf(f -> f.seed==seed);
+        Minecraft mc=Minecraft.getInstance();
+        if(points.size()<2 || mc.level==null) return;
+        String itemId="cobblemon:poke_ball";
         Item item = null;
         try {
             item = BuiltInRegistries.ITEM.get(ResourceLocation.tryParse(itemId));
@@ -73,10 +76,10 @@ public final class BallFlightFx {
             item = Items.SNOWBALL;
         }
         Flight flight = new Flight();
-        flight.from = new Vec3(fx, fy, fz);
-        flight.to = new Vec3(tx, ty, tz);
+        flight.points = List.copyOf(points);
+        flight.dimension = mc.level.dimension();
         flight.startNanos = System.nanoTime();
-        flight.durationTicks = Math.max(1, durationTicks);
+        flight.durationTicks = points.size()-1;
         flight.seed = seed;
         flight.stack = new ItemStack(item);
         FLIGHTS.add(flight);
@@ -102,11 +105,13 @@ public final class BallFlightFx {
             Flight flight = iterator.next();
             double seconds = (now - flight.startNanos) / 1.0E9;
             double t = seconds / (flight.durationTicks / 20.0D);
-            if (t >= 1.0D) {
+            if (t >= 1.0D || !flight.dimension.equals(mc.level.dimension())) {
                 iterator.remove();
                 continue;
             }
-            Vec3 pos = parabola(flight.from, flight.to, t);
+            double sample=t*flight.durationTicks;
+            int index=Math.min(flight.durationTicks-1,(int)sample);
+            Vec3 pos=flight.points.get(index).lerp(flight.points.get(index+1),sample-index);
             poseStack.pushPose();
             poseStack.translate(pos.x - camera.x, pos.y - camera.y, pos.z - camera.z);
             // 自转 + 一点倾斜，看起来是"投出去的球"而不是漂浮的图标。

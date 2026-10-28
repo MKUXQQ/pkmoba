@@ -2,7 +2,16 @@ package com.pkmoba.client;
 
 import com.cobblemon.mod.common.entity.PosableEntity;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
-import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.pkmoba.client.fx.AbomasnowFx;
+import com.pkmoba.client.fx.BlazikenFx;
+import com.pkmoba.client.fx.Fx;
+import com.pkmoba.client.fx.FxView;
+import com.pkmoba.client.fx.GarchompFx;
+import com.pkmoba.client.fx.GardevoirFx;
+import com.pkmoba.client.fx.GengarFx;
+import com.pkmoba.client.fx.LucarioFx;
+import com.pkmoba.client.fx.ScizorFx;
+import com.pkmoba.client.fx.TyranitarFx;
 import com.pkmoba.combat.ExpansionRoster;
 import com.pkmoba.combat.ExpansionWalls;
 import com.pkmoba.network.EffectPayload;
@@ -11,1131 +20,683 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.client.renderer.LightTexture;
-import net.minecraft.client.renderer.RenderType;
-import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.joml.Matrix4f;
-
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Bounded server-cued world scenes for the eight expansion species.
+ * Server-cued, UV-mapped solid effects for the eight expansion Pokemon.
  *
- * <p>The server only sends {@code pkmoba:expansion/<species>/<skill>/<phase>/<entityId>} plus a point
- * and a direction; every visual decision is client-side cosmetics. This renderer therefore:
- * <ul>
- *   <li>anchors projectiles, beams and fans to real hand/mouth/foot positions
- *       ({@link ExpansionAnchors}, live Cobblemon locators with body-relative fallback);</li>
- *   <li>gives each of the 32 skills its own {@link Style} (bolt, lob, fan, rush, dig, drain, stomp,
- *       rockfall, wall, ice storm, sandstorm, spikes, blades, blink, mark) instead of one generic
- *       shape pass;</li>
- *   <li>plays a layered local sound per stage (charge / cast / impact) that never loops per frame;</li>
- *   <li>degrades safely: unknown phases or missing models fall back to a generic burst, nothing
- *       here can throw into the render loop or the network receiver.</li>
- * </ul>
- * No damage, aim or hit prediction happens here; the server stays authoritative.
+ * <p>Every move owns a visual style (flame, ice, rock, shadow, psychic, moon, blade, sand,
+ * dragon, fist) and every cue builds a layered composition from closed meshes: glowing core,
+ * orbiting energy, ground shock waves, debris and a signature burst. Nothing here is a flat
+ * billboard. Melee strikes still animate the real Pokemon body through the attack cues.
  */
 public final class ExpansionEffects {
-
-    private static final Logger LOGGER = LoggerFactory.getLogger("pkmoba");
     private static final String PREFIX = "pkmoba:expansion/";
-
-    /** Hard cap so a broken server cannot grow this without bound. */
-    private static final int MAX_SCENES = 160;
-    /** Trail samples kept for projectile/lob history (per scene). */
-    private static final int MAX_TRAIL = 24;
-    /** Render cull and audio distance (blocks). */
-    private static final double CULL_SQR = 128.0 * 128.0;
-    private static final double AUDIO_SQR = 96.0 * 96.0;
-
     private static final Map<String, Scene> SCENES = new LinkedHashMap<>();
     private static ClientLevel world;
-    private static long spikeSeq;
-
-    private ExpansionEffects() {
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // contract
-    // ---------------------------------------------------------------------------------------------
-
-    /** Which silhouette a skill draws. One per skill; shared geometry is not shared skills. */
-    private enum Style {
-        AURA, BOLT, LOB, FAN, RUSH, DIG, DRAIN, STOMP, ROCKFALL, WALL,
-        ICE_STORM, SAND_STORM, SPIKES, BLADES, BLINK, MARK
-    }
-
-    /** Damage flavour, only used to pick the layered sound set. */
-    private enum Element { FIGHTING, ICE, FIRE, GHOST, ROCK, DRAGON, STEEL, PSYCHIC }
+    private static long sequence;
+    private ExpansionEffects() {}
 
     public static void init() {
         WorldRenderEvents.AFTER_ENTITIES.register(ExpansionEffects::render);
         ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> clear());
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
-            if (mc.level != world) {
-                clear();
-                world = mc.level;
-            }
-            if (mc.level != null) {
-                for (Scene s : SCENES.values()) {
-                    // Follower zones (tyranitar E sandstorm) travel with the caster: keep the stored
-                    // point in sync so distance culling measures the zone, not the original cast.
-                    if (s.phase.equals("field") && s.style != Style.ICE_STORM) {
-                        Entity entity = mc.level.getEntity(s.owner);
-                        if (entity != null) {
-                            s.pos = entity.position();
-                        }
-                    }
-                }
-            }
-            SCENES.values().removeIf(s -> ++s.age > s.life
-                    || mc.level == null
-                    || mc.level.getEntity(s.owner) == null);
+            fireScheduled(mc);
+            if (world != mc.level) { clear(); world = mc.level; }
+            SCENES.values().removeIf(s -> ++s.age > s.life || mc.level == null || mc.level.getEntity(s.owner) == null);
         });
     }
-
     private static void clear() {
         SCENES.clear();
+        PENDING.clear();
+        BEAT.clear();
         world = null;
-        // Client-only wall mirrors must never survive a disconnect or a dimension change.
         ExpansionWalls.clearClient();
     }
 
-    /**
-     * Consume an expansion cue. Returns false for every other payload so the receiver chain keeps
-     * working, true once this family owns the id (even when the single cue was invalid).
-     */
-    public static boolean accept(EffectPayload p) {
-        if (!p.effectId().startsWith(PREFIX)) {
-            return false;
-        }
-        String[] parts = p.effectId().split("/");
-        if (parts.length != 5) {
-            return true;
-        }
+    /** Chained body beats (e.g. a spinning Swords Dance) fired on later ticks. */
+    private record Pending(int owner, String species, String clip, long due) { }
+    private static final List<Pending> PENDING = new java.util.ArrayList<>();
+
+    private static void schedule(Entity entity, String species, String clip, int delay) {
+        if (entity == null) return;
         Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null) {
-            return true;
-        }
-        if (world != mc.level) {
-            clear();
-            world = mc.level;
-        }
-        try {
-            int owner = Integer.parseInt(parts[4]);
-            String phase = parts[3];
-            Vec3 pos = new Vec3(p.x(), p.y(), p.z());
-            Vec3 dir = new Vec3(p.dx(), p.dy(), p.dz());
-            if (!finite(pos) || !finite(dir)) {
-                return true;
+        long now = mc.level == null ? 0 : mc.level.getGameTime();
+        PENDING.add(new Pending(entity.getId(), species, clip, now + delay));
+    }
+
+    private static void fireScheduled(Minecraft mc) {
+        if (mc.level == null || PENDING.isEmpty()) return;
+        long now = mc.level.getGameTime();
+        for (int i = PENDING.size() - 1; i >= 0; i--) {
+            Pending p = PENDING.get(i);
+            if (p.due > now) continue;
+            PENDING.remove(i);
+            Entity entity = mc.level.getEntity(p.owner);
+            if (entity instanceof PokemonEntity pokemon) {
+                if (!pokemon.getPokemon().getSpecies().getResourceIdentifier().getPath().equals(p.species)) continue;
+                playClip(pokemon, p.species, p.clip);
             }
-            // clear can arrive with a placeholder skill (<=0) before the species is resolvable,
-            // so it must be honoured before any roster/skill validation.
-            if (phase.equals("clear")) {
-                dropOwner(mc, owner);
-                return true;
-            }
-            var species = ExpansionRoster.find(parts[1]);
-            int skill = Integer.parseInt(parts[2]);
-            if (species == null || skill < 0 || skill > 3) {
-                return true;
-            }
-            var move = species.move(skill);
-            Style style = styleFor(species.id(), skill);
-            Entity entity = mc.level.getEntity(owner);
-            switch (phase) {
-                case "end" -> retire(owner, skill);
-                case "start" -> {
-                    add(new Scene(species, skill, style, "start", owner, pos, dir, Math.max(2, move.windup())));
-                    animate(entity, species, skill, "_windup");
-                    playStage(species, skill, "start", anchored(entity, style), 1.0F);
-                }
-                case "release" -> {
-                    add(new Scene(species, skill, style, "release", owner, pos, dir, Math.max(6, move.duration())));
-                    animate(entity, species, skill, sustained(style) ? "_sustain" : "_cast");
-                    playStage(species, skill, "release", anchored(entity, style), 1.0F);
-                }
-                case "projectile", "lob" -> {
-                    // per-tick world position: keep one scene per (owner, skill, phase) and extend
-                    // its trail instead of spawning a scene per packet.
-                    Scene scene = SCENES.get(owner + ":" + skill + ":" + phase);
-                    if (scene != null && scene.style == style) {
-                        scene.pos = pos;
-                        scene.dir = dir;
-                        scene.age = 0;
-                        scene.push(pos);
-                    } else {
-                        scene = new Scene(species, skill, style, phase, owner, pos, dir, 3);
-                        scene.push(pos);
-                        add(scene);
-                    }
-                    if (phase.equals("lob")) {
-                        playStage(species, skill, "release", pos, 0.8F);
-                    }
-                }
-                case "impact" -> {
-                    add(new Scene(species, skill, style, "impact", owner, pos, dir, 14));
-                    playStage(species, skill, "impact", pos, 1.0F);
-                }
-                case "spike" -> {
-                    // several spikes arrive over a few ticks; distinct keys keep them all visible.
-                    String key = owner + ":" + skill + ":spike:" + (spikeSeq++);
-                    SCENES.put(key, new Scene(species, skill, style, "spike", owner, pos, dir, 16));
-                }
-                case "heal" -> {
-                    // p = victim, d = caster: the return beam runs from p to d.
-                    add(new Scene(species, skill, style, "heal", owner, pos, dir, 16));
-                    playStage(species, skill, "impact", pos, 0.8F);
-                }
-                case "blink" -> {
-                    add(new Scene(species, skill, style, "blink", owner, pos, dir, 14));
-                    playStage(species, skill, "release", pos, 0.9F);
-                }
-                case "wall" -> {
-                    // Only cued when the server really created the slab: mirror it client-side so
-                    // prediction and collision preview agree, and draw the wall from this scene only.
-                    if (entity instanceof PokemonEntity pokemon) {
-                        ExpansionWalls.create(pokemon, pos, dir, move.radius(), move.duration());
-                    }
-                    add(new Scene(species, skill, style, "wall", owner, pos, dir, Math.max(40, move.duration())));
-                    playStage(species, skill, "release", pos, 0.8F);
-                }
-                case "field" -> {
-                    add(new Scene(species, skill, style, "field", owner, pos, dir, Math.max(20, move.duration())));
-                    if (entity != null) {
-                        animate(entity, species, skill, "_sustain");
-                    }
-                }
-                case "buff" -> {
-                    add(new Scene(species, skill, style, "buff", owner, pos, dir, Math.max(20, move.duration())));
-                    if (entity != null) {
-                        animate(entity, species, skill, "_sustain");
-                    }
-                }
-                case "followup" -> {
-                    add(new Scene(species, skill, style, "followup", owner, pos, dir, 10));
-                    playStage(species, skill, "impact", pos, 0.7F);
-                }
-                default -> {
-                    // Unknown phase from a newer server: keep the generic silhouette instead of
-                    // dropping the cue silently.
-                    add(new Scene(species, skill, style, "release", owner, pos, dir, Math.max(6, move.duration())));
-                }
-            }
-        } catch (RuntimeException failure) {
-            LOGGER.debug("Invalid expansion scene", failure);
-        }
-        return true;
-    }
-
-    private static void add(Scene scene) {
-        SCENES.put(scene.owner + ":" + scene.skill + ":" + scene.phase, scene);
-        while (SCENES.size() > MAX_SCENES) {
-            SCENES.remove(SCENES.keySet().iterator().next());
         }
     }
 
-    private static void dropOwner(Minecraft mc, int owner) {
-        Entity entity = mc.level == null ? null : mc.level.getEntity(owner);
-        if (entity != null) {
-            // Clear the client-only wall mirror of that caster (walls of other casters stay).
-            ExpansionWalls.remove(entity.getUUID());
-        }
-        SCENES.entrySet().removeIf(entry -> entry.getValue().owner == owner);
-    }
-
-    /** end: the skill finished; retire the transient poses but keep persistent zones and buffs. */
-    private static void retire(int owner, int skill) {
-        SCENES.remove(owner + ":" + skill + ":start");
-        SCENES.remove(owner + ":" + skill + ":release");
-        // Detached zones (tyranitar E sandstorm, abomasnow R snowstorm) and the swords-dance buff are
-        // cued once and the server calls finish() immediately afterwards, so the "end" that follows
-        // must not erase them: they keep damaging on their own timer and expire by scene life only.
-        SCENES.remove(owner + ":" + skill + ":heal");
-        SCENES.remove(owner + ":" + skill + ":blink");
-        SCENES.remove(owner + ":" + skill + ":followup");
-    }
-
-    private static Style styleFor(String species, int skill) {
-        return switch (species) {
-            case "lucario" -> skill == 0 ? Style.BOLT : skill == 2 ? Style.RUSH : Style.FAN;
-            case "abomasnow" -> skill == 0 ? Style.BOLT : skill == 1 ? Style.FAN : skill == 2 ? Style.WALL : Style.ICE_STORM;
-            case "blaziken" -> skill < 2 ? Style.FAN : Style.RUSH;
-            case "gengar" -> skill == 0 ? Style.BOLT : skill == 1 ? Style.LOB : skill == 2 ? Style.FAN : Style.DRAIN;
-            case "tyranitar" -> skill == 0 ? Style.ROCKFALL : skill == 1 ? Style.FAN : skill == 2 ? Style.SAND_STORM : Style.SPIKES;
-            case "garchomp" -> skill == 0 ? Style.FAN : skill == 1 ? Style.STOMP : skill == 2 ? Style.DIG : Style.RUSH;
-            case "scizor" -> skill == 3 ? Style.BLADES : skill == 1 ? Style.FAN : Style.RUSH;
-            case "gardevoir" -> skill == 0 ? Style.BOLT : skill == 1 ? Style.LOB : skill == 2 ? Style.BLINK : Style.MARK;
-            default -> Style.AURA;
-        };
-    }
-
-    private static boolean sustained(Style style) {
-        return switch (style) {
-            case RUSH, DIG, ICE_STORM, SAND_STORM, WALL, BLADES, LOB -> true;
+    public static boolean isMelee(String id, int skill) {
+        return switch (id) {
+            case "lucario" -> skill > 0;
+            case "blaziken", "garchomp" -> true;
+            case "tyranitar" -> skill == 1;
+            case "scizor" -> skill < 3;
+            case "gengar" -> skill == 3;
             default -> false;
         };
     }
 
-    private static Element elementFor(String species) {
-        return switch (species) {
-            case "abomasnow" -> Element.ICE;
-            case "blaziken" -> Element.FIRE;
-            case "gengar" -> Element.GHOST;
-            case "tyranitar" -> Element.ROCK;
-            case "garchomp" -> Element.DRAGON;
-            case "scizor" -> Element.STEEL;
-            case "gardevoir" -> Element.PSYCHIC;
-            default -> Element.FIGHTING;
+    /** Visual language per move: drives palette accents and the mesh composition. */
+    private static String style(String id, int skill) {
+        return switch (id) {
+            case "lucario" -> switch (skill) { case 0 -> "AURA"; case 1 -> "FIST"; case 2 -> "RUSH"; default -> "FIST"; };
+            case "abomasnow" -> switch (skill) { case 0 -> "ICE"; case 1 -> "ICE"; case 2 -> "MIST"; default -> "ICE"; };
+            case "blaziken" -> "FLAME";
+            case "gengar" -> switch (skill) { case 0 -> "SHADOW"; case 1 -> "SLUDGE"; case 2 -> "HYPNOSIS"; default -> "DREAM"; };
+            case "tyranitar" -> switch (skill) { case 0 -> "ROCK"; case 1 -> "FANG"; case 2 -> "SAND"; default -> "ROCK"; };
+            case "garchomp" -> switch (skill) { case 0 -> "DRAGON"; case 1 -> "QUAKE"; case 2 -> "QUAKE"; default -> "DRAGON"; };
+            case "scizor" -> switch (skill) { case 0 -> "FIST"; case 1 -> "BLADE"; case 2 -> "RUSH"; default -> "BLADE"; };
+            case "gardevoir" -> switch (skill) { case 0 -> "PSYCHIC"; case 1 -> "MOON"; case 2 -> "BLINK"; default -> "MOON"; };
+            default -> "AURA";
         };
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // rendering
-    // ---------------------------------------------------------------------------------------------
-
-    private static void render(WorldRenderContext c) {
+    public static boolean accept(EffectPayload payload) {
+        if (!payload.effectId().startsWith(PREFIX)) return false;
+        String[] parts = payload.effectId().split("/");
         Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null || c.matrixStack() == null || c.consumers() == null) {
-            return;
-        }
-        Vec3 camera = c.camera().getPosition();
-        float partial = c.tickCounter().getGameTimeDeltaPartialTick(false);
-        Ctx x = new Ctx(c, c.matrixStack().last().pose(), camera,
-                mc.level.getGameTime() + partial, partial);
-        for (Scene s : SCENES.values()) {
-            if (s.pos.distanceToSqr(camera) > CULL_SQR) {
-                continue;
-            }
-            Entity owner = mc.level.getEntity(s.owner);
-            if (owner == null) {
-                continue;
-            }
-            float alpha = (float) Math.min(0.85, (s.life - s.age) / 4.0);
-            if (alpha <= 0.0F) {
-                continue;
-            }
-            double t = s.life <= 0 ? 1.0 : Math.min(1.0, (s.age + partial) / s.life);
-            ExpansionAnchors.Set a = ExpansionAnchors.of(owner);
-            Vec3 dir = s.dir.lengthSqr() > 1.0E-4 ? s.dir.normalize() : new Vec3(0, 0, 1);
-            String id = s.species.id();
-            ResourceLocation orb = tex(id, "orb");
-            ResourceLocation ring = tex(id, "ring");
-            ResourceLocation slash = tex(id, "slash");
-            ResourceLocation field = tex(id, "field");
-            try {
-                switch (s.phase) {
-                    case "start" -> renderStart(x, s, a, dir, t, alpha, orb, ring, slash, field);
-                    case "release" -> renderRelease(x, s, a, dir, t, alpha, orb, ring, slash, field);
-                    case "projectile", "lob" -> renderShot(x, s, dir, t, alpha, orb, ring, slash);
-                    case "impact" -> renderImpact(x, s, a, dir, t, alpha, orb, ring, slash, field);
-                    case "spike" -> renderSpike(x, s, dir, t, alpha, orb, ring, slash);
-                    case "heal" -> renderHeal(x, s, a, t, alpha, orb, ring, slash);
-                    case "blink" -> renderBlink(x, s, dir, t, alpha, ring, orb, slash);
-                    case "field" -> renderField(x, s, a, dir, t, alpha, orb, ring, field);
-                    case "wall" -> renderWall(x, s, dir, t, alpha, ring, field, slash);
-                    case "buff" -> renderBuff(x, s, a, t, alpha, orb, ring, slash);
-                    case "followup" -> renderFollowup(x, s, a, dir, t, alpha, orb, ring, slash);
-                    default -> renderRelease(x, s, a, dir, t, alpha, orb, ring, slash, field);
-                }
-            } catch (RuntimeException ignored) {
-                // A single malformed anchor must never kill the whole world render pass.
-            }
-        }
-    }
-
-    private record Ctx(WorldRenderContext c, Matrix4f matrix, Vec3 camera, double time, float partial) {
-    }
-
-    /** Charge-up silhouette: where the skill gathers before the cast. */
-    private static void renderStart(Ctx x, Scene s, ExpansionAnchors.Set a, Vec3 dir, double t,
-                                    float alpha, ResourceLocation orb, ResourceLocation ring,
-                                    ResourceLocation slash, ResourceLocation field) {
-        Vec3 p = s.pos;
-        double range = Math.max(1.0, s.move().range());
-        switch (s.style) {
-            case BOLT -> {
-                Vec3 hand = a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-                orb(x, hand.add(0, 0.15, 0), 0.18 + 0.30 * t, orb, alpha);
-                ringAt(x, a.get(ExpansionAnchors.Slot.FOOT_PRIMARY), 0.7 + 0.4 * t, ring, alpha * 0.5F);
-                motes(x, hand, 5, 0.6 - 0.3 * t, 0.5, orb, alpha * 0.6F);
-            }
-            case LOB -> {
-                Vec3 hand = a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-                Vec3 charge = s.species.id().equals("gardevoir")
-                        ? a.head().add(0, 0.9 + t * 1.1, 0)
-                        : hand.add(0, 0.5 + t * 0.5, 0);
-                orb(x, charge, 0.22 + 0.45 * t, orb, alpha);
-                ringAt(x, p.add(0, 0.06, 0), Math.max(0.5, s.move().radius() * 0.7), ring, alpha * 0.45F);
-                motes(x, charge, 6, 1.2 - 0.6 * t, 0.8, orb, alpha * 0.7F);
-            }
-            case FAN -> {
-                Vec3 hand = a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-                billboard(x, hand, 0.9 + 0.4 * t, 0.9 + 0.4 * t, x.time * 2.4 + t * 6.0, slash, alpha * 0.7F);
-                ground(x, a.position(), 0.8 + 0.5 * t, x.time, slash, alpha * 0.35F);
-            }
-            case RUSH, DIG -> {
-                Vec3 foot = a.get(ExpansionAnchors.Slot.FOOT_PRIMARY);
-                ringAt(x, foot.add(0, 0.05, 0), 0.8 + 0.7 * t, ring, alpha);
-                for (int i = 0; i < 4; i++) {
-                    Vec3 tail = a.position().subtract(dir.scale(0.6 + i * 0.5));
-                    billboard(x, tail.add(0, 0.1, 0), 0.5, 0.35, Math.atan2(dir.z, dir.x), slash, alpha * (0.5F - i * 0.1F));
-                }
-            }
-            case DRAIN -> {
-                Vec3 hand = a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-                beam(x, p, hand, 0.16, slash, alpha * 0.25F);
-                motes(x, p, 4, 0.6, 0.7, orb, alpha * 0.5F);
-            }
-            case STOMP -> {
-                Vec3 foot = a.get(ExpansionAnchors.Slot.FOOT_PRIMARY);
-                ringAt(x, foot.add(0, 0.05, 0), 1.0 + 0.8 * t, ring, alpha);
-                for (int i = 0; i < 5; i++) {
-                    double ang = i * Math.PI * 2 / 5;
-                    Vec3 mote = foot.add(Math.cos(ang) * (0.8 + 0.6 * t), 0.3 + t * 0.6, Math.sin(ang) * (0.8 + 0.6 * t));
-                    billboard(x, mote, 0.22, 0.22, ang, orb, alpha * 0.6F);
-                }
-            }
-            case ROCKFALL -> {
-                ringAt(x, p.add(0, 0.05, 0), Math.max(0.8, s.move().radius() * 0.85), ring, alpha * 0.6F);
-                for (int i = 0; i < 6; i++) {
-                    double ang = i * Math.PI * 2 / 6 + x.time * 0.4;
-                    double h = 4.5 - t * 2.0 - (i % 3) * 0.6;
-                    Vec3 mote = p.add(Math.cos(ang) * s.move().radius() * 0.5, h, Math.sin(ang) * s.move().radius() * 0.5);
-                    billboard(x, mote, 0.4, 0.5, ang, orb, alpha * 0.8F);
-                }
-            }
-            case WALL -> {
-                Vec3 perp = new Vec3(-dir.z, 0, dir.x).normalize();
-                for (int i = -3; i <= 3; i++) {
-                    Vec3 base = p.add(perp.scale(i * (s.move().radius() / 3.0))).add(0, 0.05, 0);
-                    pillar(x, base, 0.35, Math.max(0.3, t * 2.6), field, alpha * 0.45F);
-                }
-                ringAt(x, p.add(0, 0.05, 0), Math.max(0.8, s.move().range()), ring, alpha * 0.35F);
-            }
-            case ICE_STORM -> {
-                ringAt(x, p.add(0, 0.05, 0), 0.6 + t * s.move().radius() * 0.9, ring, alpha * 0.55F);
-                for (int i = 0; i < 8; i++) {
-                    double ang = i * Math.PI / 4 + x.time * 0.5;
-                    double r = s.move().radius() * (0.3 + 0.6 * t) * (0.7 + 0.3 * Math.sin(x.time + i));
-                    Vec3 mote = p.add(Math.cos(ang) * r, 0.3 + t * 2.4, Math.sin(ang) * r);
-                    billboard(x, mote, 0.24, 0.24, ang, orb, alpha * 0.7F);
-                }
-            }
-            case SAND_STORM -> {
-                Vec3 body = a.position();
-                ringAt(x, body.add(0, 0.05, 0), 0.9 + t * 1.6, ring, alpha * 0.6F);
-                motes(x, body, 8, 1.6, 1.2, field, alpha * 0.35F);
-            }
-            case SPIKES -> {
-                for (int i = 0; i < 5; i++) {
-                    Vec3 mark = a.position().add(dir.scale((2.0 + i * 2.0) * t));
-                    ringAt(x, mark.add(0, 0.05, 0), 0.5, ring, alpha * (0.5F - i * 0.06F));
-                }
-            }
-            case BLADES -> {
-                Vec3 chest = a.get(ExpansionAnchors.Slot.CHEST);
-                for (int i = 0; i < 3; i++) {
-                    double ang = x.time * 2.0 + i * Math.PI * 2 / 3;
-                    Vec3 blade = chest.add(Math.cos(ang) * 1.2, 0.4 + 0.3 * Math.sin(x.time + i), Math.sin(ang) * 1.2);
-                    billboard(x, blade, 0.9, 0.35, ang + Math.PI / 2, slash, alpha * 0.8F);
-                }
-            }
-            case BLINK -> {
-                ringAt(x, p.add(0, 0.05, 0), 1.0 + 0.6 * t, ring, alpha);
-                billboard(x, p.add(0, 0.6 + t, 0), 0.5, 1.2, x.time, slash, alpha * 0.5F);
-            }
-            case MARK -> {
-                ringAt(x, p.add(0, 0.05, 0), Math.max(0.8, s.move().radius() * 0.9), ring, alpha * 0.8F);
-                billboard(x, p.add(0, 1.4 + t, 0), 0.8, 1.8, x.time * 1.5, field, alpha * 0.4F);
-            }
-            default -> {
-                field(x, a.position(), Math.max(1.0, s.move().radius()), x.time, field, alpha * 0.5F);
-                motes(x, a.position(), 6, 1.4, 1.6, orb, alpha * 0.6F);
-            }
-        }
-        // target telegraph for aimed skills, always drawn: the player must see where it lands
-        if (s.style != Style.RUSH && s.style != Style.AURA && s.style != Style.SAND_STORM) {
-            ringAt(x, p.add(0, 0.04, 0), Math.min(4.0, 0.5 + range * 0.2), ring, alpha * 0.30F);
-        }
-    }
-
-    /** The moment the skill fires: each style has a different silhouette. */
-    private static void renderRelease(Ctx x, Scene s, ExpansionAnchors.Set a, Vec3 dir, double t,
-                                      float alpha, ResourceLocation orb, ResourceLocation ring,
-                                      ResourceLocation slash, ResourceLocation field) {
-        Vec3 p = s.pos;
-        Vec3 body = a.position();
-        double range = Math.max(1.0, s.move().range());
-        switch (s.style) {
-            case BOLT -> {
-                Vec3 hand = a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-                orb(x, hand.add(0, 0.1, 0), 0.32 + 0.20 * t, orb, alpha);
-                beam(x, hand, p, 0.28, slash, alpha * 0.55F);
-                for (int i = 1; i <= 3; i++) {
-                    billboard(x, hand.add(dir.scale(i * 1.1)), 0.5 - i * 0.08, 0.5 - i * 0.08,
-                            Math.atan2(dir.z, dir.x), orb, alpha * (0.7F - i * 0.15F));
-                }
-                ringAt(x, p.add(0, 0.06, 0), Math.max(0.6, s.move().radius()), ring, alpha * 0.6F);
-            }
-            case LOB -> {
-                Vec3 hand = a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-                double dist = hand.distanceTo(p);
-                double height = Math.max(1.5, dist * 0.35 + 1.2);
-                arc(x, hand, p, height, 0.34, orb, alpha, 14);
-                orb(x, hand.add(0, 0.2, 0), 0.3, orb, alpha);
-                ringAt(x, p.add(0, 0.06, 0), Math.max(0.8, s.move().radius() * 0.9), ring, alpha * 0.55F);
-                if (t > 0.75) {
-                    burst(x, p.add(0, 0.2, 0), s.move().radius() * 0.7, orb, alpha * (float) ((t - 0.75) * 4.0));
-                }
-            }
-            case FAN -> {
-                Vec3 hand = a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-                double base = Math.atan2(dir.z, dir.x);
-                int count = s.species.id().equals("blaziken") && s.skill == 1 ? 4 : 3;
-                for (int i = 0; i < count; i++) {
-                    double spread = (i - (count - 1) / 2.0) * 0.26;
-                    Vec3 at = hand.add(dir.scale(range * 0.28)).add(0, 0.35, 0);
-                    billboard(x, at, range * 0.55, 0.9, base + spread, slash, alpha * (0.9F - 0.15F * i));
-                }
-                // ground fan so the sector is readable from the god view
-                for (int i = -2; i <= 2; i++) {
-                    double spread = i * 0.26;
-                    Vec3 mark = body.add(dir.scale(range * 0.55).yRot((float) spread));
-                    ground(x, mark.add(0, 0.05, 0), 0.9, base + spread, slash, alpha * 0.30F);
-                }
-            }
-            case RUSH -> {
-                for (int i = 0; i < 6; i++) {
-                    Vec3 at = body.subtract(dir.scale(i * 0.35)).add(0, 0.35, 0);
-                    billboard(x, at, 0.9 - i * 0.10, 1.5 - i * 0.12, Math.atan2(dir.z, dir.x), slash,
-                            alpha * (0.8F - i * 0.10F));
-                }
-                for (int i = 0; i < 4; i++) {
-                    ground(x, body.add(dir.scale(1.0 + i * 0.8)).add(0, 0.05, 0), 0.7, Math.atan2(dir.z, dir.x),
-                            slash, alpha * 0.3F);
-                }
-                ringAt(x, a.get(ExpansionAnchors.Slot.FOOT_PRIMARY).add(0, 0.05, 0), 1.1, ring, alpha);
-            }
-            case DIG -> {
-                ringAt(x, a.get(ExpansionAnchors.Slot.FOOT_PRIMARY).add(0, 0.05, 0), 1.4, field, alpha);
-                for (int i = 0; i < 5; i++) {
-                    Vec3 at = body.subtract(dir.scale(0.4 + i * 0.45)).add(0, 0.25, 0);
-                    billboard(x, at, 0.55, 0.4, Math.atan2(dir.z, dir.x), field, alpha * (0.7F - i * 0.1F));
-                }
-                for (int i = 0; i < 4; i++) {
-                    double ang = i * 1.7 + x.time;
-                    Vec3 clump = body.add(Math.cos(ang) * 0.9, 0.2 + 0.5 * Math.sin(x.time + i), Math.sin(ang) * 0.9);
-                    billboard(x, clump, 0.35, 0.35, ang, orb, alpha * 0.7F);
-                }
-            }
-            case DRAIN -> {
-                Vec3 hand = a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-                beam(x, p, hand, 0.34, slash, alpha * 0.75F);
-                for (int i = 0; i < 5; i++) {
-                    double f = (i / 5.0 + x.time * 0.08) % 1.0;
-                    Vec3 mote = p.lerp(hand, f);
-                    billboard(x, mote, 0.42, 0.42, x.time, orb, alpha * 0.9F);
-                }
-            }
-            case STOMP -> {
-                Vec3 foot = a.get(ExpansionAnchors.Slot.FOOT_PRIMARY);
-                ringAt(x, foot.add(0, 0.05, 0), 1.4 + t * range, ring, alpha);
-                for (int i = 0; i < 8; i++) {
-                    double ang = i * Math.PI / 4;
-                    Vec3 at = foot.add(Math.cos(ang) * (1.2 + t * range * 0.8), 0.06, Math.sin(ang) * (1.2 + t * range * 0.8));
-                    ground(x, at, 0.9, ang, slash, alpha * 0.45F);
-                }
-                for (int i = 0; i < 6; i++) {
-                    double ang = i * 1.2;
-                    Vec3 chunk = foot.add(Math.cos(ang) * 1.4, 0.4 + t * 1.4, Math.sin(ang) * 1.4);
-                    billboard(x, chunk, 0.3, 0.3, ang, orb, alpha * 0.7F);
-                }
-            }
-            case ROCKFALL -> {
-                for (int i = 0; i < 5; i++) {
-                    double ang = i * Math.PI * 2 / 5 + x.time * 0.3;
-                    double r = Math.max(0.8, s.move().radius()) * (0.25 + 0.6 * ((i * 37 % 100) / 100.0));
-                    Vec3 at = p.add(Math.cos(ang) * r, Math.max(0.2, 5.0 - t * 4.6), Math.sin(ang) * r);
-                    billboard(x, at, 0.7, 0.9, ang, orb, alpha);
-                }
-                ringAt(x, p.add(0, 0.05, 0), Math.max(1.0, s.move().radius()), ring, alpha * 0.6F);
-                field(x, p, Math.max(1.5, s.move().radius() * 1.2), x.time, field, alpha * 0.35F);
-            }
-            case WALL -> {
-                // The icy wall is drawn only from the dedicated "wall" scene (server-confirmed);
-                // a release cue must not paint a wall the server refused to create.
-            }
-            case ICE_STORM -> {
-                for (int layer = 0; layer < 3; layer++) {
-                    ringAt(x, p.add(0, 0.05 + layer * 0.7 + t * 0.8, 0),
-                            Math.max(0.6, s.move().radius() * (0.5 + 0.5 * t)), ring, alpha * (0.5F - layer * 0.12F));
-                }
-                for (int i = 0; i < 12; i++) {
-                    double ang = i * Math.PI / 6 + x.time * 0.8;
-                    double r = s.move().radius() * (0.2 + 0.7 * ((i * 53 % 100) / 100.0));
-                    Vec3 flake = p.add(Math.cos(ang) * r, 0.3 + ((i * 31) % 40) / 20.0 + t, Math.sin(ang) * r);
-                    billboard(x, flake, 0.26, 0.26, ang, orb, alpha * 0.85F);
-                }
-            }
-            case SAND_STORM -> {
-                ringAt(x, body.add(0, 0.05, 0), 2.2, field, alpha * 0.6F);
-                for (int i = 0; i < 10; i++) {
-                    double ang = i * Math.PI / 5 + x.time;
-                    double r = Math.max(1.2, s.move().radius()) * (0.6 + 0.4 * ((i * 29 % 100) / 100.0));
-                    Vec3 grain = body.add(Math.cos(ang) * r, 0.3 + ((i * 17) % 30) / 15.0, Math.sin(ang) * r);
-                    billboard(x, grain, 0.34, 0.34, ang, field, alpha * 0.6F);
-                }
-            }
-            case SPIKES -> {
-                for (int i = 0; i < 8; i++) {
-                    Vec3 mark = a.position().add(dir.scale(2.0 + i * 1.8));
-                    ground(x, mark.add(0, 0.05, 0), 0.7, Math.atan2(dir.z, dir.x), slash, alpha * 0.4F);
-                }
-            }
-            case BLADES -> {
-                Vec3 chest = a.get(ExpansionAnchors.Slot.CHEST);
-                for (int i = 0; i < 4; i++) {
-                    double ang = x.time * 3.0 + i * Math.PI / 2;
-                    Vec3 blade = chest.add(Math.cos(ang) * (1.2 + t * 1.6), 0.5 + t * 1.4, Math.sin(ang) * (1.2 + t * 1.6));
-                    billboard(x, blade, 1.1, 0.4, ang + Math.PI / 2, slash, alpha * 0.9F);
-                }
-                ringAt(x, body.add(0, 0.05, 0), 1.6 + t * 1.2, ring, alpha * 0.5F);
-            }
-            case BLINK -> {
-                ringAt(x, p.add(0, 0.05, 0), 1.4, ring, alpha);
-                ringAt(x, s.dir.add(0, 0.05, 0), 1.4, ring, alpha);
-                beam(x, p, s.dir, 0.5, slash, alpha * 0.4F);
-            }
-            case MARK -> {
-                ringAt(x, p.add(0, 0.05, 0), Math.max(1.0, s.move().radius()), ring, alpha);
-                beam(x, p, p.add(0, 8, 0), 0.6 + 0.4 * t, field, alpha * 0.55F);
-                for (int i = 0; i < 6; i++) {
-                    double ang = i * Math.PI / 3 + x.time;
-                    Vec3 mote = p.add(Math.cos(ang) * s.move().radius(), 0.2 + t * 2.0, Math.sin(ang) * s.move().radius());
-                    billboard(x, mote, 0.3, 0.3, ang, orb, alpha * 0.8F);
-                }
-            }
-            default -> {
-                field(x, body, Math.max(1.0, s.move().radius()), x.time, field, alpha * 0.6F);
-                ringAt(x, body.add(0, 0.05, 0), 1.6, ring, alpha);
-                burst(x, body.add(0, 0.6, 0), 1.2, orb, alpha);
-            }
-        }
-    }
-
-    /** Flying projectile or lobbed object; the trail comes from the server's per-tick positions. */
-    private static void renderShot(Ctx x, Scene s, Vec3 dir, double t, float alpha,
-                                   ResourceLocation orb, ResourceLocation ring, ResourceLocation slash) {
-        double size = s.phase.equals("lob") ? 0.55 : 0.45;
-        trail(x, s.trail, size * 0.8, orb, alpha * 0.8F);
-        orb(x, s.pos, size, orb, alpha);
-        billboard(x, s.pos, size * 2.6, size * 2.6, x.time * 4.0, slash, alpha * 0.35F);
-        if (s.style == Style.LOB) {
-            ringAt(x, s.pos.add(0, 0.02, 0), size * 1.4, ring, alpha * 0.3F);
-        }
-    }
-
-    private static void renderImpact(Ctx x, Scene s, ExpansionAnchors.Set a, Vec3 dir, double t,
-                                     float alpha, ResourceLocation orb, ResourceLocation ring,
-                                     ResourceLocation slash, ResourceLocation field) {
-        Vec3 p = s.pos;
-        burst(x, p, 0.9 + 0.5 * t, orb, alpha);
-        ringAt(x, p.add(0, 0.06, 0), 1.0 + t * 2.2, ring, alpha * 0.8F);
-        switch (s.style) {
-            case LOB -> {
-                for (int i = 0; i < 8; i++) {
-                    double ang = i * Math.PI / 4;
-                    ground(x, p.add(Math.cos(ang) * (0.6 + t * 1.8), 0.05, Math.sin(ang) * (0.6 + t * 1.8)),
-                            0.7, ang, field, alpha * 0.55F);
-                }
-            }
-            case ROCKFALL, STOMP -> {
-                for (int i = 0; i < 6; i++) {
-                    double ang = i * 1.1 + x.time * 0.5;
-                    Vec3 chunk = p.add(Math.cos(ang) * (1.0 + t * 2.0), 0.3 + t * 1.2, Math.sin(ang) * (1.0 + t * 2.0));
-                    billboard(x, chunk, 0.42, 0.5, ang, orb, alpha * 0.85F);
-                }
-                for (int i = 0; i < 6; i++) {
-                    double ang = i * Math.PI / 3;
-                    ground(x, p.add(Math.cos(ang) * (1.0 + t * 1.6), 0.05, Math.sin(ang) * (1.0 + t * 1.6)),
-                            0.8, ang, slash, alpha * 0.4F);
-                }
-            }
-            case FAN -> {
-                for (int i = 0; i < 2; i++) {
-                    billboard(x, p.add(0, 0.5 + i * 0.45, 0), 1.5, 0.6, Math.atan2(dir.z, dir.x) + (i == 0 ? 0.5 : -0.5),
-                            slash, alpha * 0.8F);
-                }
-            }
-            case ICE_STORM -> {
-                for (int i = 0; i < 10; i++) {
-                    double ang = i * Math.PI / 5 + x.time;
-                    Vec3 flake = p.add(Math.cos(ang) * (0.5 + t * 2.0), 0.3 + t * 1.5, Math.sin(ang) * (0.5 + t * 2.0));
-                    billboard(x, flake, 0.26, 0.26, ang, orb, alpha * 0.8F);
-                }
-            }
-            case MARK -> {
-                ringAt(x, p.add(0, 0.06, 0), 1.5 + t * 3.0, ring, alpha * 0.7F);
-                beam(x, p, p.add(0, 6, 0), 1.2, field, alpha * 0.5F);
-            }
-            case DRAIN -> {
-                beam(x, p, a.get(ExpansionAnchors.Slot.HAND_PRIMARY), 0.25, slash, alpha * 0.5F);
-            }
-            default -> {
-                for (int i = 0; i < 5; i++) {
-                    double ang = i * 1.3 + x.time;
-                    Vec3 mote = p.add(Math.cos(ang) * (0.6 + t * 1.5), 0.3 + t * 1.4, Math.sin(ang) * (0.6 + t * 1.5));
-                    billboard(x, mote, 0.28, 0.28, ang, orb, alpha * 0.7F);
-                }
-            }
-        }
-    }
-
-    /** Tyranitar R: the server streams one spike cue every few ticks along the line. */
-    private static void renderSpike(Ctx x, Scene s, Vec3 dir, double t,
-                                    float alpha, ResourceLocation orb, ResourceLocation ring, ResourceLocation slash) {
-        double h = 1.2 + 1.6 * Math.min(1.0, t * 2.2);
-        spikeUp(x, s.pos, 0.55, h, orb, alpha);
-        ringAt(x, s.pos.add(0, 0.05, 0), 1.0, ring, alpha * 0.7F);
-        for (int i = 0; i < 3; i++) {
-            double ang = i * Math.PI / 3;
-            ground(x, s.pos.add(Math.cos(ang) * 1.1, 0.05, Math.sin(ang) * 1.1), 0.7, ang, slash, alpha * 0.35F);
-        }
-    }
-
-    /** Gengar R: victim at p, caster at d, so the beam is drawn p -> d with motes flowing inward. */
-    private static void renderHeal(Ctx x, Scene s, ExpansionAnchors.Set a, double t,
-                                   float alpha, ResourceLocation orb, ResourceLocation ring, ResourceLocation slash) {
-        Vec3 from = s.pos;
-        Vec3 to = s.dir.lengthSqr() > 1.0E-4 ? s.dir : a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-        beam(x, from, to, 0.36, slash, alpha * 0.8F);
-        beam(x, from, to, 0.18, orb, alpha * 0.6F);
-        for (int i = 0; i < 6; i++) {
-            double f = (i / 6.0 + x.time * 0.10) % 1.0;
-            billboard(x, from.lerp(to, f), 0.42, 0.42, x.time, orb, alpha * 0.9F);
-        }
-        ringAt(x, from.add(0, 0.06, 0), 0.9 + t, ring, alpha * 0.5F);
-    }
-
-    /** Gardevoir E: rings and light columns at both the departure and arrival point. */
-    private static void renderBlink(Ctx x, Scene s, Vec3 dir, double t,
-                                    float alpha, ResourceLocation ring, ResourceLocation orb, ResourceLocation slash) {
-        ringAt(x, s.pos.add(0, 0.05, 0), 0.8 + t * 1.6, ring, alpha);
-        ringAt(x, s.dir.add(0, 0.05, 0), 0.8 + t * 1.6, ring, alpha);
-        pillar(x, s.pos, 0.35, 2.2, slash, alpha * 0.6F);
-        pillar(x, s.dir, 0.35, 2.2, slash, alpha * 0.6F);
-        for (int i = 0; i < 6; i++) {
-            double f = (i / 6.0 + x.time * 0.07) % 1.0;
-            Vec3 mote = s.pos.lerp(s.dir, f);
-            billboard(x, mote, 0.3, 0.3, x.time, orb, alpha * 0.8F);
-        }
-    }
-
-    /** Abomasnow E: the confirmed icy wall, built along the perpendicular of the cast direction. */
-    private static void renderWall(Ctx x, Scene s, Vec3 dir, double t,
-                                   float alpha, ResourceLocation ring, ResourceLocation field, ResourceLocation slash) {
-        Vec3 p = s.pos;
-        double halfWidth = Math.max(1.0, s.move().radius());
-        Vec3 perp = new Vec3(-dir.z, 0, dir.x);
-        if (perp.lengthSqr() < 1.0E-4) {
-            perp = new Vec3(1, 0, 0);
-        }
-        perp = perp.normalize();
-        double rise = Math.min(1.0, t * 4.0);
-        for (int i = -3; i <= 3; i++) {
-            Vec3 base = p.add(perp.scale(i * (halfWidth / 3.0))).add(0, 0.05, 0);
-            double height = 2.4 * rise;
-            pillar(x, base, 0.5, height, field, alpha * 0.85F);
-            billboard(x, base.add(0, 0.3, 0), 0.7, 0.7, x.time * 0.7 + i, slash, alpha * 0.35F);
-        }
-        ground(x, p.add(0, 0.05, 0), halfWidth, Math.atan2(dir.z, dir.x), ring, alpha * 0.4F);
-        for (int i = 0; i < 6; i++) {
-            double ang = i * Math.PI / 3 + x.time * 0.4;
-            Vec3 flake = p.add(perp.scale(Math.cos(ang) * halfWidth)).add(0, 0.2 + ((i * 19) % 20) / 10.0, 0);
-            billboard(x, flake.add(0, 0, Math.sin(ang) * 0.4), 0.24, 0.24, ang, field, alpha * 0.6F);
-        }
-    }
-
-    /** Persistent detached zone: tyranitar E sandstorm, abomasnow R snowstorm. */
-    private static void renderField(Ctx x, Scene s, ExpansionAnchors.Set a, Vec3 dir, double t,
-                                    float alpha, ResourceLocation orb, ResourceLocation ring, ResourceLocation field) {
-        // Tyranitar's sandstorm travels with the caster (server damage tests around the entity),
-        // while abomasnow's detached snowstorm stays on the world point it was cued at.
-        Vec3 base = s.style == Style.ICE_STORM
-                ? s.pos
-                : a.get(ExpansionAnchors.Slot.FOOT_PRIMARY).add(a.get(ExpansionAnchors.Slot.FOOT_SECONDARY)).scale(0.5);
-        double radius = Math.max(1.2, s.move().radius());
-        if (s.style == Style.ICE_STORM) {
-            // Snowstorm: a tall slow column of drifting flakes instead of the low sand swirl, so the
-            // detached abomasnow R zone still reads as ice even after the caster walks away.
-            for (int i = 0; i < 18; i++) {
-                double ang = i * Math.PI / 9 + x.time * 0.35;
-                double r = radius * (0.25 + 0.65 * ((i * 37 % 100) / 100.0));
-                double cycle = (x.time * 0.45 + i * 0.17) % 1.0;
-                double h = 0.2 + cycle * 3.2;
-                Vec3 flake = base.add(Math.cos(ang) * r, h, Math.sin(ang) * r);
-                billboard(x, flake, 0.42, 0.42, ang, orb, alpha * (0.35F + 0.35F * (float) (1.0 - cycle)));
-            }
-            ringAt(x, base.add(0, 0.05, 0), radius * 0.95, ring, alpha * 0.5F);
-            billboard(x, base.add(0, 1.6, 0), radius * 1.5, 2.4, x.time * 0.2, field, alpha * 0.22F);
-            return;
-        }
-        ringAt(x, base.add(0, 0.05, 0), radius * (0.8 + 0.2 * Math.sin(x.time * 0.7)), field, alpha * 0.55F);
-        ringAt(x, base.add(0, 0.05 + 0.4, 0), radius * 1.1, ring, alpha * 0.25F);
-        for (int i = 0; i < 12; i++) {
-            double ang = i * Math.PI / 6 + x.time * 0.65;
-            double r = radius * (0.5 + 0.5 * ((i * 41 % 100) / 100.0));
-            double h = 0.25 + ((i * 23) % 30) / 12.0;
-            Vec3 grain = base.add(Math.cos(ang) * r, h, Math.sin(ang) * r);
-            billboard(x, grain, 0.36, 0.36, ang, field, alpha * 0.55F);
-        }
-        motes(x, base, 6, radius, 1.2, orb, alpha * 0.35F);
-    }
-
-    /** Scizor R swords dance: orbiting blades around the chest. */
-    private static void renderBuff(Ctx x, Scene s, ExpansionAnchors.Set a, double t,
-                                   float alpha, ResourceLocation orb, ResourceLocation ring, ResourceLocation slash) {
-        Vec3 chest = a.get(ExpansionAnchors.Slot.CHEST);
-        final int blades = 4;
-        for (int i = 0; i < blades; i++) {
-            double ang = x.time * 2.4 + i * Math.PI * 2 / blades;
-            double lift = 0.4 + 0.9 * Math.abs(Math.sin(x.time * 0.8 + i));
-            Vec3 blade = chest.add(Math.cos(ang) * 1.35, lift, Math.sin(ang) * 1.35);
-            billboard(x, blade, 1.2, 0.34, ang + Math.PI / 2, slash, alpha * 0.9F);
-        }
-        ringAt(x, a.position().add(0, 0.05, 0), 1.5 + 0.3 * Math.sin(x.time), ring, alpha * 0.45F);
-        motes(x, a.position(), 5, 1.2, 2.0, orb, alpha * 0.5F);
-    }
-
-    /** Scizor Q follow-up jab while the dance buff is active. */
-    private static void renderFollowup(Ctx x, Scene s, ExpansionAnchors.Set a, Vec3 dir, double t,
-                                       float alpha, ResourceLocation orb, ResourceLocation ring, ResourceLocation slash) {
-        Vec3 hand = a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-        beam(x, hand, s.pos, 0.24, slash, alpha * 0.8F);
-        billboard(x, s.pos, 0.9, 0.5, Math.atan2(dir.z, dir.x), slash, alpha * 0.8F);
-        burst(x, s.pos, 0.7, orb, alpha * 0.8F);
-        ringAt(x, s.pos.add(0, 0.05, 0), 0.9, ring, alpha * 0.5F);
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // drawing primitives (all textured quads, no camera vectors so no matrix surprises)
-    // ---------------------------------------------------------------------------------------------
-
-    /** Two crossed vertical quads, rotated around Y by yaw. */
-    private static void billboard(Ctx x, Vec3 p, double w, double h, double yaw, ResourceLocation t, float alpha) {
-        double cx = Math.cos(yaw) * w * 0.5;
-        double cz = Math.sin(yaw) * w * 0.5;
-        Vec3 right = new Vec3(cx, 0, cz);
-        Vec3 up = new Vec3(0, h * 0.5, 0);
-        Vec3 base = p.subtract(x.camera);
-        quad(x, t, base.subtract(right).subtract(up), base.add(right).subtract(up),
-                base.add(right).add(up), base.subtract(right).add(up), alpha);
-        Vec3 right2 = new Vec3(-cz, 0, cx);
-        quad(x, t, base.subtract(right2).subtract(up), base.add(right2).subtract(up),
-                base.add(right2).add(up), base.subtract(right2).add(up), alpha);
-    }
-
-    /** Horizontal quad (ground decal) rotated around Y. */
-    private static void ground(Ctx x, Vec3 p, double r, double yaw, ResourceLocation t, float alpha) {
-        Vec3 right = new Vec3(Math.cos(yaw) * r, 0, Math.sin(yaw) * r);
-        Vec3 forward = new Vec3(-Math.sin(yaw) * r, 0, Math.cos(yaw) * r);
-        Vec3 base = p.subtract(x.camera);
-        quad(x, t, base.subtract(right).subtract(forward), base.add(right).subtract(forward),
-                base.add(right).add(forward), base.subtract(right).add(forward), alpha);
-    }
-
-    private static void ringAt(Ctx x, Vec3 p, double r, ResourceLocation t, float alpha) {
-        ground(x, p, r, 0, t, alpha);
-        ground(x, p, r, Math.PI / 4, t, alpha);
-    }
-
-    /** Textured field decal that slowly spins, used for persistent ground auras. */
-    private static void field(Ctx x, Vec3 p, double r, double yaw, ResourceLocation t, float alpha) {
-        ground(x, p, r, yaw, t, alpha);
-    }
-
-    private static void orb(Ctx x, Vec3 p, double r, ResourceLocation t, float alpha) {
-        billboard(x, p, r * 2, r * 2, 0, t, alpha);
-        billboard(x, p, r * 2, r * 2, Math.PI / 2, t, alpha);
-        ringAt(x, p, r, t, alpha * 0.7F);
-    }
-
-    /** Stepped billboards along a segment: reads as a beam and needs no camera basis. */
-    private static void beam(Ctx x, Vec3 a, Vec3 b, double w, ResourceLocation t, float alpha) {
-        Vec3 delta = b.subtract(a);
-        double length = delta.length();
-        if (length < 0.05) {
-            return;
-        }
-        Vec3 dir = delta.scale(1.0 / length);
-        double yaw = Math.atan2(dir.z, dir.x);
-        int steps = Math.max(2, (int) Math.min(18, length / 0.45));
-        for (int i = 0; i <= steps; i++) {
-            double f = i / (double) steps;
-            Vec3 at = a.add(delta.scale(f));
-            billboard(x, at, w * (1.0 - 0.35 * f), w * (1.0 - 0.35 * f), yaw, t, alpha);
-        }
-    }
-
-    /** Parabolic arc sampled from a to b: used for lobbed sludge / moon descent. */
-    private static void arc(Ctx x, Vec3 a, Vec3 b, double height, double w, ResourceLocation t,
-                            float alpha, int segments) {
-        for (int i = 0; i <= segments; i++) {
-            double f = i / (double) segments;
-            Vec3 at = a.lerp(b, f).add(0, Math.sin(f * Math.PI) * height, 0);
-            billboard(x, at, w * (1.0 - 0.3 * f), w * (1.0 - 0.3 * f), x.time * 3.0, t, alpha * (1.0F - 0.4F * (float) f));
-        }
-    }
-
-    /** Ribbon from per-tick history points. */
-    private static void trail(Ctx x, List<Vec3> points, double w, ResourceLocation t, float alpha) {
-        for (int i = 0; i < points.size(); i++) {
-            double f = i / (double) Math.max(1, points.size() - 1);
-            billboard(x, points.get(i), w * (1.0 - 0.6 * f), w * (1.0 - 0.6 * f), x.time * 2.0, t,
-                    alpha * (float) (1.0 - 0.6 * f));
-        }
-    }
-
-    /** Rising stone spike: three stacked quads tapering upward. */
-    private static void spikeUp(Ctx x, Vec3 base, double r, double h, ResourceLocation t, float alpha) {
-        for (int i = 0; i < 3; i++) {
-            double f = i / 3.0;
-            Vec3 at = base.add(0, h * (f + 0.15), 0);
-            double w = r * (1.0 - 0.55 * f);
-            billboard(x, at, w * 2, h * 0.55, 0.6 * i, t, alpha);
-            billboard(x, at, w * 2, h * 0.55, 0.6 * i + Math.PI / 2, t, alpha);
-        }
-    }
-
-    private static void pillar(Ctx x, Vec3 base, double r, double h, ResourceLocation t, float alpha) {
-        for (int i = 0; i < 3; i++) {
-            double f = i / 2.0;
-            billboard(x, base.add(0, h * (0.15 + f * 0.7), 0), r * 2, h * 0.5, f * Math.PI / 3, t, alpha * (1.0F - 0.25F * (float) f));
-        }
-    }
-
-    private static void burst(Ctx x, Vec3 p, double r, ResourceLocation t, float alpha) {
-        for (int i = 0; i < 4; i++) {
-            billboard(x, p, r * 2, r * 2, i * Math.PI / 4, t, alpha * (0.9F - i * 0.15F));
-        }
-        ringAt(x, p, r, t, alpha * 0.8F);
-    }
-
-    private static void motes(Ctx x, Vec3 center, int count, double radius, double height,
-                              ResourceLocation t, float alpha) {
-        for (int i = 0; i < count; i++) {
-            double ang = i * Math.PI * 2 / count + x.time * 0.9;
-            double r = radius * (0.4 + 0.6 * ((i * 47 % 100) / 100.0));
-            double h = height * (0.3 + 0.7 * ((i * 29 % 100) / 100.0));
-            billboard(x, center.add(Math.cos(ang) * r, h, Math.sin(ang) * r), 0.3, 0.3, ang, t, alpha);
-        }
-    }
-
-    private static void quad(Ctx x, ResourceLocation texture, Vec3 a, Vec3 b, Vec3 c, Vec3 d, float alpha) {
-        VertexConsumer v = x.c.consumers().getBuffer(RenderType.entityTranslucentEmissive(texture));
-        vertex(v, x.matrix, a, 0, 0, alpha);
-        vertex(v, x.matrix, b, 1, 0, alpha);
-        vertex(v, x.matrix, c, 1, 1, alpha);
-        vertex(v, x.matrix, d, 0, 1, alpha);
-        vertex(v, x.matrix, d, 0, 1, alpha);
-        vertex(v, x.matrix, c, 1, 1, alpha);
-        vertex(v, x.matrix, b, 1, 0, alpha);
-        vertex(v, x.matrix, a, 0, 0, alpha);
-    }
-
-    private static void vertex(VertexConsumer v, Matrix4f m, Vec3 p, float u, float tv, float alpha) {
-        v.addVertex(m, (float) p.x, (float) p.y, (float) p.z)
-                .setColor(255, 255, 255, (int) (255 * Math.max(0, Math.min(1, alpha))))
-                .setUv(u, tv)
-                .setOverlay(OverlayTexture.NO_OVERLAY)
-                .setLight(LightTexture.FULL_BRIGHT)
-                .setNormal(0, 1, 0);
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // animation + audio
-    // ---------------------------------------------------------------------------------------------
-
-    /** Anchor used for the charge sound of a style (the visual effect draws itself from anchors). */
-    private static Vec3 anchored(Entity entity, Style style) {
-        if (entity == null) {
-            return Vec3.ZERO;
-        }
-        ExpansionAnchors.Set a = ExpansionAnchors.of(entity);
-        return switch (style) {
-            case RUSH, DIG, STOMP, SPIKES -> a.get(ExpansionAnchors.Slot.FOOT_PRIMARY);
-            case WALL, ICE_STORM, SAND_STORM, BLADES, AURA -> a.get(ExpansionAnchors.Slot.CHEST);
-            case ROCKFALL, MARK -> a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-            default -> a.get(ExpansionAnchors.Slot.HAND_PRIMARY);
-        };
-    }
-
-    /** Play a phased bone clip when the model exposes it; fall back to the legacy whole-skill clip. */
-    private static void animate(Entity entity, ExpansionRoster.Species species, int skill, String suffix) {
-        if (!(entity instanceof PokemonEntity pokemon)) {
-            return;
-        }
-        String actual = pokemon.getPokemon().getSpecies().getResourceIdentifier().getPath();
-        if (!actual.equals(species.id()) && !actual.equals("cobblemon:" + species.id())) {
-            return;
-        }
-        char slot = "qwer".charAt(skill);
+        if (parts.length != 5 || mc.level == null) return true;
+        if (world != mc.level) { clear(); world = mc.level; }
         try {
-            ((PosableEntity) pokemon).playAnimation(
-                    "q.bedrock_primary('pkmoba_" + species.id() + "', '" + slot + suffix + "', q.curve('one'))",
-                    List.of());
-        } catch (Throwable ignored) {
-            try {
-                ((PosableEntity) pokemon).playAnimation(
-                        "q.bedrock_primary('pkmoba_" + species.id() + "', '" + slot + "', q.curve('one'))",
-                        List.of());
-            } catch (Throwable ignoredToo) {
-                // Missing animation data must never break the cast; visuals below still play.
+            int owner = Integer.parseInt(parts[4]);
+            String phase = parts[3];
+            if (phase.equals("clear")) {
+                Entity entity = mc.level.getEntity(owner);
+                if (entity != null) ExpansionWalls.remove(entity.getUUID());
+                SCENES.values().removeIf(s -> s.owner == owner);
+                return true;
+            }
+            var species = ExpansionRoster.find(parts[1]);
+            int skill = Integer.parseInt(parts[2]);
+            if (species == null || skill < 0 || skill > 3) return true;
+            Vec3 pos = new Vec3(payload.x(), payload.y(), payload.z());
+            Vec3 dir = new Vec3(payload.dx(), payload.dy(), payload.dz());
+            if (!ExpansionAnchors.finite(pos) || !ExpansionAnchors.finite(dir)) return true;
+            Entity entity = mc.level.getEntity(owner);
+            var move = species.move(skill);
+            if (phase.equals("end")) {
+                SCENES.values().removeIf(s -> s.owner == owner && s.skill == skill
+                        && (s.phase.equals("start") || s.phase.equals("release")));
+                return true;
+            }
+            boolean melee = isMelee(species.id(), skill);
+            if (phase.equals("start")) animate(entity, species.id(), skill, "_windup");
+            if (phase.equals("release")) animate(entity, species.id(), skill, "_cast");
+            // Action beats are server-timed independently of a successful hit, so a whiff still
+            // looks like a real attack and multi-hit moves can alternate limbs cleanly.
+            if (phase.equals("attack")) {
+                animateAttack(entity, species.id(), skill, pos, dir);
+                // Bullet Punch is one beat on the server; chain extra jabs client-side so it reads
+                // as a continuous flurry instead of a single punch.
+                if (species.id().equals("scizor") && skill == 0) {
+                    schedule(entity, species.id(), "q_melee", 4);
+                    schedule(entity, species.id(), "q_melee", 8);
+                }
+                return true;
+            }
+            if (phase.equals("buff") && species.id().equals("scizor") && skill == 3) {
+                // Swords Dance: keep the twirl going for the whole buff instead of one pose.
+                animate(entity, species.id(), skill, "_sustain");
+                schedule(entity, species.id(), "r_sustain", 24);
+                schedule(entity, species.id(), "r_sustain", 48);
+            }
+            if (phase.equals("melee") || (phase.equals("followup") && melee)) {
+                animate(entity, species.id(), skill, "_melee");
+                sound(pos, true);
+            } else if (phase.equals("impact")) sound(pos, true);
+            else if (phase.equals("release")) sound(pos, false);
+            if (phase.equals("wall") && entity instanceof PokemonEntity pokemon) {
+                ExpansionWalls.create(pokemon, pos, dir, move.radius(), move.duration());
+            }
+            int life = switch (phase) {
+                // Effects linger noticeably longer than the cast itself: users want the skill to be
+                // readable after the input, not a single-frame flash.
+                case "start" -> Math.max(8, move.windup() + 8);
+                case "projectile", "lob" -> 9;
+                case "melee", "followup" -> 14;
+                case "impact", "blink", "heal" -> 24;
+                case "spike" -> 32;
+                case "field", "buff", "wall" -> Math.max(40, move.duration() + 14);
+                default -> 14;
+            };
+            String key = owner + ":" + skill + ":" + phase;
+            Scene previous = SCENES.get(key);
+            if ((phase.equals("projectile") || phase.equals("lob")) && previous != null) {
+                previous.from = previous.position(mc.level.getGameTime());
+                previous.pos = pos;
+                previous.updateTime = mc.level.getGameTime();
+                previous.age = 0;
+            } else {
+                if (phase.equals("spike") || phase.equals("melee")) key += ":" + sequence++;
+                SCENES.put(key, new Scene(species.id(), skill, phase, owner, pos, dir, life, mc.level.getGameTime()));
+            }
+            while (SCENES.size() > 200) SCENES.remove(SCENES.keySet().iterator().next());
+        } catch (RuntimeException ignored) { /* malformed cues are cosmetic only */ }
+        return true;
+    }
+
+
+    /**
+     * Vanilla particle garnish. The textured sheets carry the art; these blocky Minecraft particles
+     * add the chunky pixel sparkle the user asked for and make every skill read as busy even from
+     * far away. They are cosmetic only and capped so a full arena cannot flood the client.
+     */
+    private static void mcParticles(Scene s, String style, Vec3 at, double radius, float fade) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || fade <= .05f || radius <= 0) return;
+        long now = mc.level.getGameTime();
+        java.util.Random rnd = new java.util.Random((long) (at.x * 7349 + at.y * 1571 + at.z * 4513) * 31 + now / 2);
+        if (rnd.nextFloat() > .62f) return;
+        int n = 2 + (int) Math.min(7, radius * 2.2);
+        for (int i = 0; i < n; i++) {
+            double x = at.x + (rnd.nextDouble() - .5) * radius * 2.0;
+            double y = at.y + (rnd.nextDouble() - .15) * radius * 1.7;
+            double z = at.z + (rnd.nextDouble() - .5) * radius * 2.0;
+            double vx = (rnd.nextDouble() - .5) * .12;
+            double vy = .02 + rnd.nextDouble() * .12;
+            double vz = (rnd.nextDouble() - .5) * .12;
+            switch (style) {
+                case "FLAME" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.FLAME : ParticleTypes.SMALL_FLAME, x, y, z, vx, vy, vz);
+                case "ICE", "MIST" -> mc.level.addParticle(ParticleTypes.SNOWFLAKE, x, y, z, vx * .5, -vy * .4, vz * .5);
+                case "SHADOW", "DREAM" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.SOUL : ParticleTypes.SQUID_INK, x, y, z, vx, vy * .5, vz);
+                case "SLUDGE" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.WITCH : ParticleTypes.POOF, x, y, z, vx, vy * .4, vz);
+                case "HYPNOSIS" -> mc.level.addParticle(ParticleTypes.END_ROD, x, y, z, vx * .4, vy * .3, vz * .4);
+                case "PSYCHIC", "MOON", "BLINK" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.END_ROD : ParticleTypes.ENCHANT, x, y, z, vx * .5, vy * .4, vz * .5);
+                case "AURA" -> mc.level.addParticle(ParticleTypes.ELECTRIC_SPARK, x, y, z, vx, vy, vz);
+                case "ROCK", "SAND", "QUAKE" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.CRIT : ParticleTypes.POOF, x, y, z, vx, vy * .6, vz);
+                case "FIST", "RUSH", "BLADE", "FANG" -> mc.level.addParticle(ParticleTypes.CRIT, x, y, z, vx * 1.4, vy, vz * 1.4);
+                case "DRAGON" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.DRAGON_BREATH : ParticleTypes.CRIT, x, y, z, vx, vy * .5, vz);
+                default -> mc.level.addParticle(ParticleTypes.END_ROD, x, y, z, vx, vy, vz);
+            }
+        }
+    }
+
+    private static void render(WorldRenderContext context) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || context.matrixStack() == null || context.consumers() == null
+                || context.camera() == null) return;
+        Vec3 camera = context.camera().getPosition();
+        double time = mc.level.getGameTime() + context.tickCounter().getGameTimeDeltaPartialTick(false);
+        for (Scene s : SCENES.values()) {
+            Entity owner = mc.level.getEntity(s.owner);
+            if (owner == null || s.pos.distanceToSqr(camera) > 16384) continue;
+            ExpansionAnchors.Set anchors = ExpansionAnchors.of(owner);
+            double age = s.age + context.tickCounter().getGameTimeDeltaPartialTick(false);
+            double progress = Math.min(1, age / s.life);
+            float fade = (float) Math.min(1, (s.life - age) / 3.0);
+            if (fade <= 0) continue;
+            Vec3 dir = s.dir.lengthSqr() > 1E-5 ? s.dir.normalize() : owner.getLookAngle();
+            ResourceLocation tex = material(s.id, s.skill);
+            boolean melee = isMelee(s.id, s.skill);
+            double radius = ExpansionRoster.find(s.id).move(s.skill).radius();
+            String st = style(s.id, s.skill);
+            mcParticles(s, st, s.position(time), radius * 1.4, fade);
+            if (dispatch(context, s, anchors, tex, time, age, progress, fade, dir, radius, owner.position())) continue;
+            switch (s.phase) {
+                case "start" -> {
+                    Vec3 at = melee ? anchors.chest() : anchors.handPrimary();
+                    double charge = .12 + .20 * progress;
+                    pulse(context, at, charge, time, tex, fade);
+                    orbit(context, at, .34 + .16 * progress, time, tex, fade * .9F, 6, .055);
+                    groundRing(context, owner.position(), .55 + .55 * progress, .04, time, tex, fade * .65F, 2);
+                    if (st.equals("FLAME")) flames(context, at.add(0, -.20, 0), .85, time, tex, fade, 7);
+                    if (st.equals("PSYCHIC") || st.equals("MOON") || st.equals("AURA")) {
+                        ringWave(context, at, .70 + .35 * progress, .03, time, tex, fade * .8F, 3);
+                        orbit(context, at, .60, time, tex, fade, 9, .05);
+                    }
+                    if (st.equals("ICE") || st.equals("MIST")) shards(context, at, .48, time, tex, fade, 7, .30);
+                    if (st.equals("SHADOW") || st.equals("SLUDGE")) {
+                        pulse(context, at, charge * 1.7, -time * .07, tex, fade * .55F);
+                        wisp(context, at, .55, time, tex, fade, 7);
+                    }
+                    if (st.equals("SAND") || st.equals("ROCK")) dust(context, at, .55, time, tex, fade);
+                }
+                case "release" -> {
+                    Vec3 at = melee ? anchors.chest() : anchors.handPrimary();
+                    pulse(context, at, .26 + .20 * progress, time, tex, fade);
+                    groundRing(context, owner.position(), .8 + 1.5 * progress, .055, time, tex, fade, 2);
+                    launchSparks(context, at, dir, time, tex, fade, 9);
+                    signature(context, st, at, dir, time, tex, fade, progress, .55);
+                }
+                case "projectile", "lob" -> {
+                    Vec3 p = s.position(time);
+                    double size = s.phase.equals("lob") ? .46 : .34;
+                    pulse(context, p, size, time, tex, fade);
+                    trail(context, p, dir, time, tex, fade * .9F, 7, size * .8);
+                    orbit(context, p, size * 1.75, time, tex, fade * .85F, 6, size * .28);
+                    if (s.phase.equals("lob")) dust(context, p, size * 1.1, time, tex, fade * .8F);
+                    signature(context, st, p, dir, time, tex, fade * .8F, progress, size * .8);
+                }
+                case "melee", "followup" -> {
+                    // Impact contact: the body already animates, this is the physical hit flash.
+                    pulse(context, s.pos, .18 + .24 * progress, time, tex, fade * .95F);
+                    ringWave(context, s.pos, .55 + 1.05 * progress, .045, time, tex, fade * .9F, 2);
+                    shards(context, s.pos, .35 + .55 * progress, time, tex, fade, 7, .26);
+                    if (st.equals("FLAME")) flames(context, s.pos.add(0, -.25, 0), 1.1, time, tex, fade, 8);
+                    if (st.equals("FIST") || st.equals("RUSH")) {
+                        punchLines(context, s.pos, dir, time, tex, fade);
+                    }
+                }
+                case "impact" -> {
+                    pulse(context, s.pos, .38 + .55 * progress, time, tex, fade);
+                    ringWave(context, s.pos, .75 + Math.min(2.6, radius) * progress, .06, time, tex, fade, 3);
+                    shards(context, s.pos, .55 + Math.min(2.2, radius) * progress, time, tex, fade, 12, .34);
+                    signature(context, st, s.pos, dir, time, tex, fade, progress, Math.min(1.6, radius * .7));
+                }
+                case "wall" -> {
+                    Vec3 side = new Vec3(-dir.z, 0, dir.x);
+                    if (side.lengthSqr() < .01) side = new Vec3(1, 0, 0);
+                    side = side.normalize();
+                    double grow = Math.min(1, age / 4);
+                    for (int i = -5; i <= 5; i++) {
+                        Vec3 at = s.pos.add(side.scale(i * radius / 5));
+                        ExpansionSkillMeshes.crystal(context, at, .42,
+                                (2.1 + (i % 2 == 0 ? .5 : 0)) * grow, i * .7 + time * .02, tex, fade);
+                        if (st.equals("ICE")) ExpansionSkillMeshes.crystal(context, at.add(0, 1.5 * grow, 0), .22,
+                                .95 * grow, -i * .5, tex, fade * .8F);
+                    }
+                    groundRing(context, s.pos, radius * 1.3, .06, time, tex, fade * .8F, 2);
+                }
+                case "spike" -> {
+                    ExpansionSkillMeshes.crystal(context, s.pos, .55,
+                            (2.0 + (s.owner % 3) * .22) * Math.min(1, age / 3), time * .015, tex, fade);
+                    for (int i = 0; i < 6; i++) {
+                        double a = i * 1.047 + time * .02;
+                        ExpansionSkillMeshes.crystal(context, s.pos.add(Math.cos(a) * .55, 0, Math.sin(a) * .55),
+                                .22, (1.1 + (i % 3) * .25) * Math.min(1, age / 3), a, tex, fade * .9F);
+                    }
+                    groundRing(context, s.pos, radius * 1.1, .05, time, tex, fade * .85F, 2);
+                }
+                case "field" -> {
+                    Vec3 base = owner.position();
+                    groundRing(context, base, radius, .06, time, tex, fade * .9F, 2);
+                    for (int i = 0; i < 30; i++) {
+                        double angle = time * .055 + i * 2.39996;
+                        double r = radius * (.22 + (i % 8) / 11.0);
+                        double h = st.equals("ICE") ? .25 + (1 - (time * .035 + i * .13) % 1) * 3.2 : .1 + (i % 6) * .40;
+                        Vec3 p = base.add(Math.cos(angle) * r, h, Math.sin(angle) * r);
+                        if (st.equals("ICE") || st.equals("MIST")) {
+                            ExpansionSkillMeshes.crystal(context, p, .09, .26, angle, tex, fade * .9F);
+                        } else if (st.equals("SAND")) {
+                            ExpansionSkillMeshes.sphere(context, p, new Vec3(.16, .10, .16), angle, tex, fade * .7F, true);
+                        } else {
+                            ExpansionSkillMeshes.crystal(context, p, .07, .22, angle, tex, fade * .9F);
+                        }
+                    }
+                    if (st.equals("ICE")) flames(context, base, 3.2, time, tex, fade * .45F, 10);
+                    if (st.equals("SAND")) dust(context, base.add(0, 1.1, 0), 2.4, time, tex, fade * .55F);
+                }
+                case "buff" -> {
+                    // Swords Dance: orbiting silver blades, a rising flare and a spinning ground halo.
+                    Vec3 chest = anchors.chest();
+                    groundRing(context, owner.position(), 1.25, .05, time, tex, fade * .9F, 3);
+                    for (int i = 0; i < 6; i++) {
+                        double angle = time * .12 + i * Math.PI / 3;
+                        Vec3 at = chest.add(Math.cos(angle) * .95, -.15 + Math.sin(time * .09 + i) * .35,
+                                Math.sin(angle) * .95);
+                        ExpansionSkillMeshes.crystal(context, at, .085, 1.05, angle + time * .1, tex, fade);
+                    }
+                    orbit(context, chest, .85, time, tex, fade * .9F, 10, .06);
+                    launchSparks(context, chest, new Vec3(0, 1, 0), time, tex, fade * .8F, 7);
+                }
+                case "heal" -> {
+                    Vec3 destination = s.dir.lengthSqr() > .01 ? s.dir : anchors.chest();
+                    for (int i = 0; i < 7; i++) {
+                        double f = (time * .075 + i / 7.0) % 1;
+                        Vec3 at = s.pos.lerp(destination, f);
+                        ExpansionSkillMeshes.sphere(context, at, new Vec3(.10, .10, .10), time * .1, tex, fade, false);
+                        ExpansionSkillMeshes.tube(context, at.subtract(destination.subtract(s.pos).normalize().scale(.5)),
+                                at, .035, tex, fade * .7F);
+                    }
+                    ringWave(context, destination, .8, .04, time, tex, fade * .8F, 2);
+                }
+                case "blink" -> {
+                    double gather = 1 - progress;
+                    pulse(context, s.pos, .3 + .5 * gather, -time * .12, tex, fade);
+                    pulse(context, s.dir, .3 + .5 * progress, time * .12, tex, fade);
+                    for (int i = 0; i < 5; i++) {
+                        double y = i * .5;
+                        ringWave(context, s.pos.add(0, y, 0), .55 - i * .07, .03, time, tex, fade * .6F, 1);
+                        ringWave(context, s.dir.add(0, y, 0), .55 - i * .07, .03, time, tex, fade * .6F, 1);
+                    }
+                }
+                default -> { }
             }
         }
     }
 
     /**
-     * Layered per-stage audio. One call per cue (charge, cast, impact) instead of a per-frame loop;
-     * pitches vary per slot so the four skills of one species do not sound identical.
+     * Route one cue to that Pokemon's own visual class. Every one of the eight has bespoke
+     * choreography per move and per phase, so no two skills can share a silhouette any more.
      */
-    private static void playStage(ExpansionRoster.Species species, int skill, String stage, Vec3 at, float gain) {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null || mc.player == null) {
-            return;
-        }
-        if (!finite(at) || at.distanceToSqr(mc.player.position()) > AUDIO_SQR) {
-            return;
-        }
-        Element element = elementFor(species.id());
-        SoundEvent primary = switch (stage) {
-            case "start" -> switch (element) {
-                case FIGHTING -> SoundEvents.TOTEM_USE;
-                case ICE -> SoundEvents.CANDLE_EXTINGUISH;
-                case FIRE -> SoundEvents.FIRE_AMBIENT;
-                case GHOST -> SoundEvents.PORTAL_AMBIENT;
-                case ROCK -> SoundEvents.WOOL_HIT;
-                case DRAGON -> SoundEvents.GENERIC_EXTINGUISH_FIRE;
-                case STEEL -> SoundEvents.ITEM_PICKUP;
-                case PSYCHIC -> SoundEvents.NOTE_BLOCK_PLING.value();
-            };
-            case "release" -> switch (element) {
-                case FIGHTING -> SoundEvents.PLAYER_ATTACK_STRONG;
-                case ICE -> SoundEvents.SNOWBALL_THROW;
-                case FIRE -> SoundEvents.FIRECHARGE_USE;
-                case GHOST -> SoundEvents.GHAST_SHOOT;
-                case ROCK -> SoundEvents.ANVIL_LAND;
-                case DRAGON -> SoundEvents.GHAST_SHOOT;
-                case STEEL -> SoundEvents.ANVIL_LAND;
-                case PSYCHIC -> SoundEvents.BEACON_POWER_SELECT;
-            };
-            default -> switch (element) {
-                case FIGHTING -> SoundEvents.PLAYER_ATTACK_STRONG;
-                case ICE -> SoundEvents.WOOL_HIT;
-                case FIRE -> SoundEvents.FIRE_EXTINGUISH;
-                case GHOST -> SoundEvents.SLIME_SQUISH;
-                case ROCK -> SoundEvents.ANVIL_LAND;
-                case DRAGON -> SoundEvents.GHAST_SHOOT;
-                case STEEL -> SoundEvents.ANVIL_LAND;
-                case PSYCHIC -> SoundEvents.BEACON_ACTIVATE;
-            };
-        };
-        float volume = switch (stage) {
-            case "start" -> 0.20F;
-            case "release" -> 0.45F;
-            default -> 0.35F;
-        } * gain;
-        float pitch = switch (element) {
-            case FIGHTING -> 1.15F;
-            case ICE -> 1.30F;
-            case FIRE -> 0.95F;
-            case GHOST -> 0.80F;
-            case ROCK -> 0.70F;
-            case DRAGON -> 0.85F;
-            case STEEL -> 1.20F;
-            case PSYCHIC -> 1.45F;
-        } * (1.0F - 0.04F * skill);
-        mc.level.playLocalSound(at.x, at.y, at.z, primary, SoundSource.PLAYERS, volume, pitch, false);
-
-        // Second, quieter layer that gives each silhouette an extra texture.
-        SoundEvent accent = switch (stage) {
-            case "start" -> null;
-            case "release" -> switch (element) {
-                case ICE -> SoundEvents.CANDLE_EXTINGUISH;
-                case ROCK, STEEL -> SoundEvents.GENERIC_EXTINGUISH_FIRE;
-                case PSYCHIC -> SoundEvents.NOTE_BLOCK_PLING.value();
-                case FIGHTING, DRAGON -> SoundEvents.FLINTANDSTEEL_USE;
-                default -> null;
-            };
-            default -> switch (element) {
-                case ICE -> SoundEvents.GENERIC_EXTINGUISH_FIRE;
-                case FIRE -> SoundEvents.FIRE_AMBIENT;
-                default -> null;
-            };
-        };
-        if (accent != null) {
-            mc.level.playLocalSound(at.x, at.y, at.z, accent, SoundSource.PLAYERS, volume * 0.55F, pitch * 1.25F, false);
-        }
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // state
-    // ---------------------------------------------------------------------------------------------
-
-    private static ResourceLocation tex(String species, String kind) {
-        return ResourceLocation.fromNamespaceAndPath("pkmoba", "textures/effect/" + species + "_" + kind + ".png");
-    }
-
-    private static boolean finite(Vec3 v) {
-        return Double.isFinite(v.x) && Double.isFinite(v.y) && Double.isFinite(v.z);
-    }
-
-    private static final class Scene {
-        final ExpansionRoster.Species species;
-        final int skill;
-        final Style style;
-        final String phase;
-        final int owner;
-        final int life;
-        Vec3 pos;
-        Vec3 dir;
-        final List<Vec3> trail = new ArrayList<>();
-        int age;
-
-        Scene(ExpansionRoster.Species species, int skill, Style style, String phase, int owner,
-              Vec3 pos, Vec3 dir, int life) {
-            this.species = species;
-            this.skill = skill;
-            this.style = style;
-            this.phase = phase;
-            this.owner = owner;
-            this.pos = pos;
-            this.dir = dir;
-            this.life = life;
-        }
-
-        ExpansionRoster.Move move() {
-            return species.move(skill);
-        }
-
-        void push(Vec3 at) {
-            trail.add(at);
-            while (trail.size() > MAX_TRAIL) {
-                trail.remove(0);
+    private static boolean dispatch(WorldRenderContext context, Scene s, ExpansionAnchors.Set anchors,
+                                    ResourceLocation tex, double time, double age, double progress,
+                                    float fade, Vec3 dir, double radius, Vec3 ownerPos) {
+        Fx fx = new Fx(context, tex);
+        // Abundance pass shared by every species: a moving packet stream + chunky pixel sparks +
+        // a soft halo. Per-skill classes still own the composition, this only guarantees the effect
+        // is bright, textured and visibly in motion at any distance.
+        Vec3 origin = anchors.handPrimary().add(0, -.05, 0);
+        boolean travelling = s.phase.equals("projectile") || s.phase.equals("lob");
+        Vec3 target = travelling ? s.position(time) : s.pos;
+        double flowW = Math.max(.34, radius * .18);
+        fx.flow(origin, target, flowW, time, fade * .55f);
+        fx.pixels(s.pos.add(0, .15, 0), Math.max(.55, radius * .55), 12, .16, time, fade * .8f);
+        fx.glow(travelling ? target : s.pos, Math.max(.45, radius * .28), fade * .5f);
+        FxView v = new FxView(fx, anchors, s.skill, s.phase, s.pos, dir, ownerPos,
+                time, progress, age, radius, fade);
+        switch (s.id) {
+            case "lucario" -> LucarioFx.render(v);
+            case "abomasnow" -> AbomasnowFx.render(v);
+            case "blaziken" -> BlazikenFx.render(v);
+            case "gengar" -> GengarFx.render(v);
+            case "tyranitar" -> TyranitarFx.render(v);
+            case "garchomp" -> GarchompFx.render(v);
+            case "scizor" -> ScizorFx.render(v);
+            case "gardevoir" -> GardevoirFx.render(v);
+            default -> {
+                return false;
             }
         }
+        return true;
+    }
+
+    /** Style-specific extra burst layered on top of the generic composition. */
+    private static void signature(WorldRenderContext c, String st, Vec3 at, Vec3 dir, double time,
+                                  ResourceLocation t, float a, double progress, double scale) {
+        switch (st) {
+            case "FLAME" -> {
+                flames(c, at.add(0, -.25, 0), 1.5 * scale + .6, time, t, a, 10);
+                for (int i = 0; i < 8; i++) {
+                    double ang = i * .785 + time * .08;
+                    Vec3 p = at.add(Math.cos(ang) * scale * .9, Math.sin(i * 1.3) * scale * .5, Math.sin(ang) * scale * .9);
+                    ExpansionSkillMeshes.sphere(c, p, new Vec3(.10, .14, .10), ang, t, a * .9F, true);
+                }
+            }
+            case "ICE", "MIST" -> {
+                shards(c, at, scale, time, t, a, 10, .42);
+                for (int i = 0; i < 5; i++) {
+                    double ang = -Math.PI / 2 + i * .5;
+                    Vec3 p = at.add(dir.scale(scale * .6)).add(Math.cos(ang) * .45, Math.sin(ang) * .45, 0);
+                    ExpansionSkillMeshes.crystal(c, p, .13, .55, ang, t, a * .9F);
+                }
+            }
+            case "ROCK", "FANG" -> {
+                for (int i = 0; i < 7; i++) {
+                    double ang = i * 2.39996 + time * .03;
+                    Vec3 p = at.add(Math.cos(ang) * scale * .8, .2 + (1 - progress) * 2.2 + (i % 3) * .35, Math.sin(ang) * scale * .8);
+                    ExpansionSkillMeshes.sphere(c, p, new Vec3(.30, .38, .28), ang, t, a, true);
+                }
+                groundRing(c, at.add(0, -.35, 0), scale * 1.3, .07, time, t, a * .9F, 2);
+            }
+            case "SAND" -> dust(c, at, scale * 1.5, time, t, a * .85F);
+            case "SHADOW", "SLUDGE", "DREAM" -> {
+                wisp(c, at, scale * 1.2, time, t, a, 12);
+                pulse(c, at, scale * .75, -time * .06, t, a * .7F);
+                if (st.equals("SLUDGE")) {
+                    for (int i = 0; i < 9; i++) {
+                        double ang = i * 2.39996;
+                        Vec3 p = at.add(Math.cos(ang) * scale, -.3 + (i % 4) * .22, Math.sin(ang) * scale);
+                        ExpansionSkillMeshes.sphere(c, p, new Vec3(.12, .16, .12), ang, t, a * .85F, true);
+                    }
+                }
+            }
+            case "PSYCHIC", "AURA" -> {
+                ringWave(c, at, scale * 1.4, .045, time, t, a, 3);
+                orbit(c, at, scale * 1.2, time, t, a, 10, .08);
+                for (int i = 0; i < 4; i++) {
+                    ExpansionSkillMeshes.ring(c, at.add(0, -.2 + i * .35, 0), scale * (.8 + i * .22), .035, t, a * .8F);
+                }
+            }
+            case "MOON" -> {
+                crescent(c, at, scale * 1.2, time, t, a);
+                orbit(c, at, scale * 1.1, time, t, a * .9F, 9, .07);
+                ringWave(c, at, scale * 1.5, .04, -time, t, a * .7F, 2);
+            }
+            case "BLADE" -> {
+                for (int i = 0; i < 8; i++) {
+                    double ang = i * .785 + time * .25;
+                    Vec3 p = at.add(Math.cos(ang) * scale, -.2 + Math.sin(time * .12 + i) * .3, Math.sin(ang) * scale);
+                    ExpansionSkillMeshes.crystal(c, p, .075, scale * 1.1, ang, t, a);
+                }
+                ringWave(c, at, scale * 1.1, .05, time, t, a * .8F, 2);
+            }
+            case "DRAGON", "QUAKE" -> {
+                for (int i = -2; i <= 2; i++) {
+                    Vec3 p = at.add(dir.scale(scale * .45)).add(new Vec3(-dir.z, 0, dir.x).normalize().scale(i * .30));
+                    ExpansionSkillMeshes.crystal(c, p, .12, scale * 1.3, i * .4 + time * .05, t, a);
+                }
+                groundRing(c, at.add(0, -.4, 0), scale * 1.6, .07, time, t, a * .9F, 2);
+            }
+            default -> orbit(c, at, scale, time, t, a, 8, .07);
+        }
+    }
+
+    // ---- building blocks -------------------------------------------------------------------
+
+    private static void pulse(WorldRenderContext c, Vec3 p, double size, double time,
+                              ResourceLocation t, float a) {
+        ExpansionSkillMeshes.sphere(c, p, new Vec3(size, size, size), time * .05, t, a, false);
+        ExpansionSkillMeshes.sphere(c, p, new Vec3(size * 1.55, size * 1.55, size * 1.55), -time * .04, t, a * .45F, false);
+        ExpansionSkillMeshes.sphere(c, p, new Vec3(size * .55, size * .55, size * .55), time * .13,
+                t, Math.min(1F, a * 1.6F), false);
+    }
+
+    private static void shards(WorldRenderContext c, Vec3 p, double spread, double time,
+                               ResourceLocation t, float a, int count, double size) {
+        for (int i = 0; i < count; i++) {
+            double ang = i * 2.39996 + time * .02;
+            Vec3 at = p.add(Math.cos(ang) * spread, Math.sin(i * 1.7) * spread * .7, Math.sin(ang) * spread);
+            ExpansionSkillMeshes.crystal(c, at, size * .30, size, ang + time * .05, t, a);
+        }
+    }
+
+    private static void ringWave(WorldRenderContext c, Vec3 p, double radius, double thickness,
+                                 double time, ResourceLocation t, float a, int layers) {
+        for (int i = 0; i < layers; i++) {
+            double r = radius * (.62 + .34 * i + .08 * Math.sin(time * .2 + i));
+            ExpansionSkillMeshes.ring(c, p.add(0, .07 + i * .30, 0), r, thickness, t, a * (1 - i * .16F));
+        }
+    }
+
+    private static void groundRing(WorldRenderContext c, Vec3 base, double radius, double thickness,
+                                   double time, ResourceLocation t, float a, int layers) {
+        for (int i = 0; i < layers; i++) {
+            ExpansionSkillMeshes.ring(c, base.add(0, .06 + i * .05, 0), radius * (1 - i * .18), thickness,
+                    t, a * (1 - i * .22F));
+        }
+    }
+
+    private static void orbit(WorldRenderContext c, Vec3 p, double radius, double time,
+                              ResourceLocation t, float a, int count, double size) {
+        for (int i = 0; i < count; i++) {
+            double ang = time * .16 + i * Math.PI * 2 / count;
+            double y = Math.sin(time * .09 + i * 1.3) * radius * .5;
+            Vec3 at = p.add(Math.cos(ang) * radius, y, Math.sin(ang) * radius);
+            ExpansionSkillMeshes.sphere(c, at, new Vec3(size, size, size), ang, t, a, false);
+            Vec3 prev = p.add(Math.cos(ang - .35) * radius,
+                    Math.sin(time * .09 + i * 1.3 - .3) * radius * .5, Math.sin(ang - .35) * radius);
+            ExpansionSkillMeshes.tube(c, prev, at, size * .45, t, a * .55F);
+        }
+    }
+
+    private static void trail(WorldRenderContext c, Vec3 p, Vec3 dir, double time,
+                              ResourceLocation t, float a, int count, double size) {
+        for (int i = 0; i < count; i++) {
+            double f = i / (double) count;
+            Vec3 at = p.subtract(dir.scale(f * 1.55));
+            double s = size * (1 - f * .75);
+            ExpansionSkillMeshes.sphere(c, at, new Vec3(s, s, s), time * .1 + i * .4, t, (float) (a * (1 - f * .6)), true);
+        }
+        ExpansionSkillMeshes.tube(c, p.subtract(dir.scale(1.5)), p, size * .3, t, a * .5F);
+    }
+
+    private static void launchSparks(WorldRenderContext c, Vec3 at, Vec3 dir, double time,
+                                     ResourceLocation t, float a, int count) {
+        for (int i = 0; i < count; i++) {
+            double ang = i * .785 + time * .06;
+            Vec3 side = new Vec3(-dir.z, 0, dir.x);
+            if (side.lengthSqr() < .01) side = new Vec3(1, 0, 0);
+            side = side.normalize();
+            Vec3 p = at.add(dir.scale(.25 + (i % 4) * .22)).add(side.scale(Math.cos(ang) * .28))
+                    .add(0, Math.sin(ang) * .28, 0);
+            ExpansionSkillMeshes.crystal(c, p, .045, .30 + (i % 3) * .1, ang, t, a);
+        }
+    }
+
+    private static void flames(WorldRenderContext c, Vec3 base, double height, double time,
+                               ResourceLocation t, float a, int count) {
+        for (int i = 0; i < count; i++) {
+            double ang = i * 2.39996 + time * .05;
+            double f = (i % 5) / 5.0;
+            Vec3 at = base.add(Math.cos(ang) * (.20 + f * .30), f * height, Math.sin(ang) * (.20 + f * .30));
+            ExpansionSkillMeshes.crystal(c, at, .10 + .05 * (i % 3), height * (.32 + .12 * (i % 4)),
+                    ang + time * .12, t, (float) (a * (1 - f * .4)));
+        }
+    }
+
+    private static void wisp(WorldRenderContext c, Vec3 p, double radius, double time,
+                             ResourceLocation t, float a, int count) {
+        for (int i = 0; i < count; i++) {
+            double ang = i * 2.39996 + time * .10;
+            double h = Math.sin(time * .07 + i) * radius * .8;
+            Vec3 at = p.add(Math.cos(ang) * radius, h, Math.sin(ang) * radius);
+            ExpansionSkillMeshes.sphere(c, at, new Vec3(.11, .11, .11), -time * .1, t, a * .9F, true);
+            ExpansionSkillMeshes.tube(c, at.add(-Math.cos(ang) * .5, -.18, -Math.sin(ang) * .5), at, .05, t, a * .55F);
+        }
+    }
+
+    private static void dust(WorldRenderContext c, Vec3 base, double radius, double time,
+                             ResourceLocation t, float a) {
+        for (int i = 0; i < 14; i++) {
+            double ang = i * 2.39996 + time * .05;
+            double r = radius * (.4 + (i % 5) / 8.0);
+            Vec3 p = base.add(Math.cos(ang) * r, .15 + (i % 3) * .18, Math.sin(ang) * r);
+            ExpansionSkillMeshes.sphere(c, p, new Vec3(.15, .09, .15), ang, t, a * .8F, true);
+        }
+    }
+
+    private static void punchLines(WorldRenderContext c, Vec3 p, Vec3 dir, double time,
+                                   ResourceLocation t, float a) {
+        Vec3 side = new Vec3(-dir.z, 0, dir.x);
+        if (side.lengthSqr() < .01) side = new Vec3(1, 0, 0);
+        side = side.normalize();
+        for (int i = -2; i <= 2; i++) {
+            Vec3 start = p.subtract(dir.scale(.6)).add(side.scale(i * .16));
+            ExpansionSkillMeshes.tube(c, start, p.add(side.scale(i * .10)), .035, t, a * .85F);
+        }
+        for (int i = 0; i < 4; i++) {
+            double ang = time * .2 + i * 1.57;
+            ExpansionSkillMeshes.crystal(c, p.add(Math.cos(ang) * .5, Math.sin(ang) * .5, 0), .05, .30, ang, t, a);
+        }
+    }
+
+    private static void crescent(WorldRenderContext c, Vec3 p, double radius, double time,
+                                 ResourceLocation t, float a) {
+        int segments = 12;
+        Vec3 previous = null;
+        for (int i = 0; i <= segments; i++) {
+            double ang = Math.PI * (i / (double) segments) - Math.PI * .5 + time * .15;
+            Vec3 at = p.add(Math.cos(ang) * radius, Math.sin(ang) * radius * .9, Math.sin(ang * 2) * .15);
+            if (previous != null) ExpansionSkillMeshes.tube(c, previous, at, .075, t, a);
+            previous = at;
+        }
+    }
+
+    private static ResourceLocation material(String species, int skill) {
+        return ResourceLocation.fromNamespaceAndPath("pkmoba", "textures/effect/expansion/" + species + "_" + "qwer".charAt(skill) + "_surface.png");
+    }
+    private static void animate(Entity entity, String species, int skill, String suffix) {
+        if (!(entity instanceof PokemonEntity pokemon)) return;
+        if (!pokemon.getPokemon().getSpecies().getResourceIdentifier().getPath().equals(species)) return;
+        playClip(pokemon, species, "qwer".charAt(skill) + suffix);
+    }
+
+    /** Single place that turns a clip name into a Cobblemon animation command. */
+    private static void playClip(PokemonEntity pokemon, String species, String clip) {
+        try {
+            ((PosableEntity) pokemon).playAnimation(
+                    "q.bedrock_primary('pkmoba_" + species + "', '" + clip + "', q.curve('one'))", List.of());
+        } catch (RuntimeException ignored) { }
+    }
+
+    /** Per-owner beat counter so alternating limbs (e.g. Double Kick) really alternate. */
+    private static final Map<Integer, Integer> BEAT = new java.util.HashMap<>();
+
+    /** Attack beat cues: play the real body attack even when the hit misses. */
+    private static void animateAttack(Entity entity, String species, int skill, Vec3 pos, Vec3 dir) {
+        if (!(entity instanceof PokemonEntity pokemon)) return;
+        if (!pokemon.getPokemon().getSpecies().getResourceIdentifier().getPath().equals(species)) return;
+        int beat = BEAT.merge(pokemon.getId(), 1, Integer::sum);
+        String clip = switch (species) {
+            // Blaze Kick -> spinning high kick; Double Kick -> strictly alternating legs;
+            // Flame Charge -> running lean; Flare Blitz -> full-body shoulder charge.
+            case "blaziken" -> switch (skill) {
+                case 0 -> "q_melee";
+                case 1 -> beat % 2 == 0 ? "w_kick_left" : "w_kick_right";
+                case 2 -> "e_melee";
+                default -> "r_melee";
+            };
+            // Bullet Punch -> the rapid alternating-arm punch clip, replayed on every hit beat so
+            // it reads as a machine-gun combo instead of one jab.
+            case "scizor" -> switch (skill) {
+                case 0 -> "q_melee";
+                case 1 -> "w_melee";
+                case 2 -> "e_melee";
+                default -> "r_cast";
+            };
+            case "garchomp" -> switch (skill) {
+                case 0 -> "q_melee";
+                case 1 -> "w_melee";
+                case 2 -> "e_melee";
+                default -> "r_melee";
+            };
+            default -> "qwer".charAt(skill) + "_melee";
+        };
+        playClip(pokemon, species, clip);
+    }
+
+    private static void sound(Vec3 point, boolean impact) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || mc.player == null || point.distanceToSqr(mc.player.position()) > 9216) return;
+        mc.level.playLocalSound(point.x, point.y, point.z, impact ? SoundEvents.PLAYER_ATTACK_STRONG : SoundEvents.SNOWBALL_THROW,
+                SoundSource.PLAYERS, impact ? .35F : .28F, 1.1F, false);
+    }
+    private static final class Scene {
+        final String id, phase;
+        final int skill, owner, life;
+        Vec3 pos, from;
+        final Vec3 dir;
+        long updateTime;
+        int age;
+        Scene(String id, int skill, String phase, int owner, Vec3 pos, Vec3 dir, int life, long now) {
+            this.id = id; this.skill = skill; this.phase = phase; this.owner = owner;
+            this.pos = pos; this.from = pos; this.dir = dir; this.life = life; this.updateTime = now;
+        }
+        Vec3 position(double time) { return from.lerp(pos, Math.clamp(time - updateTime, 0, 1)); }
     }
 }

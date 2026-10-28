@@ -376,10 +376,8 @@ public final class BlastoiseCombat {
         resetAll();
     }
 
-    public static boolean blocksMovement(PokemonEntity entity) {
-        State state = entity == null ? null : STATES.get(entity.getUUID());
-        return state != null && state.blocksMovement();
-    }
+    // CastLock snapshots geometry; ordinary movement remains available during channels.
+    public static boolean blocksMovement(PokemonEntity entity) { return false; }
 
     public static boolean blocksBasicAttack(PokemonEntity entity) {
         State state = entity == null ? null : STATES.get(entity.getUUID());
@@ -1185,7 +1183,7 @@ public final class BlastoiseCombat {
                     if (!clear(level, caster, center.add(0, .8, 0), target.getBoundingBox().getCenter())) continue;
                     boolean hit = CombatDamage.apply(level, caster, target, STORM_BURST_DAMAGE,
                             com.pkmoba.network.EffectPayload.Element.WATER,
-                            com.pkmoba.network.EffectPayload.Power.ULTIMATE);
+                            com.pkmoba.network.EffectPayload.Power.HEAVY);
                     if (!hit) continue;
                     Vec3 flat = new Vec3(delta.x, 0.0, delta.z);
                     if (flat.lengthSqr() > 1.0E-6) {
@@ -1355,11 +1353,10 @@ public final class BlastoiseCombat {
                     if (contact.distanceToSqr(at) > SPOUT_DROP_RADIUS * SPOUT_DROP_RADIUS) continue;
                     // 同一目标同一段（远/中/近）最多命中一次；三段伤害逐段提高。
                     if (hits.getOrDefault(target.getUUID(), -1) >= band) continue;
-                    // m04707：水箭龟 R「滔天巨浪」是唯一允许屏幕反馈的技能，
-                    // 显式打 ULTIMATE 档（震屏/顿帧只认这一档），不受单段伤害量影响。
+                    // 普通 R：三段总伤害 21，不触发终极技震屏或顿帧。
                     if (!CombatDamage.apply(level, caster, target, SPOUT_PHASE_DAMAGE[band],
                             com.pkmoba.network.EffectPayload.Element.WATER,
-                            com.pkmoba.network.EffectPayload.Power.ULTIMATE)) continue;
+                            com.pkmoba.network.EffectPayload.Power.HEAVY)) continue;
                     hits.put(target.getUUID(), band);
                     // 固定等级 II：同等级 addEffect 只会刷新时长，不会叠成 III。
                     target.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN,

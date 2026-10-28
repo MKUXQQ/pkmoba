@@ -105,10 +105,12 @@ public final class FacingService {
         // 0.48.5：预瞄 / 施法锁定期间，弱来源（移动、旧的攻击系统）不得抢写朝向。
         // 顺序说明：MoveOrderService 的 END tick 比 CharizardCombat 早，MOVE 每 tick 先写，
         // 单靠下面的同 tick 仲裁只能挡住"AIM 之后来的"来源，挡不住"先写的大角度"。
-        if (priority == Priority.MOVE || priority == Priority.ATTACK) {
-            if (CastLock.active(entity) || aimOwned(entity)) {
-                return;
-            }
+        if (priority == Priority.MOVE) {
+            if (CastLock.active(entity)) return;
+            // A current move order supersedes the short AIM ownership grace period.
+            AIM_OWNED.remove(id);
+        } else if (priority == Priority.ATTACK && (CastLock.active(entity) || aimOwned(entity))) {
+            return;
         }
         // 施法锁定是绝对权威：期间连鼠标预瞄都不许改方向（收招结束后才放开）。
         if (priority == Priority.AIM && CastLock.active(entity)) {

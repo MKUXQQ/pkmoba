@@ -98,11 +98,9 @@ public final class AimTracker {
         if (aim == null) {
             return;
         }
-        // 0.48.5：直线被挡、只能走原版寻路（A*）时，朝向让给寻路 —— 原版是"朝哪转就往哪走"，
-        // 这时候硬锁鼠标会让它斜着蹭墙。直线行走（绝大多数情况）不受影响，照样边走边跟鼠标。
-        if (com.pkmoba.move.MoveOrderService.navigationSteering(entity)) {
-            return;
-        }
+        // Movement orders and native path navigation own facing until arrival; idle aim resumes afterward.
+        if (com.pkmoba.move.MoveOrderService.navigationSteering(entity)
+                || com.pkmoba.move.MoveOrderService.hasOrder(entity)) return;
         double dx = aim.x - entity.getX();
         double dz = aim.z - entity.getZ();
         if (dx * dx + dz * dz < 1.0E-6) {

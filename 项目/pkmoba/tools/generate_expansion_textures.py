@@ -1,7 +1,8 @@
 """Procedural original textures for the eight expansion species.
 
 Two products:
-  * `assets/.../textures/effect/<species>_{orb,slash,ring,field}.png`  (128x128 effect sheets)
+  * `assets/.../textures/effect/<species>_[q|w|e|r]_{orb,slash,ring,field}.png`
+    (128x128 per-move material sheets + species compatibility sheets)
   * `assets/.../textures/gui/skills/<species>_<q|w|e|r>.png`          (32x32 HUD icons)
 
 The HUD blits icons as a native 32x32 region (SkillPresentation.ICON_SIZE == 32), so icons
@@ -24,7 +25,8 @@ import math
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter, ImageChops
+import random
 
 ROOT = Path(__file__).resolve().parents[1]
 TEX = ROOT / "src/main/resources/assets/pkmoba/textures"
@@ -379,13 +381,15 @@ def g_rock_slide(d, t):
 
 def g_crunch(d, t):
     dark = shade(t, 0.5)
-    for flip in (-1, 1):  # two jaws
-        cx = C + flip * 2
-        pts = [(cx - 34, C - 4), (cx - 20, C - 26), (cx + 20, C - 26), (cx + 34, C - 4)]
-        poly(d, (*dark, 255), [(cx - 34, C - 4), (cx - 22, C - 24), (cx + 22, C - 24), (cx + 34, C - 4)])
+    for flip in (-1, 1):  # upper and lower jaws, teeth face inward
+        poly(d, (*dark, 255), [(C-39,C+flip*9),(C-24,C+flip*34),
+                              (C+24,C+flip*34),(C+39,C+flip*9)])
+        polyline(d, (*light(t,.35),255), [(C-39,C+flip*9),(C-24,C+flip*34),
+                                           (C+24,C+flip*34),(C+39,C+flip*9)],3)
         for k in range(4):
-            x = cx - 24 + k * 16
-            poly(d, (250, 246, 235, 255), [(x, C - 8), (x + 8, C - 8), (x + 4, C + 4)])
+            x = C - 28 + k * 16
+            poly(d, (250, 246, 235, 255), [(x,C+flip*18),(x+10,C+flip*18),
+                                                          (x+5,C+flip*3)])
     star(d, (*light(t, 0.4), 200), C, C, 14, 6, points=6)
 
 
@@ -528,39 +532,124 @@ MOVE_GLYPH = {move[1]: move[0] for moves in MOVES.values() for move in moves}
 
 
 # --------------------------------------------------------------------------- outputs
+# Move typing, not species typing: aura is blue, sludge poison, moonblast fairy,
+# ground attacks ochre, and Scizor's cutting moves green against silver steel.
+MOVE_TYPES = {
+    'lucario': ('water', 'fighting', 'normal', 'fighting'),
+    'abomasnow': ('ice', 'ice', 'ice', 'ice'),
+    'blaziken': ('fire', 'fighting', 'fire', 'fire'),
+    'gengar': ('ghost', 'poison', 'psychic', 'psychic'),
+    'tyranitar': ('rock', 'dark', 'ground', 'rock'),
+    'garchomp': ('dragon', 'ground', 'ground', 'dragon'),
+    'scizor': ('steel', 'bug', 'bug', 'steel'),
+    'gardevoir': ('psychic', 'fairy', 'psychic', 'psychic'),
+}
+
+
 def render_icon(species: str, index: int) -> Image.Image:
-    type_key = SPECIES[species][0]
-    img, d = frame_panel(type_key)
-    glyph_key = MOVES[species][index][1]
-    GLYPHS["g_" + glyph_key](d, TYPE[type_key])
+    type_key = MOVE_TYPES[species][index]
+    tint = TYPE[type_key]
+    img, _ = frame_panel(type_key)
+    # Original semantic silhouettes become lit relief illustrations rather than flat signs.
+    glyph = Image.new('RGBA', (N, N))
+    GLYPHS['g_' + MOVES[species][index][1]](ImageDraw.Draw(glyph), tint)
+    mask = glyph.getchannel('A')
+    glow = Image.new('RGBA', (N, N), (*tint, 0))
+    glow.putalpha(mask.filter(ImageFilter.GaussianBlur(9)).point(lambda a: int(a * .48)))
+    img = Image.alpha_composite(img, glow)
+    # Finely grained, directional lighting preserves the icon's dark negative space.
+    pixels = glyph.load()
+    rng = random.Random(species + str(index))
+    for y in range(N):
+        for x in range(N):
+            r, g, b, a = pixels[x, y]
+            if a:
+                v = .72 + .38 * (1 - y / N) + .10 * math.sin((x + y) * .17) + rng.uniform(-.035, .035)
+                pixels[x, y] = (min(255, int(r*v)), min(255, int(g*v)), min(255, int(b*v)), a)
+    shadow = Image.new('RGBA', (N, N), (0, 0, 0, 0))
+    shadow.putalpha(ImageChops.offset(mask, 3, 5).point(lambda a: int(a * .70)))
+    img = Image.alpha_composite(img, shadow)
+    img = Image.alpha_composite(img, glyph)
+    # A top-left bevel only on the silhouette edges, never a universal slot symbol.
+    edge = ImageChops.subtract(mask, ImageChops.offset(mask, 2, 3))
+    bevel = Image.new('RGBA', (N, N), (*light(tint, .8), 0))
+    bevel.putalpha(edge.point(lambda a: int(a * .65)))
+    img = Image.alpha_composite(img, bevel)
     return img.resize((ICON, ICON), Image.Resampling.LANCZOS)
 
 
 def render_effect_sheet(species: str, kind: str) -> Image.Image:
-    """128x128 procedural effect sheet: orb / slash / ring / field."""
-    color = TYPE[SPECIES[species][0]]
-    img = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+    """Material-painted transparent sheets, distinct silhouettes for all eight species.
+
+    Also accepts <q|w|e|r>_<kind>: per-move colour avoids pink moonlight/sludge
+    inheriting the wrong species palette. All noise is deterministic and edge-faded.
+    """
+    slot = None
+    if '_' in kind:
+        prefix, kind = kind.split('_', 1)
+        slot = 'qwer'.index(prefix)
+    base_type = MOVE_TYPES[species][slot] if slot is not None else SPECIES[species][0]
+    if species == 'lucario' and slot is None:
+        base_type = 'water'
+    color = TYPE[base_type]
+    img = Image.new('RGBA', (128, 128))
+    rng = random.Random(species + str(slot) + kind)
+    pix = img.load()
+    for y in range(128):
+        for x in range(128):
+            dx, dy = (x-63.5)/60, (y-63.5)/60
+            r, a = math.hypot(dx, dy), math.atan2(dy, dx)
+            grain = rng.uniform(-1, 1)
+            flow = math.sin(a*7 + r*21) * .5 + math.sin(a*13-r*33)*.25
+            if kind == 'orb':
+                density = max(0, 1-r)**.75
+                if species == 'abomasnow':
+                    density *= .25 + .75 * max(0, math.cos(a*6))**5
+                elif species in ('tyranitar', 'garchomp'):
+                    density = max(0, 1-r/(.77+.10*math.sin(a*5)))**.25
+                elif species == 'scizor':
+                    density *= .45 + .55 * max(0, math.cos(a*4))
+                else:
+                    density *= .68 + .22*flow
+            elif kind == 'slash':
+                bend = .27 * math.sin(dx*2.8)
+                density = max(0, 1-abs(dy-bend)/(.09+.16*(1-abs(dx)))) if abs(dx)<.95 else 0
+                density *= max(0, 1-abs(dx))**.35
+            elif kind == 'ring':
+                edge = .78 + .025*math.sin(a*12)
+                density = math.exp(-((r-edge)/.045)**2) * (.68+.32*math.sin(a*9)**2)
+                density += .18*math.exp(-((r-.63)/.024)**2)
+            else:
+                density = max(0, 1-r)**.8 * (.25+.18*flow)
+                density += .42*math.exp(-((r-.76-.045*math.sin(a*6))/.04)**2)
+            fade = min(1, max(0, (1-r)*12))
+            alpha = int(255 * min(1, max(0, density*(1+grain*.12))) * fade)
+            hot = max(0, min(.88, density*.6 + flow*.12 + grain*.06))
+            rgb = tuple(int(c + (255-c)*hot) for c in color)
+            pix[x,y] = (*rgb, alpha)
     d = ImageDraw.Draw(img)
-    if kind == "orb":
-        for r in range(58, 0, -1):
-            alpha = int(220 * (1 - r / 64) ** 0.6)
-            d.ellipse((64 - r, 64 - r, 64 + r, 64 + r), fill=(*color, alpha))
-        d.ellipse((26, 20, 102, 102), outline=(255, 255, 255, 200), width=3)
-    elif kind == "slash":
-        d.arc((8, 6, 122, 122), 190, 345, fill=(*color, 230), width=16)
-        d.arc((15, 12, 115, 115), 195, 340, fill=(255, 250, 245, 250), width=4)
-        d.arc((3, 2, 117, 118), 20, 170, fill=(*color, 230), width=8)
-    else:
-        d.ellipse((6, 6, 122, 122), outline=(*color, 230), width=3)
-        d.ellipse((14, 14, 114, 114), outline=(*color, 100), width=2)
-        count = 6 if species == "abomasnow" else 8 if species == "gardevoir" else 12
-        for i in range(count):
-            a = i * math.tau / count
-            x, y = 64 + 49 * math.cos(a), 64 + 49 * math.sin(a)
-            d.polygon([(x, y - 6), (x + 4, y), (x, y + 6), (x - 4, y)], fill=(*color, 210))
-        if kind == "field":
-            for r in range(24, 54, 10):
-                d.ellipse((64 - r, 64 - r, 64 + r, 64 + r), outline=(*color, 35), width=2)
+    if kind in ('orb', 'field'):
+        if species == 'abomasnow':
+            snowflake(d, (*light(color,.65),210), 64,64,39 if kind=='orb' else 48,2)
+        elif species in ('tyranitar', 'garchomp'):
+            for k in range(5):
+                a = k*math.tau/5
+                cx,cy = 64+25*math.cos(a),64+25*math.sin(a)
+                poly(d, (*shade(color,.7),180), [(cx-7,cy+8),(cx-2,cy-12),(cx+8,cy+4)])
+                polyline(d, (*light(color,.5),210), [(cx-2,cy-12),(cx+1,cy+1),(cx+8,cy+4)],2)
+        elif species == 'gengar':
+            swirl(d, (*light(color,.5),180),64,64,35,1.3,3)
+        elif species == 'gardevoir':
+            star(d, (*light(color,.8),220),64,64,30,7,points=4)
+        elif species == 'scizor':
+            for k in range(3):
+                claw_slash(d, (*light(color,.8),210),60,64,30+k*5,200,2)
+        elif species == 'blaziken':
+            for k in range(5):
+                poly(d, (*light(color,.45),180),[(30+k*13,91),(38+k*10,28+k%2*15),(46+k*10,88)])
+        else:
+            for k in range(3):
+                arc(d, (*light(color,.7),210),64,64,24+k*9,k*90,k*90+180,2)
     return img
 
 
@@ -628,15 +717,65 @@ def write_all(with_effects: bool = False) -> int:
             render_icon(species, index).save(ICON_DIR / f"{species}_{'qwer'[index]}.png")
             written += 1
         if with_effects:
-            for kind in ("orb", "slash", "ring", "field"):
-                render_effect_sheet(species, kind).save(EFFECT_DIR / f"{species}_{kind}.png")
+            EFFECT_DIR.mkdir(parents=True, exist_ok=True)
+            for kind in ('orb', 'slash', 'ring', 'field'):
+                render_effect_sheet(species, kind).save(EFFECT_DIR / f'{species}_{kind}.png')
                 written += 1
-        print(f"{species}: 4 icons" + (" + 4 effect sheets" if with_effects else ""))
+                for slot in 'qwer':
+                    render_effect_sheet(species, slot + '_' + kind).save(EFFECT_DIR / f'{species}_{slot}_{kind}.png')
+                    written += 1
+        print(f"{species}: 4 icons" + (" + 20 effect sheets (16 move + 4 compatibility)" if with_effects else ""))
     print(f"wrote {written} textures under {TEX}")
     return 0
 
 
+def write_mesh_materials(check=False):
+    """Tileable opaque UV skins, not alpha silhouettes: 32 hand-painted material maps."""
+    directory = EFFECT_DIR / 'expansion'
+    if not check:
+        directory.mkdir(parents=True, exist_ok=True)
+    for species in MOVES:
+        for slot in range(4):
+            color = TYPE[MOVE_TYPES[species][slot]]
+            rng = random.Random(f'mesh:{species}:{slot}')
+            image = Image.new('RGBA', (64, 64))
+            pixels = image.load()
+            for y in range(64):
+                for x in range(64):
+                    u, v = x / 64, y / 64
+                    grain = rng.uniform(-.07, .07)
+                    if species == 'abomasnow':
+                        # Pale-blue faceted ice with darker frozen fracture lines.
+                        f = .65 + .22 * math.sin(u * math.tau * 6) ** 2 + grain
+                        if (x + y * 2) % 29 < 2: f = .38
+                    elif species in ('tyranitar', 'garchomp') and not (species == 'garchomp' and slot in (0, 3)):
+                        f = .52 + .25 * math.sin(u * math.tau * 3 + math.sin(v * math.tau * 4)) ** 2 + grain
+                        if (x * 3 + y * 2) % 37 < 2: f *= .56
+                    elif species == 'scizor':
+                        f = .50 + .45 * abs(math.sin(u * math.tau * 3)) + grain * .35
+                        if y % 17 == 0: f = 1.12
+                    elif species == 'gengar' and slot == 1:
+                        # Wet purple sludge: dense oily marbling, irregular raised bubble highlights.
+                        f = .42 + .38 * math.sin(u * math.tau * 3 + math.sin(v * math.tau * 2)) ** 2 + grain
+                        if math.sin(u * math.tau * 5) * math.cos(v * math.tau * 4) > .9: f = 1.1
+                    else:
+                        # Energy skins have continuous luminous currents over a dark body.
+                        flow = math.sin(u * math.tau * 4 + math.sin(v * math.tau * 3) * 1.3)
+                        f = .42 + .45 * abs(flow) ** 6 + grain
+                        if abs(flow) < .055: f = 1.15
+                    rgb = tuple(max(0, min(255, int(c * f + max(0, f - .8) * 90))) for c in color)
+                    pixels[x, y] = (*rgb, 255)
+            assert image.getextrema()[3] == (255, 255)
+            assert len(set(image.getdata())) > 30
+            if not check:
+                image.save(directory / f'{species}_{"qwer"[slot]}_surface.png')
+    print('32 opaque 64x64 UV mesh materials validated' + (' (no writes)' if check else ' and written'))
+    return 0
+
+
 def main(argv: list[str]) -> int:
+    if '--mesh-materials' in argv:
+        return write_mesh_materials(check='--check' in argv)
     if "--check" in argv:
         return verify()
     code = verify()

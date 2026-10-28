@@ -10,11 +10,36 @@ Timings mirror ExpansionRoster. Run from the repo with:
     python 项目/pkmoba/tools/generate_expansion_animations.py
 """
 import json
+import zipfile
 from pathlib import Path
 
 project = Path(__file__).resolve().parents[1]
 models = project.parent / '宝可梦工程文件/cobblemon-1.8.2/common/src/main/resources/assets/cobblemon/bedrock/pokemon/models'
+cobblemon_jar = project / '.local-maven/com/cobblemon/fabric/1.8.2+1.21.1/fabric-1.8.2+1.21.1.jar'
 out = project / 'src/main/resources/assets/pkmoba/bedrock/pokemon/animations'
+
+
+def species_bones(species):
+    """Every bone name in the real geometry, read from the sources folder or the Cobblemon jar."""
+    found = set()
+    for model in models.glob(f'*/{species}*.geo.json'):
+        data = json.loads(model.read_text(encoding='utf-8'))
+        for geometry in data['minecraft:geometry']:
+            found |= {bone['name'] for bone in geometry['bones']}
+    if found:
+        return found
+    with zipfile.ZipFile(cobblemon_jar) as jar:
+        for entry in jar.namelist():
+            if not entry.endswith('.geo.json'):
+                continue
+            parts = entry.split('/')
+            if len(parts) < 2 or species not in parts[-2].lower():
+                continue
+            data = json.loads(jar.read(entry))
+            for geometry in data['minecraft:geometry']:
+                found |= {bone['name'] for bone in geometry['bones']}
+    return found
+
 # Each tuple: torso, left/right arm, left/right leg. Names are from the actual geometry audit.
 bones = {
     'lucario': ('torso','arm_left','arm_right','leg_left','leg_right'),
@@ -37,6 +62,10 @@ poses = {
  'scizor': [(25,(-20,0,-35),(-100,0,15),-30,25),(10,(-85,-45,-15),(-85,45,15),0,0),(40,(-55,0,-30),(-55,0,30),-45,40),(-10,(-40,0,-80),(-40,0,80),-15,15)],
  'gardevoir': [(-8,(-65,0,-25),(-65,0,25),0,0),(-15,(-105,0,-40),(-105,0,40),0,0),(0,(-25,0,-70),(-25,0,70),0,0),(-20,(-120,0,-55),(-120,0,55),0,0)],
 }
+
+# Contact-cue skills: attack body pose is played only on server phase=melee.
+MELEE = {'lucario': [1, 2, 3], 'blaziken': [0, 1, 2, 3], 'tyranitar': [1],
+         'garchomp': [0, 1, 2, 3], 'scizor': [0, 1, 2], 'gengar': [3]}
 
 # Timings mirror ExpansionRoster (windup, duration in ticks).
 TIMINGS = {
@@ -174,11 +203,189 @@ def sustain_clip(species, index, names):
     return {'loop': True, 'animation_length': 0.9, 'bones': shaped(None, names, factors, positions)}
 
 
+def keys(*pairs):
+    return {str(t): v for t, v in sorted(pairs, key=lambda pair: pair[0])}
+
+
+def rot(*pairs):
+    return {'rotation': keys(*pairs)}
+
+
+def rotpos(rotation_pairs, position_pairs):
+    return {'rotation': keys(*rotation_pairs), 'position': keys(*position_pairs)}
+
+
+def anim(length, bone_map, loop=False):
+    data = {'animation_length': length, 'bones': bone_map}
+    if loop:
+        data['loop'] = True
+    return data
+
+
+# Hand-authored clips for the two species whose shared template looked repetitive in game.
+# Bone names are taken from the real Cobblemon geometry and asserted below.
+# A move that kicks must move upper leg / lower leg / foot separately, and a combo move
+# must have several distinct strike frames, which is exactly what the template could not do.
+CUSTOM = {
+    'blaziken': {
+        # Double Kick: left leg snap kick. Waist and torso counter-twist, arms counterbalance.
+        'w_kick_left': anim(0.36, {
+            'waist': rot((0, [0, 0, 0]), (0.10, [-4, 14, -3]), (0.20, [-6, 20, -5]), (0.36, [0, 0, 0])),
+            'torso': rot((0, [0, 0, 0]), (0.10, [-6, -10, 3]), (0.20, [-10, -16, 5]), (0.36, [0, 0, 0])),
+            'leg_left': rot((0, [0, 0, 0]), (0.10, [-78, 0, -6]), (0.18, [-110, 0, -10]),
+                            (0.26, [-46, 0, -5]), (0.36, [0, 0, 0])),
+            'leg_left2': rot((0, [0, 0, 0]), (0.10, [-20, 0, 0]), (0.18, [-42, 0, 0]),
+                             (0.26, [-8, 0, 0]), (0.36, [0, 0, 0])),
+            'foot_left': rot((0, [0, 0, 0]), (0.14, [18, 0, 0]), (0.20, [36, 0, 0]), (0.30, [0, 0, 0])),
+            'leg_right': rot((0, [0, 0, 0]), (0.18, [14, 0, 0]), (0.30, [4, 0, 0]), (0.36, [0, 0, 0])),
+            'arm_left': rot((0, [0, 0, 0]), (0.10, [-25, 0, 35]), (0.20, [-45, 0, 62]), (0.36, [0, 0, 0])),
+            'arm_right': rot((0, [0, 0, 0]), (0.10, [-15, 0, -30]), (0.20, [-30, 0, -52]), (0.36, [0, 0, 0])),
+            'tail1': rot((0, [0, 0, 0]), (0.10, [0, -12, 0]), (0.20, [0, -22, 0]), (0.36, [0, 0, 0])),
+        }),
+        # Double Kick: mirrored right leg snap kick, so two beats read as two different legs.
+        'w_kick_right': anim(0.36, {
+            'waist': rot((0, [0, 0, 0]), (0.10, [-4, -14, 3]), (0.20, [-6, -20, 5]), (0.36, [0, 0, 0])),
+            'torso': rot((0, [0, 0, 0]), (0.10, [-6, 10, -3]), (0.20, [-10, 16, -5]), (0.36, [0, 0, 0])),
+            'leg_right': rot((0, [0, 0, 0]), (0.10, [-78, 0, 6]), (0.18, [-110, 0, 10]),
+                             (0.26, [-46, 0, 5]), (0.36, [0, 0, 0])),
+            'leg_right2': rot((0, [0, 0, 0]), (0.10, [-20, 0, 0]), (0.18, [-42, 0, 0]),
+                              (0.26, [-8, 0, 0]), (0.36, [0, 0, 0])),
+            'foot_right': rot((0, [0, 0, 0]), (0.14, [18, 0, 0]), (0.20, [36, 0, 0]), (0.30, [0, 0, 0])),
+            'leg_left': rot((0, [0, 0, 0]), (0.18, [14, 0, 0]), (0.30, [4, 0, 0]), (0.36, [0, 0, 0])),
+            'arm_right': rot((0, [0, 0, 0]), (0.10, [-25, 0, -35]), (0.20, [-45, 0, -62]), (0.36, [0, 0, 0])),
+            'arm_left': rot((0, [0, 0, 0]), (0.10, [-15, 0, 30]), (0.20, [-30, 0, 52]), (0.36, [0, 0, 0])),
+            'tail1': rot((0, [0, 0, 0]), (0.10, [0, 12, 0]), (0.20, [0, 22, 0]), (0.36, [0, 0, 0])),
+        }),
+        # Blaze Kick: one high right roundhouse with a full body wind-up and follow-through.
+        'q_melee': anim(0.42, {
+            'waist': rot((0, [0, 0, 0]), (0.10, [-6, 14, 4]), (0.18, [-10, -26, 10]),
+                         (0.28, [-6, -14, 6]), (0.42, [0, 0, 0])),
+            'torso': rot((0, [0, 0, 0]), (0.10, [-8, -10, 0]), (0.18, [-16, 18, -10]),
+                         (0.28, [-8, 8, -4]), (0.42, [0, 0, 0])),
+            'leg_right': rot((0, [0, 0, 0]), (0.08, [-52, 0, 8]), (0.16, [-122, 0, 14]),
+                             (0.24, [-96, 0, 8]), (0.42, [0, 0, 0])),
+            'leg_right2': rot((0, [0, 0, 0]), (0.16, [-48, 0, 0]), (0.26, [-20, 0, 0]), (0.42, [0, 0, 0])),
+            'foot_right': rot((0, [0, 0, 0]), (0.16, [42, 0, 0]), (0.30, [0, 0, 0])),
+            'leg_left': rot((0, [0, 0, 0]), (0.18, [18, 0, 0]), (0.42, [0, 0, 0])),
+            'arm_left': rot((0, [0, 0, 0]), (0.10, [-20, 0, 25]), (0.20, [-55, 0, 70]), (0.42, [0, 0, 0])),
+            'arm_right': rot((0, [0, 0, 0]), (0.10, [-30, 0, -45]), (0.20, [-15, 0, -20]), (0.42, [0, 0, 0])),
+        }),
+        # Blaze Kick / Blaze Charge contact: explosive forward shoulder-and-knee drive.
+        'e_melee': anim(0.34, {
+            'waist': rot((0, [0, 0, 0]), (0.08, [16, 0, 0]), (0.14, [24, -6, 0]), (0.34, [0, 0, 0])),
+            'torso': rot((0, [0, 0, 0]), (0.08, [18, 0, 0]), (0.14, [26, 4, 0]), (0.34, [0, 0, 0])),
+            'leg_left': rot((0, [0, 0, 0]), (0.10, [-70, 0, 0]), (0.18, [-30, 0, 0]), (0.34, [0, 0, 0])),
+            'leg_left2': rot((0, [0, 0, 0]), (0.14, [-40, 0, 0]), (0.34, [0, 0, 0])),
+            'leg_right': rot((0, [0, 0, 0]), (0.08, [28, 0, 0]), (0.24, [-20, 0, 0]), (0.34, [0, 0, 0])),
+            'arm_left': rot((0, [0, 0, 0]), (0.08, [35, 0, 15]), (0.34, [0, 0, 0])),
+            'arm_right': rot((0, [0, 0, 0]), (0.08, [35, 0, -15]), (0.34, [0, 0, 0])),
+        }),
+        # Flare Blitz: whole body becomes the projectile.
+        'r_melee': anim(0.46, {
+            'waist': rot((0, [0, 0, 0]), (0.10, [26, 0, 0]), (0.22, [34, 0, 0]), (0.46, [0, 0, 0])),
+            'torso': rot((0, [0, 0, 0]), (0.10, [30, 0, 0]), (0.22, [38, 0, 0]), (0.46, [0, 0, 0])),
+            'leg_left': rot((0, [0, 0, 0]), (0.10, [-85, 0, 0]), (0.22, [25, 0, 0]), (0.46, [0, 0, 0])),
+            'leg_left2': rot((0, [0, 0, 0]), (0.14, [-45, 0, 0]), (0.46, [0, 0, 0])),
+            'leg_right': rot((0, [0, 0, 0]), (0.10, [30, 0, 0]), (0.22, [-80, 0, 0]), (0.46, [0, 0, 0])),
+            'leg_right2': rot((0, [0, 0, 0]), (0.22, [-40, 0, 0]), (0.46, [0, 0, 0])),
+            'arm_left': rot((0, [0, 0, 0]), (0.10, [45, 0, 20]), (0.22, [-30, 0, 30]), (0.46, [0, 0, 0])),
+            'arm_right': rot((0, [0, 0, 0]), (0.10, [45, 0, -20]), (0.22, [-30, 0, -30]), (0.46, [0, 0, 0])),
+            'tail1': rot((0, [0, 0, 0]), (0.10, [-20, 0, 0]), (0.22, [10, 0, 0]), (0.46, [0, 0, 0])),
+        }),
+    },
+    'scizor': {
+        # Bullet Punch: four fast alternating straight punches, not one slow arm wave.
+        'q_melee': anim(0.38, {
+            'right_upper_arm': rot((0, [-15, 0, 0]), (0.05, [-100, 0, 0]), (0.10, [-25, 0, 0]),
+                                   (0.15, [-100, 0, 0]), (0.20, [-25, 0, 0]), (0.25, [-105, 0, 0]),
+                                   (0.38, [-15, 0, 0])),
+            'right_lower_arm': rot((0, [0, 0, 0]), (0.05, [-15, 0, 0]), (0.10, [10, 0, 0]),
+                                   (0.15, [-15, 0, 0]), (0.20, [10, 0, 0]), (0.25, [-20, 0, 0]),
+                                   (0.38, [0, 0, 0])),
+            'right_claw': rot((0, [0, 0, 0]), (0.05, [-25, 0, 0]), (0.10, [5, 0, 0]),
+                              (0.25, [-30, 0, 0]), (0.38, [0, 0, 0])),
+            'left_upper_arm': rot((0, [-10, 0, 0]), (0.10, [-70, 0, 0]), (0.16, [-15, 0, 0]),
+                                  (0.22, [-80, 0, 0]), (0.38, [-10, 0, 0])),
+            'left_lower_arm': rot((0, [0, 0, 0]), (0.10, [-20, 0, 0]), (0.16, [5, 0, 0]),
+                                  (0.22, [-22, 0, 0]), (0.38, [0, 0, 0])),
+            'thorax': rot((0, [0, 0, 0]), (0.05, [-4, 7, 0]), (0.12, [0, -5, 0]),
+                          (0.20, [-4, 8, 0]), (0.30, [0, -3, 0]), (0.38, [0, 0, 0])),
+            'left_upper_leg': rot((0, [0, 0, 0]), (0.10, [-16, 0, 0]), (0.20, [0, 0, 0]), (0.38, [0, 0, 0])),
+            'right_upper_leg': rot((0, [0, 0, 0]), (0.15, [-14, 0, 0]), (0.25, [0, 0, 0]), (0.38, [0, 0, 0])),
+            'head': rot((0, [0, 0, 0]), (0.05, [0, -6, 0]), (0.20, [0, 6, 0]), (0.38, [0, 0, 0])),
+        }),
+        # Fury Cutter: three visibly different diagonal slashes.
+        'w_melee': anim(0.55, {
+            'right_upper_arm': rot((0, [-20, 0, 0]), (0.08, [-120, 45, 0]), (0.18, [-30, -35, 0]),
+                                   (0.26, [-125, 45, 0]), (0.36, [-30, -35, 0]), (0.44, [-130, 50, 0]),
+                                   (0.55, [-20, 0, 0])),
+            'right_lower_arm': rot((0, [0, 0, 0]), (0.08, [-20, 0, -25]), (0.18, [10, 0, 25]),
+                                   (0.26, [-20, 0, -25]), (0.36, [10, 0, 25]), (0.44, [-25, 0, -30]),
+                                   (0.55, [0, 0, 0])),
+            'right_claw': rot((0, [0, 0, 0]), (0.08, [0, 0, -35]), (0.18, [0, 0, 20]),
+                              (0.26, [0, 0, -35]), (0.36, [0, 0, 20]), (0.44, [0, 0, -40]),
+                              (0.55, [0, 0, 0])),
+            'left_upper_arm': rot((0, [-30, 0, 0]), (0.12, [-100, -40, 0]), (0.24, [-40, 30, 0]),
+                                  (0.38, [-105, -40, 0]), (0.55, [-30, 0, 0])),
+            'left_claw': rot((0, [0, 0, 0]), (0.12, [0, 0, 30]), (0.24, [0, 0, -25]),
+                             (0.38, [0, 0, 30]), (0.55, [0, 0, 0])),
+            'thorax': rot((0, [0, 0, 0]), (0.08, [-5, 10, 0]), (0.18, [0, -10, 0]),
+                          (0.26, [-5, 12, 0]), (0.36, [0, -12, 0]), (0.44, [-6, 14, 0]),
+                          (0.55, [0, 0, 0])),
+            'left_upper_leg': rot((0, [0, 0, 0]), (0.14, [-18, 0, 0]), (0.30, [0, 0, 0]), (0.55, [0, 0, 0])),
+            'right_upper_leg': rot((0, [0, 0, 0]), (0.30, [-16, 0, 0]), (0.44, [0, 0, 0]), (0.55, [0, 0, 0])),
+        }),
+        # U-turn: a real fast body flip so it stops looking like another arm swing.
+        'e_melee': anim(0.40, {
+            'body': rot((0, [0, 0, 0]), (0.20, [0, 180, 0]), (0.40, [0, 360, 0])),
+            'thorax': rot((0, [0, 0, 0]), (0.10, [-10, 0, 0]), (0.30, [-6, 0, 0]), (0.40, [0, 0, 0])),
+            'left_upper_arm': rot((0, [-20, 0, 0]), (0.12, [-110, -30, 0]), (0.40, [-20, 0, 0])),
+            'right_upper_arm': rot((0, [-20, 0, 0]), (0.12, [-110, 30, 0]), (0.40, [-20, 0, 0])),
+            'left_upper_leg': rot((0, [0, 0, 0]), (0.20, [-30, 0, 0]), (0.40, [0, 0, 0])),
+            'right_upper_leg': rot((0, [0, 0, 0]), (0.20, [25, 0, 0]), (0.40, [0, 0, 0])),
+        }),
+        # Swords Dance: rise, cross the claws, then spread them overhead with a held flourish.
+        'r_cast': anim(0.90, {
+            'body': rot((0, [0, 0, 0]), (0.20, [-6, -12, 0]), (0.50, [-8, 12, 0]), (0.90, [0, 0, 0])),
+            'thorax': rotpos([(0, [0, 0, 0]), (0.20, [-8, 0, 0]), (0.50, [-6, 0, 0]), (0.90, [0, 0, 0])],
+                             [(0, [0, 0, 0]), (0.20, [0, 2, 0]), (0.50, [0, 3, 0]), (0.90, [0, 0, 0])]),
+            'left_upper_arm': rot((0, [-20, 0, 0]), (0.15, [-150, 0, -20]), (0.45, [-160, 0, -35]),
+                                  (0.90, [-20, 0, 0])),
+            'right_upper_arm': rot((0, [-20, 0, 0]), (0.15, [-150, 0, 20]), (0.45, [-160, 0, 35]),
+                                   (0.90, [-20, 0, 0])),
+            'left_lower_arm': rot((0, [0, 0, 0]), (0.15, [-25, 0, 0]), (0.45, [-10, 0, 0]), (0.90, [0, 0, 0])),
+            'right_lower_arm': rot((0, [0, 0, 0]), (0.15, [-25, 0, 0]), (0.45, [-10, 0, 0]), (0.90, [0, 0, 0])),
+            'left_claw': rot((0, [0, 0, 0]), (0.15, [0, 0, 40]), (0.50, [0, 0, -25]), (0.90, [0, 0, 0])),
+            'right_claw': rot((0, [0, 0, 0]), (0.15, [0, 0, -40]), (0.50, [0, 0, 25]), (0.90, [0, 0, 0])),
+            'left_upper_wing': rot((0, [0, 0, 0]), (0.30, [0, 0, 25]), (0.60, [0, 0, 15]), (0.90, [0, 0, 0])),
+            'right_upper_wing': rot((0, [0, 0, 0]), (0.30, [0, 0, -25]), (0.60, [0, 0, -15]), (0.90, [0, 0, 0])),
+            'head': rot((0, [0, 0, 0]), (0.30, [-18, 0, 0]), (0.70, [-14, 0, 0]), (0.90, [0, 0, 0])),
+        }),
+        # Swords Dance loop: claws held high, slowly circling, body bobbing on the blades.
+        'r_sustain': anim(1.20, {
+            'body': rot((0, [0, 0, 0]), (0.30, [-6, -8, 0]), (0.90, [-6, 8, 0]), (1.20, [0, 0, 0])),
+            'thorax': rotpos([(0, [-8, 0, 0]), (0.60, [-4, 0, 0]), (1.20, [-8, 0, 0])],
+                             [(0, [0, 2, 0]), (0.60, [0, 3, 0]), (1.20, [0, 2, 0])]),
+            'left_upper_arm': rot((0, [-155, -10, -30]), (0.60, [-150, 15, -30]), (1.20, [-155, -10, -30])),
+            'right_upper_arm': rot((0, [-150, 15, 30]), (0.60, [-155, -10, 30]), (1.20, [-150, 15, 30])),
+            'left_claw': rot((0, [0, 0, 35]), (0.40, [0, 0, -20]), (0.80, [0, 0, 30]), (1.20, [0, 0, 35])),
+            'right_claw': rot((0, [0, 0, -35]), (0.40, [0, 0, 20]), (0.80, [0, 0, -30]), (1.20, [0, 0, -35])),
+            'left_upper_wing': rot((0, [0, 0, 20]), (0.60, [0, 0, 30]), (1.20, [0, 0, 20])),
+            'right_upper_wing': rot((0, [0, 0, -20]), (0.60, [0, 0, -30]), (1.20, [0, 0, -20])),
+            'head': rot((0, [-14, 0, 0]), (0.60, [-16, 0, 0]), (1.20, [-14, 0, 0])),
+        }, loop=True),
+    },
+}
+
+
 out.mkdir(parents=True, exist_ok=True)
 for species, names in bones.items():
-    for model in models.glob(f'*/{species}*.geo.json'):
-        actual = {b['name'] for g in json.loads(model.read_text(encoding='utf-8'))['minecraft:geometry'] for b in g['bones']}
-        assert set(names) <= actual, (model, set(names) - actual)
+    actual = species_bones(species)
+    assert actual, f'no geometry found for {species}'
+    assert set(names) <= actual, (species, set(names) - actual)
+    for clip_name, clip in CUSTOM.get(species, {}).items():
+        missing = set(clip['bones']) - actual
+        assert not missing, (species, clip_name, missing)
     clips = {}
     for index, (lean, left, right, legleft, legright) in enumerate(poses[species]):
         body, armleft, armright, ll, lr = names
@@ -196,6 +403,11 @@ for species, names in bones.items():
         clips[f'animation.pkmoba_{species}.{slot}_cast'] = cast_clip(species, index, names)
         if index in SUSTAINED[species]:
             clips[f'animation.pkmoba_{species}.{slot}_sustain'] = sustain_clip(species, index, names)
+        if index in MELEE.get(species, []):
+            clips[f'animation.pkmoba_{species}.{slot}_melee'] = cast_clip(species, index, names)
+    # Hand-authored clips win over the shared template for the same clip name.
+    for clip_name, clip in CUSTOM.get(species, {}).items():
+        clips[f'animation.pkmoba_{species}.{clip_name}'] = clip
     path = out / f'pkmoba_{species}.animation.json'
     path.write_text(json.dumps({'format_version': '1.8.0', 'animations': clips}, indent=2) + '\n', encoding='utf-8')
     print(species, len(clips), 'clips, all referenced bones validated')

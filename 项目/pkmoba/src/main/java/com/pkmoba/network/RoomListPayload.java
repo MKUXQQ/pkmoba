@@ -24,7 +24,20 @@ public record RoomListPayload(List<RoomView> rooms, int myRoomId, int mySide, Li
                            int state, int seconds, boolean canJoin, boolean canStart,
                            String hostId, String redId, String blueId, List<String> redTeam, List<String> blueTeam,
                             int maxPlayers, int capacity, boolean passwordProtected, String displayName,
-                            List<String> redRoster, List<String> blueRoster, boolean ready, int readyCount, int visibility) {
+                            List<String> redRoster, List<String> blueRoster, boolean ready, int readyCount, int visibility,
+                             String botId) {
+        public RoomView(int id, String arena, String host, String red, String blue,
+                        int state, int seconds, boolean canJoin, boolean canStart,
+                        String hostId, String redId, String blueId, List<String> redTeam, List<String> blueTeam,
+                        int maxPlayers, int capacity, boolean passwordProtected, String displayName,
+                        List<String> redRoster, List<String> blueRoster, boolean ready, int readyCount, int visibility) {
+            this(id, arena, host, red, blue, state, seconds, canJoin, canStart, hostId, redId, blueId,
+                    redTeam, blueTeam, maxPlayers, capacity, passwordProtected, displayName,
+                    redRoster, blueRoster, ready, readyCount, visibility, "");
+        }
+        public String arenaDisplayName() { return com.pkmoba.duel.RoomRules.arenaDisplayName(arena); }
+        public boolean hasBot() { return !botId.isEmpty(); }
+        public boolean isBot(String seatId) { return hasBot() && botId.equals(seatId); }
         public RoomView(int id, String arena, String host, String red, String blue,
                         int state, int seconds, boolean canJoin, boolean canStart,
                         String hostId, String redId, String blueId, List<String> redTeam, List<String> blueTeam) {
@@ -65,6 +78,7 @@ public record RoomListPayload(List<RoomView> rooms, int myRoomId, int mySide, Li
                     buf.writeBoolean(room.ready());
                     buf.writeVarInt(room.readyCount());
                     buf.writeVarInt(room.visibility());
+                    buf.writeUtf(room.botId(), 64);
                 }
                 buf.writeVarInt(p.myRoomId);
                 buf.writeVarInt(p.mySide);
@@ -83,7 +97,7 @@ public record RoomListPayload(List<RoomView> rooms, int myRoomId, int mySide, Li
                             buf.readVarInt(), buf.readBoolean(), buf.readBoolean(),
                             buf.readUtf(64), buf.readUtf(64), buf.readUtf(64), readTeam(buf), readTeam(buf),
                             buf.readVarInt(), buf.readVarInt(), buf.readBoolean(), buf.readUtf(64),
-                            readTeam(buf), readTeam(buf), buf.readBoolean(), buf.readVarInt(), buf.readVarInt()));
+                            readTeam(buf), readTeam(buf), buf.readBoolean(), buf.readVarInt(), buf.readVarInt(), buf.readUtf(64)));
                 }
                 int myRoomId = buf.readVarInt();
                 int mySide = buf.readVarInt();
@@ -99,13 +113,15 @@ public record RoomListPayload(List<RoomView> rooms, int myRoomId, int mySide, Li
             });
 
     private static void writeTeam(FriendlyByteBuf buf, List<String> team) {
-        buf.writeVarInt(Math.min(6, team.size()));
-        for (int i = 0; i < Math.min(6, team.size()); i++) buf.writeUtf(team.get(i), 128);
+        int count = team.size();
+        if (count > com.pkmoba.pokemon.SpeciesRegistry.ids().size()) throw new IllegalArgumentException("room team count");
+        buf.writeVarInt(count);
+        for (String species : team) buf.writeUtf(species, 128);
     }
 
     private static List<String> readTeam(FriendlyByteBuf buf) {
         int count = buf.readVarInt();
-        if (count < 0 || count > 6) throw new IllegalArgumentException("room team count");
+        if (count < 0 || count > com.pkmoba.pokemon.SpeciesRegistry.ids().size()) throw new IllegalArgumentException("room team count");
         List<String> team = new ArrayList<>(count);
         for (int i = 0; i < count; i++) team.add(buf.readUtf(128));
         return team;

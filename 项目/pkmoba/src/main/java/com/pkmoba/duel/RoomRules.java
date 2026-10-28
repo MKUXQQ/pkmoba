@@ -15,8 +15,14 @@ public final class RoomRules {
     private RoomRules() { }
 
     public static int capacity(int requested) {
-        if (requested < 1 || requested > 6) throw new IllegalArgumentException("capacity must be 1..6");
+        if (requested < 1 || requested > com.pkmoba.pokemon.SpeciesRegistry.ids().size())
+            throw new IllegalArgumentException("capacity exceeds registered species count");
         return requested;
+    }
+
+    /** Display-only alias: never use this value to look up or persist an arena. */
+    public static String arenaDisplayName(String arena) {
+        return "arena1".equalsIgnoreCase(arena) ? "一号竞技场" : arena;
     }
 
     public static String displayName(String raw) {
@@ -40,7 +46,7 @@ public final class RoomRules {
     }
 
     public static List<String> species(List<String> requested, List<String> knownSpecies) {
-        if (requested == null || requested.size() > 4) throw new IllegalArgumentException("invalid species rule");
+        if (requested == null || requested.size() > knownSpecies.size()) throw new IllegalArgumentException("invalid species rule");
         LinkedHashSet<String> unique = new LinkedHashSet<>();
         for (String id : requested) {
             if (!knownSpecies.contains(id) || !unique.add(id)) throw new IllegalArgumentException("invalid species rule");

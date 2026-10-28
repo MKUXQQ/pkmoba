@@ -91,7 +91,7 @@ public final class RoomTeamScreen extends Screen {
         g.disableScissor();
         int track=bottom()-gridY(); g.fill(x+w-16,gridY(),x+w-11,bottom(),PixelUi.CREAM);
         if(maxScroll()>0) { int thumb=Math.max(12,track*track/(track+maxScroll())); int ty=gridY()+(track-thumb)*scroll/maxScroll(); g.fill(x+w-16,ty,x+w-11,ty+thumb,PixelUi.GREEN); }
-        String hint = pendingTicks>0?"等待服务端确认…":notice.isEmpty()?"左键选中/取消 · 右键收藏 · 下次打开收藏靠前":notice;
+        String hint = pendingTicks>0?"等待服务端确认…":notice.isEmpty()?"左键加入本场 · 右键移出本场（保留收藏）":notice;
         g.drawString(font,PixelUi.fit(font,hint,w-24),x+12,bottom()+4,PixelUi.MUTED,false);
         PixelUi.button(g,font,x+12,bottom()+18,w-24,20,"返回房间",hit(mx,my,x+12,bottom()+18,w-24,20),true);
         super.render(g,mx,my,delta);
@@ -106,8 +106,11 @@ public final class RoomTeamScreen extends Screen {
             var items=visible();
             if(col<columns()&&index>=0&&index<items.size()&&editable()) {
                 String id=items.get(index);
-                if(button==0&&!roster().contains(id)&&roster().size()>=room.capacity()) notice="已达上限，请先取消一只";
-                else { ClientRooms.send(button==1?"FAVORITE":"TOGGLE_ROSTER",room.id(),id); pendingTicks=60;notice=""; }
+                boolean chosen=roster().contains(id);
+                // Directional gestures: repeated left-click never removes, right-click never adds.
+                if(button==0&&chosen || button==1&&!chosen) return true;
+                if(button==0&&roster().size()>=room.capacity()) notice="已达上限，请先右键移出一只";
+                else { ClientRooms.send("TOGGLE_ROSTER",room.id(),id); pendingTicks=60;notice=""; }
             }
             return true;
         }

@@ -9,7 +9,8 @@ import net.minecraft.resources.ResourceLocation;
 /**
  * C2S：玩家在宝可梦选择界面里选定了某只宝可梦。
  *
- * @param mode    {@code PICK} 选择上场 / {@code ADD} 添加进队伍
+ * @param mode    {@code PICK} 选择上场 / {@code ADD} 添加进队伍 /
+ *                {@code CONFIRM} 服务端原子确认：当前已出战成员收回，否则选择并召唤（不释放技能）
  * @param species 物种 id
  */
 public record StarterChoosePayload(String mode, String species) implements CustomPacketPayload {

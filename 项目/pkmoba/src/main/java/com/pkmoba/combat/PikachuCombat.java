@@ -74,10 +74,8 @@ public final class PikachuCombat {
     public static boolean isBusy(PokemonEntity entity) { return isChanneling(entity); }
     public static boolean blocksBasicAttack(PokemonEntity entity) { return isChanneling(entity); }
     public static boolean basicBlocked(PokemonEntity entity) { return blocksBasicAttack(entity); }
-    public static boolean blocksMovement(PokemonEntity entity) {
-        int channel = channel(entity);
-        return channel == 13 || channel == 14;
-    }
+    // CastLock snapshots geometry; only skill-owned dash code may displace/root.
+    public static boolean blocksMovement(PokemonEntity entity) { return false; }
 
     /** HUD/animation wire channels are 11..14; the internal state uses skill indices 1..4. */
     public static int channel(PokemonEntity entity) {
@@ -360,9 +358,9 @@ public final class PikachuCombat {
             sparkCloud(level, current.field.add(0, 0.4, 0), 44, 1.15);
             for (LivingEntity target : targets(level, entity, current.field, R_RADIUS)) {
                 if (clearLine(level, entity, entity.getEyePosition(), target.getBoundingBox().getCenter())) {
-                    CombatDamage.apply(level, entity, target, 12.0F,
+                    CombatDamage.apply(level, entity, target, 9.0F,
                             com.pkmoba.network.EffectPayload.Element.PHYSICAL,
-                            com.pkmoba.network.EffectPayload.Power.ULTIMATE, TypeEffectiveness.MoveType.ELECTRIC);
+                            com.pkmoba.network.EffectPayload.Power.HEAVY, TypeEffectiveness.MoveType.ELECTRIC);
                 }
             }
             current.rFieldTicks = R_FIELD_TICKS;

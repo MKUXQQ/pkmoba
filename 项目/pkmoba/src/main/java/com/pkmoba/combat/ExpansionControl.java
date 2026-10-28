@@ -18,7 +18,7 @@ public final class ExpansionControl {
         long now = target.level().getGameTime();
         IMMUNITY.entrySet().removeIf(entry -> entry.getValue() <= now);
         if (ticks <= 0 || IMMUNITY.getOrDefault(target.getUUID(), 0L) > now) return false;
-        int bounded = Math.min(30, ticks);
+        int bounded = Math.min(120, ticks);
         SLEEP.put(target.getUUID(), new Sleep(source.getUUID(), now + bounded, target.getHealth()));
         IMMUNITY.put(target.getUUID(), now + bounded + 60);
         target.setDeltaMovement(net.minecraft.world.phys.Vec3.ZERO);

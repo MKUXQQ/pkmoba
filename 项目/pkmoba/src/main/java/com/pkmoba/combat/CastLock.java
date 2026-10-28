@@ -98,10 +98,20 @@ public final class CastLock {
         int tick = entity.tickCount;
         int endTick = holdTicks > 0 ? tick + holdTicks : -1;
         LOCKS.put(entity.getUUID(), new Lock(shape, flat, fixedPoint, tick, endTick));
+        // A successful cast consumes the previous movement intent; completion never resumes it.
+        com.pkmoba.move.MoveOrderService.cancelPending(entity);
         // 起手瞬间就朝锁定方向:用户要的"确认施法"必须有即时反馈,而且之后伤害方向 = 看到的方向。
         // 0.48.5：用 force 而不是 snap —— 技能包在包处理阶段到达，可能和上一 tick 的 CHANNEL claim
         // 撞在同一个 tickCount 上；snap 的仲裁会让这次起手转向被吃掉（模型仍朝旧方向慢慢转）。
         FacingService.force(entity, flat);
+    }
+
+    /** Explicitly steer a mouse-following skill; other casts keep their original geometry. */
+    public static void steer(PokemonEntity entity, Vec3 direction, @Nullable Vec3 point) {
+        Lock lock = lockOf(entity);
+        Vec3 flat = horizontal(direction);
+        if (lock == null || flat == null) return;
+        LOCKS.put(entity.getUUID(), new Lock(lock.shape(), flat, point, lock.startTick(), lock.endTick()));
     }
 
     /** 施法进入下一段（前摇→释放→收招）：把锁的到期 tick 往后推。 */

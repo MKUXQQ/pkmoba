@@ -61,12 +61,11 @@ public class PkmobaClient implements ClientModInitializer {
         HitFeedback.init();
         CombatAudio.init();
         TargetOverlay.init();
+        PokemonOverheadBar.init();
 
         // 投球召唤的精灵球飞行（客户端自己按抛物线渲染）
         ClientPlayNetworking.registerGlobalReceiver(com.pkmoba.network.BallFlightPayload.TYPE, (payload, context) ->
-                context.client().execute(() -> BallFlightFx.start(payload.fx(), payload.fy(), payload.fz(),
-                        payload.tx(), payload.ty(), payload.tz(), payload.durationTicks(),
-                        payload.item(), payload.seed())));
+                context.client().execute(() -> BallFlightFx.start(payload.flightId(), payload.points())));
 
         // 红光召回 / 放出（客户端自绘光束）
         ClientPlayNetworking.registerGlobalReceiver(com.pkmoba.network.RecallFxPayload.TYPE, (payload, context) ->
