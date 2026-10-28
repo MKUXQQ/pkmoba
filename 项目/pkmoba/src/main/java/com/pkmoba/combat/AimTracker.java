@@ -14,9 +14,10 @@ import java.util.UUID;
  * <p>职责分成两层：
  * <ol>
  *   <li><b>缓存</b>：客户端每 tick 发一次 {@code AimPayload}（不只是引导期间），这里只存最新瞄准点；</li>
- *   <li><b>预瞄</b>：每 tick 以 {@link #AIM_TURN_PER_TICK} 限速把模型（头 + 身体同时）转向瞄准点。
- *       只要还有新鲜的瞄准数据，<b>任何两只宝可梦（双方、玩家或 bot）</b>都会持续朝鼠标方向，
- *       不再区分"站着 / 走着 / 施法收招后"。</li>
+ *   <li><b>预瞄</b>：<b>只有停下来不动的时候</b>才以 {@link #AIM_TURN_PER_TICK} 限速把模型
+ *       （头 + 身体同时）转向瞄准点（0.53，用户 m03501）。走路期间朝向归移动方向
+ *       （{@code MoveOrderService.faceTowards} 每 tick 写 MOVE），鼠标不参与；
+ *       一旦停住（没有移动指令、寻路结束、本 tick 也没有位移），预瞄立刻接手。</li>
  * </ol>
  *
  * <p>0.48.5 修掉的两个"预瞄不生效"根因：
@@ -43,6 +44,19 @@ public final class AimTracker {
     }
 
     private static final Map<UUID, Entry> ENTRIES = new HashMap<>();
+
+    /**
+     * 上一 tick 的世界坐标（0.53）：用来判断"这一 tick 到底有没有在走"。
+     *
+     * <p>只靠"有没有移动指令"不够 —— 指令刚下还没起步、或者寻路已经结束但身体还在滑行时，
+     * 都会让朝向在移动/鼠标之间反复横跳。这里用真实位移做主判据。
+     */
+    private static final Map<UUID, Vec3> LAST_POS = new HashMap<>();
+
+    /** 视为"在走"的最小水平速度（格/tick 的平方）：0.063 格/tick ≈ 1.26 m/s。 */
+    private static final double MIN_MOTION_SQR = 4.0E-3;
+    /** 视为"在走"的最小单 tick 水平位移（格）：0.0316 格/tick ≈ 0.63 m/s。 */
+    private static final double MIN_STEP_SQR = 1.0E-3;
 
     private AimTracker() {
     }
@@ -90,34 +104,59 @@ public final class AimTracker {
         }
         // 施法锁：到期则释放（收招结束 → 下一行预瞄平滑接手），否则重申锁定朝向。
         CastLock.tick(entity);
-        if (CastLock.active(entity)) {
-            // 起手 / 引导 / 收招：方向已在确认施法时锁定，忽略新鼠标，也不让 AI / 旧移动改朝向。
-            return;
-        }
-        Vec3 aim = aimOf(entity);
-        if (aim == null) {
-            return;
-        }
-        // Movement orders and native path navigation own facing until arrival; idle aim resumes afterward.
-        if (com.pkmoba.move.MoveOrderService.navigationSteering(entity)
-                || com.pkmoba.move.MoveOrderService.hasOrder(entity)) return;
-        double dx = aim.x - entity.getX();
-        double dz = aim.z - entity.getZ();
-        if (dx * dx + dz * dz < 1.0E-6) {
+        boolean locked = CastLock.active(entity);
+        Vec3 aim = locked ? null : aimOf(entity);
+        // 0.53（用户 m03501）：<b>走路时朝前方，停下来才朝鼠标</b>。
+        // 之前只要还有新鲜瞄准数据就一直写 AIM，走路时净转向被鼠标带走，看起来"随时被强行掰向鼠标"。
+        if (aim != null && !isMoving(entity)) {
+            double dx = aim.x - entity.getX();
+            double dz = aim.z - entity.getZ();
             // 光标正好压在脚下：方向退化，保持当前朝向，别抖。
-            return;
+            if (dx * dx + dz * dz >= 1.0E-6) {
+                FacingService.request(entity, FacingService.Priority.AIM, new Vec3(dx, 0, dz), AIM_TURN_PER_TICK);
+            }
         }
-        FacingService.request(entity, FacingService.Priority.AIM, new Vec3(dx, 0, dz), AIM_TURN_PER_TICK);
+        rememberPosition(entity);
+    }
+
+    /**
+     * 这一 tick 是否"正在走路"（0.53）。
+     *
+     * <p>三个判据任一条成立就算在走：原版寻路还在跑、当前水平速度超过阈值、本 tick 真实位移超过阈值。
+     * 用真实位移兜底是必要的：直线行走不经过 A*，而"刚下指令还没起步""落地后还在滑行"这两种边界
+     * 只能靠位移/速度识别出来，否则朝向会在移动方向与鼠标之间反复横跳。
+     */
+    private static boolean isMoving(PokemonEntity entity) {
+        if (com.pkmoba.move.MoveOrderService.navigationSteering(entity)) {
+            return true;
+        }
+        Vec3 motion = entity.getDeltaMovement();
+        if (motion.x * motion.x + motion.z * motion.z > MIN_MOTION_SQR) {
+            return true;
+        }
+        Vec3 last = LAST_POS.get(entity.getUUID());
+        if (last == null) {
+            return false;
+        }
+        double dx = entity.getX() - last.x;
+        double dz = entity.getZ() - last.z;
+        return dx * dx + dz * dz > MIN_STEP_SQR;
+    }
+
+    private static void rememberPosition(PokemonEntity entity) {
+        LAST_POS.put(entity.getUUID(), entity.position());
     }
 
     public static void clear(@Nullable PokemonEntity entity) {
         if (entity != null) {
             ENTRIES.remove(entity.getUUID());
+            LAST_POS.remove(entity.getUUID());
         }
     }
 
     /** 清空全部瞄准缓存（对局开始/结束、全员收回）。 */
     public static void clearAll() {
         ENTRIES.clear();
+        LAST_POS.clear();
     }
 }

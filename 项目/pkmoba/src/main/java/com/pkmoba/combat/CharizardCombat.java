@@ -135,6 +135,15 @@ public final class CharizardCombat {
      * 改成 4 tick 一跳正好 5 跳 × 6 = 30，与调整前总伤害一致，平衡不变。
      */
     private static final int Q_DAMAGE_INTERVAL = 4;
+    /**
+     * Q 允许的"小幅转向"（0.53，用户 m03501）：起手方向为基准，最多偏 22°、每 tick 最多拧 5°。
+     *
+     * <p>用户反馈："喷火龙 Q 用出去方向就定死了，一点操作空间都没有"。22° 的锥足够修正
+     * 起手时的瞄准误差，又不会让喷火像水炮那样整片扫过去；喷火射线与锥形伤害都读锁定方向，
+     * 所以转向后"看到的方向 = 实际打到的方向"。
+     */
+    private static final float Q_STEER_MAX_DEG = 22.0F;
+    private static final float Q_STEER_DEG_PER_TICK = 5.0F;
 
     /**
      * W 火焰旋涡前摇：先蓄力、再落区。用户 m01881："火焰漩涡怎么都没有前摇特效的立马施法了"。
@@ -161,6 +170,15 @@ public final class CharizardCombat {
     private static final double E_FINISH_DISTANCE = E_MAX_DISTANCE * 0.15;
     private static final int E_ACCEL_TICKS = 4;
     private static final int E_LANDING_TICKS = 6;
+    /**
+     * E 允许的"小幅转向"（0.53）：相对起飞方向最多偏 40°，每 tick 最多 2.5°。
+     *
+     * <p>0.48.5 曾把冲刺方向完全钉死，用户反馈"全程不能改向，落地位置完全预测"；
+     * 但也不能退回 0.48.5 之前的"8°/tick 一直追鼠标"（轨迹画弧、终点漂移）。
+     * 现在是限速 + 限偏角：转向后立刻重算锁定终点，剩余里程不变。
+     */
+    private static final float E_STEER_MAX_DEG = 40.0F;
+    private static final float E_STEER_DEG_PER_TICK = 2.5F;
     /** 飞翔途中每次接触造成的伤害（同一趟飞行每个目标只算一次）。 */
     /** 飞翔撞击伤害（0.37：16 -> 14，约占对方血量 5%）。 */
     private static final float E_CONTACT_DAMAGE = 20.0F;
@@ -433,15 +451,11 @@ public final class CharizardCombat {
                         PikachuCombat.updateAim(entity, aim);
                     } else {
                         State st = s(entity);
+                        // 0.53：这里只记"想要的瞄准点"，不直接改锁定方向。
+                        // 真正的转向由 tick 里的 CastLock.steerToward 限速 + 限偏角执行，
+                        // 否则鼠标一动 Q 的喷火/ E 的轨迹就会瞬间甩过去（用户："不要强行跟鼠标"）。
                         if (st.channel == 0 || st.channel == 1 || st.dashTicks > 0) {
                             st.channelAim = aim;
-                            if (st.channel == 1 || st.dashTicks > 0) {
-                                Vec3 direction = aimDirection(entity, aim);
-                                Vec3 destination = st.dashTicks > 0
-                                        ? entity.position().add(direction.scale(Math.max(0, E_MAX_DISTANCE - st.dashTravelled)))
-                                        : null;
-                                CastLock.steer(entity, direction, destination);
-                            }
                         }
                     }
                 }));
@@ -735,7 +749,12 @@ public final class CharizardCombat {
         if (st.channel == 1) {
             // 0.38.1：火焰方向 = 模型正前方；0.48.5 改为优先读施法锁定方向，
             // 喷火期间鼠标/移动/AI 都改不了它（射线与锥形伤害共用同一个方向）。
-            Vec3 dir = CastLock.dirOr(entity, modelForward(entity));
+            // 0.53：每 tick 朝最新鼠标方向拧一小步（限速 + 限偏角，见 Q_STEER_*）。
+            // 没有锁（异常兜底）时才退回模型正前方。
+            Vec3 dir = CastLock.steerToward(entity, aimDirection(entity, st.channelAim));
+            if (dir == null) {
+                dir = CastLock.dirOr(entity, modelForward(entity));
+            }
             int jetTicks = st.channelTicks - Q_WINDUP_TICKS;
             if (jetTicks < 0) {
                 // 前摇：动作已经在施法瞬间起手（客户端 q_windup），这里补<b>看得见的聚火</b>，
@@ -951,14 +970,27 @@ public final class CharizardCombat {
         // 剩余距离取"当前位置 → 锁定终点"的水平距离（与固定里程取小），接近终点就进入落地阶段。
         // 锁定被硬清（死亡/收回/传送）时才退回固定 E_MAX_DISTANCE 兜底。
         Vec3 lockEnd = CastLock.point(entity);
-        double toEnd = lockEnd == null ? E_MAX_DISTANCE - st.dashTravelled
-                : Math.sqrt((lockEnd.x - before.x) * (lockEnd.x - before.x)
-                        + (lockEnd.z - before.z) * (lockEnd.z - before.z));
+        double toEnd = distanceTo(lockEnd, before, E_MAX_DISTANCE - st.dashTravelled);
         boolean landing = st.dashLandingTicks > 0;
         if (!landing) {
-            // 0.48.5：飞行方向 = 施法锁定的冲刺方向（旧的 8°/tick 追鼠标会让轨迹画弧、终点漂移）。
-            double yaw = Math.toRadians(entity.getYRot());
-            st.dashDir = CastLock.dirOr(entity, new Vec3(-Math.sin(yaw), 0, Math.cos(yaw)));
+            // 0.53：飞行中允许小幅转向（限速 + 限偏角）。0.48.5 把方向钉死，用户反馈"一点操作空间都没有"；
+            // 而再往前那版是每 tick 追鼠标（画弧、终点漂）。现在转向后立刻重算锁定终点，
+            // 剩余里程 = E_MAX_DISTANCE - 已飞距离，所以总位移仍然守得住。
+            Vec3 steered = CastLock.steerToward(entity, aimDirection(entity, st.channelAim));
+            if (steered != null) {
+                st.dashDir = steered;
+                if (lockEnd != null) {
+                    Vec3 rerouted = before.add(steered.scale(Math.max(0.0, E_MAX_DISTANCE - st.dashTravelled)));
+                    double groundAhead = groundBelow(level, entity, rerouted);
+                    lockEnd = clampToArena(entity, new Vec3(rerouted.x,
+                            Double.isFinite(groundAhead) ? groundAhead : before.y, rerouted.z));
+                    CastLock.setPoint(entity, lockEnd);
+                }
+            } else {
+                double yaw = Math.toRadians(entity.getYRot());
+                st.dashDir = new Vec3(-Math.sin(yaw), 0, Math.cos(yaw));
+            }
+            toEnd = distanceTo(lockEnd, before, E_MAX_DISTANCE - st.dashTravelled);
             if (toEnd <= E_FINISH_DISTANCE || st.dashTicks <= E_LANDING_TICKS) {
                 st.dashLandingTicks = E_LANDING_TICKS;
                 st.dashAutoLanding = true;
@@ -1017,6 +1049,16 @@ public final class CharizardCombat {
         if (st.dashTicks <= 0) {
             stopDash(entity, st);
         }
+    }
+
+    /** 到锁定终点的水平距离；没有终点时返回剩余里程兜底。 */
+    private static double distanceTo(Vec3 end, Vec3 from, double fallback) {
+        if (end == null) {
+            return fallback;
+        }
+        double dx = end.x - from.x;
+        double dz = end.z - from.z;
+        return Math.sqrt(dx * dx + dz * dz);
     }
 
     /** 脚下最近的可站立面高度；无地面时返回 NaN。MoveOrderService 的直线行走也用它抬台阶。 */
@@ -1378,7 +1420,9 @@ public final class CharizardCombat {
                 // 0.48.5（取代 0.38.1 的"不 snap、火焰跟模型"）：确认施法这一帧就把<b>喷火方向</b>钉死
                 // （用户："确认施法锁方向"）：前摇/喷吐期间鼠标再动、AI 或旧移动指令都改不了它，
                 // 喷火射线与锥形伤害只读锁定值；CastLock 顺手做了一次起手 snap，模型第一帧就朝锁定方向。
-                CastLock.begin(entity, CastLock.Shape.LINE, aimDirection(entity, aim), null, Q_CHANNEL_TICKS);
+                // 0.53：Q 不再"用出去就钉死视角"——起手后在 ±Q_STEER_MAX_DEG 内可以慢慢修正方向。
+                CastLock.beginSteerable(entity, CastLock.Shape.LINE, aimDirection(entity, aim), null,
+                        Q_CHANNEL_TICKS, Q_STEER_MAX_DEG, Q_STEER_DEG_PER_TICK);
                 sound(level, entity.position(), "cobblemon:move.flamethrower.actor");
                 // 0.38.3：动作交给客户端 CharizardSkillAnimator（q_windup -> q_sustain），
                 // 服务端只控制节奏（Q_WINDUP_TICKS 后出火），所以不再播 Cobblemon 的 special。
@@ -1412,8 +1456,8 @@ public final class CharizardCombat {
                 double endGround = groundBelow(level, entity, travelEnd);
                 Vec3 dashEnd = clampToArena(entity, new Vec3(travelEnd.x,
                         Double.isFinite(endGround) ? endGround : entity.getY(), travelEnd.z));
-                CastLock.begin(entity, CastLock.Shape.DASH, dir, dashEnd,
-                        70 + E_LANDING_TICKS);
+                CastLock.beginSteerable(entity, CastLock.Shape.DASH, dir, dashEnd,
+                        70 + E_LANDING_TICKS, E_STEER_MAX_DEG, E_STEER_DEG_PER_TICK);
                 st.dashTicks = 70;
                 st.dashAge = 0;
                 st.dashLandingTicks = 0;

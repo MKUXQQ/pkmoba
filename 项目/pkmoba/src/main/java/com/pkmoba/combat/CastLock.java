@@ -67,7 +67,19 @@ public final class CastLock {
         }
     }
 
+    /**
+     * "允许小幅转向"的参数（0.53）：以确认施法那一刻的方向为基准 {@code base}，
+     * 之后最多偏离 {@code maxDegrees}，每 tick 最多转 {@code degreesPerTick}。
+     *
+     * <p>用户要求（m03501）："喷火龙 Q 和 E 在释放时可以有稍微的转向，不是用出技能就固定住视角了"。
+     * 之前 {@link #steer} 是"鼠标给什么方向就是什么方向"，等于技能完全跟着鼠标扫；
+     * 这里是限速 + 限偏角的小幅操控，既保留手感又不会让伤害方向瞬移。
+     */
+    private record Steer(Vec3 base, float maxDegrees, float degreesPerTick) {
+    }
+
     private static final Map<UUID, Lock> LOCKS = new HashMap<>();
+    private static final Map<UUID, Steer> STEERS = new HashMap<>();
 
     private CastLock() {
     }
@@ -114,6 +126,69 @@ public final class CastLock {
         LOCKS.put(entity.getUUID(), new Lock(lock.shape(), flat, point, lock.startTick(), lock.endTick()));
     }
 
+    /**
+     * 建立"可小幅转向"的锁定（0.53，喷火龙 Q / E）：先照常 {@link #begin} 钉死方向与落点，
+     * 再登记转向限额，之后每 tick 用 {@link #steerToward} 把锁定方向朝新鼠标方向慢慢拧一点。
+     *
+     * @param maxDegrees    相对起手方向允许偏离的最大角度（度）
+     * @param degreesPerTick 每 tick 最大转角（度）
+     */
+    public static void beginSteerable(PokemonEntity entity, Shape shape, @Nullable Vec3 dir, @Nullable Vec3 point,
+                                      int holdTicks, float maxDegrees, float degreesPerTick) {
+        if (entity == null) {
+            return;
+        }
+        Vec3 flat = horizontal(dir);
+        if (flat == null) {
+            flat = horizontal(CharizardCombat.modelForward(entity));
+        }
+        if (flat == null) {
+            return;
+        }
+        begin(entity, shape, flat, point, holdTicks);
+        STEERS.put(entity.getUUID(), new Steer(flat,
+                Math.max(0.0F, maxDegrees), Math.max(0.0F, degreesPerTick)));
+    }
+
+    /**
+     * 每 tick 调一次：把锁定方向朝 {@code desired} 转一小步（限速 + 限偏角），返回新的锁定方向。
+     *
+     * <p>伤害结算与模型朝向都读锁定值，所以转向后"看到的方向 = 打到的方向"。
+     *
+     * @return 新的锁定方向；没有锁定（或锁定不可转向）返回 {@code null}
+     */
+    @Nullable
+    public static Vec3 steerToward(@Nullable PokemonEntity entity, @Nullable Vec3 desired) {
+        Lock lock = lockOf(entity);
+        if (entity == null || lock == null) {
+            return null;
+        }
+        Steer steer = STEERS.get(entity.getUUID());
+        if (steer == null) {
+            return lock.dir();
+        }
+        Vec3 want = horizontal(desired);
+        if (want == null) {
+            return lock.dir();
+        }
+        Vec3 next = rotateTowards(lock.dir(), want, steer.degreesPerTick());
+        // 总偏角超过上限时，直接落在"基准方向 ± 上限"这条边界上，不再继续朝鼠标拧。
+        if (angleDegrees(steer.base(), next) > steer.maxDegrees()) {
+            next = rotateTowards(steer.base(), want, steer.maxDegrees());
+        }
+        LOCKS.put(entity.getUUID(), new Lock(lock.shape(), next, lock.point(), lock.startTick(), lock.endTick()));
+        return next;
+    }
+
+    /** 只替换锁定落点（位移类技能转向后重算终点用），方向/到期时间不变。 */
+    public static void setPoint(@Nullable PokemonEntity entity, @Nullable Vec3 point) {
+        Lock lock = lockOf(entity);
+        if (entity == null || lock == null) {
+            return;
+        }
+        LOCKS.put(entity.getUUID(), new Lock(lock.shape(), lock.dir(), point, lock.startTick(), lock.endTick()));
+    }
+
     /** 施法进入下一段（前摇→释放→收招）：把锁的到期 tick 往后推。 */
     public static void extend(PokemonEntity entity, int extraTicks) {
         Lock lock = lockOf(entity);
@@ -136,6 +211,7 @@ public final class CastLock {
             return;
         }
         LOCKS.remove(entity.getUUID());
+        STEERS.remove(entity.getUUID());
         // 连仲裁记录一起清掉,下一 tick 预瞄才能立刻接手。
         FacingService.clear(entity);
     }
@@ -143,6 +219,7 @@ public final class CastLock {
     /** 清空全部锁定 + 朝向仲裁（对局开始/结束、全员收回）。 */
     public static void clearAll() {
         LOCKS.clear();
+        STEERS.clear();
         FacingService.clear();
     }
 
@@ -164,6 +241,7 @@ public final class CastLock {
             }
         }
         LOCKS.keySet().retainAll(keep);
+        STEERS.keySet().retainAll(keep);
         FacingService.retain(keep);
     }
 
@@ -250,5 +328,31 @@ public final class CastLock {
         }
         Vec3 flat = new Vec3(v.x, 0, v.z);
         return flat.lengthSqr() < 1.0E-8 ? null : flat.normalize();
+    }
+
+    /** 两个水平单位向量的夹角（度）。 */
+    private static double angleDegrees(Vec3 a, Vec3 b) {
+        double dot = Math.max(-1.0, Math.min(1.0, a.dot(b)));
+        return Math.toDegrees(Math.acos(dot));
+    }
+
+    /**
+     * 从 {@code from} 朝 {@code to} 转 {@code degrees} 度（绕 Y 轴，水平面内插值 + 归一化）。
+     *
+     * <p>这里用"线性插值后归一化"而不是精确的旋转矩阵：单步角度恒 ≤ 每次调用给的上限（几十度），
+     * 插值误差远小于 1°，而实现更短、不会因为浮点误差在 180° 附近翻向。
+     */
+    private static Vec3 rotateTowards(Vec3 from, Vec3 to, double degrees) {
+        double gap = angleDegrees(from, to);
+        if (gap < 1.0E-4 || degrees <= 0) {
+            return from;
+        }
+        if (degrees >= gap) {
+            return to;
+        }
+        double t = degrees / gap;
+        Vec3 blended = from.scale(1.0 - t).add(to.scale(t));
+        Vec3 flat = horizontal(blended);
+        return flat != null ? flat : to;
     }
 }
