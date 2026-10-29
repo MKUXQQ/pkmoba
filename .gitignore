@@ -52,3 +52,4 @@ __pycache__/
 .venv/
 node_modules/
 项目/pkmoba/blockbench/preview_*.png
+_preview_out/
