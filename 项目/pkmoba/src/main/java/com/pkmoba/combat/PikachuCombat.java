@@ -74,8 +74,8 @@ public final class PikachuCombat {
     public static boolean isBusy(PokemonEntity entity) { return isChanneling(entity); }
     public static boolean blocksBasicAttack(PokemonEntity entity) { return isChanneling(entity); }
     public static boolean basicBlocked(PokemonEntity entity) { return blocksBasicAttack(entity); }
-    // CastLock snapshots geometry; only skill-owned dash code may displace/root.
-    public static boolean blocksMovement(PokemonEntity entity) { return false; }
+    // 站桩输出：引导中的技能锁地面移动（E/R 原本就以 setDeltaMovement(ZERO) 定身）。
+    public static boolean blocksMovement(PokemonEntity entity) { return isChanneling(entity); }
 
     /** HUD/animation wire channels are 11..14; the internal state uses skill indices 1..4. */
     public static int channel(PokemonEntity entity) {

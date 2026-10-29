@@ -68,7 +68,6 @@ public final class PikachuFx {
                             Math.sin(seed) * .5, Math.cos(seed * 1.4) * .5, Math.cos(seed) * .5), .08, alpha * .8f, seed);
                 }
                 Fx fx = new Fx(c, Q);
-                fx.beam(pos.add(up), end, .30, alpha * .55f);
                 fx.sheet(end, .8, .8, t * .5, alpha);
                 fx.sheet(pos.add(vec.scale(.55)), .7, 1.1, t * .3, alpha * .7f);
                 fx.burst(end, 1.2, 10, .35, t, alpha * .9f);
@@ -166,7 +165,6 @@ public final class PikachuFx {
                     fork(c, m, from, from.add(vec.normalize().scale(1.4)).add(
                             Math.sin(seed) * .8, Math.cos(seed) * .5, Math.cos(seed * .7) * .8), .09, alpha * .75f, seed);
                 }
-                fx.beam(pos, end, .55, alpha * .45f);
                 fx.disc(end.add(0, .05, 0), radius, alpha * .7f);
                 fx.groundRing(end, radius, 4, t, alpha * .85f);
                 for (int i = 0; i < 12; i++) {

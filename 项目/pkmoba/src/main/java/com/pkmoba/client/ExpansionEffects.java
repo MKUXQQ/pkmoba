@@ -156,6 +156,22 @@ public final class ExpansionEffects {
                     schedule(entity, species.id(), "q_melee", 4);
                     schedule(entity, species.id(), "q_melee", 8);
                 }
+                // 0.54: the two Blaziken dashes keep the borrowed run cycle going after the
+                // impact pose, so the body does not freeze mid-dash.
+                if (species.id().equals("blaziken") && skill == 2) {
+                    schedule(entity, species.id(), "e_sustain", 5);
+                    schedule(entity, species.id(), "e_sustain", 12);
+                }
+                if (species.id().equals("blaziken") && skill == 3) {
+                    schedule(entity, species.id(), "r_sustain", 6);
+                    schedule(entity, species.id(), "r_sustain", 14);
+                }
+                // 0.56 Lucario Extreme Speed: keep the sprint stance for the whole dash instead of
+                // dropping back to the locomotion cycle between the dash beats.
+                if (species.id().equals("lucario") && skill == 2) {
+                    schedule(entity, species.id(), "e_sustain", 5);
+                    schedule(entity, species.id(), "e_sustain", 14);
+                }
                 return true;
             }
             if (phase.equals("buff") && species.id().equals("scizor") && skill == 3) {
@@ -167,7 +183,7 @@ public final class ExpansionEffects {
             if (phase.equals("melee") || (phase.equals("followup") && melee)) {
                 animate(entity, species.id(), skill, "_melee");
                 sound(pos, true);
-            } else if (phase.equals("impact")) sound(pos, true);
+            } else if (phase.equals("impact") || phase.equals("detonate")) sound(pos, true);
             else if (phase.equals("release")) sound(pos, false);
             if (phase.equals("wall") && entity instanceof PokemonEntity pokemon) {
                 ExpansionWalls.create(pokemon, pos, dir, move.radius(), move.duration());
@@ -179,6 +195,17 @@ public final class ExpansionEffects {
                 case "projectile", "lob" -> 9;
                 case "melee", "followup" -> 14;
                 case "impact", "blink", "heal" -> 24;
+                // 0.54 Blaziken mark loop: the mark is re-cued at 2 Hz on a moving victim, the
+                // warning lane during the charge every 4 ticks, the other two fire once.
+                case "mark" -> 16;
+                case "detonate" -> 26;
+                case "warn" -> 12;
+                case "haste" -> 34;
+                case "refresh" -> 22;
+                // 0.55 Lucario: the aura ring is re-cued at 2 Hz while stacks are held (short life,
+                // like the Blaziken mark), and a spend burst is a one-shot that outlives the cue.
+                case "aura1", "aura2", "aura3" -> 14;
+                case "spend0", "spend1", "spend2", "spend3" -> 26;
                 case "spike" -> 32;
                 case "field", "buff", "wall" -> Math.max(40, move.duration() + 14);
                 default -> 14;
@@ -254,7 +281,15 @@ public final class ExpansionEffects {
             boolean melee = isMelee(s.id, s.skill);
             double radius = ExpansionRoster.find(s.id).move(s.skill).radius();
             String st = style(s.id, s.skill);
-            mcParticles(s, st, s.position(time), radius * 1.4, fade);
+            // 0.66: Gengar's vanilla garnish is decoration only — a thin trail behind the two
+            // projectiles. Everywhere else the textured pixel body has to stand on its own, because
+            // the sprite cloud made the hit area look twice its real size.
+            if (s.id.equals("gengar")) {
+                if (s.phase.equals("projectile") || s.phase.equals("lob"))
+                    mcParticles(s, st, s.position(time), radius * .5, fade * .6f);
+            } else {
+                mcParticles(s, st, s.position(time), radius * 1.4, fade);
+            }
             if (dispatch(context, s, anchors, tex, time, age, progress, fade, dir, radius, owner.position())) continue;
             switch (s.phase) {
                 case "start" -> {
@@ -400,13 +435,23 @@ public final class ExpansionEffects {
         // Abundance pass shared by every species: a moving packet stream + chunky pixel sparks +
         // a soft halo. Per-skill classes still own the composition, this only guarantees the effect
         // is bright, textured and visibly in motion at any distance.
-        Vec3 origin = anchors.handPrimary().add(0, -.05, 0);
-        boolean travelling = s.phase.equals("projectile") || s.phase.equals("lob");
-        Vec3 target = travelling ? s.position(time) : s.pos;
-        double flowW = Math.max(.34, radius * .18);
-        fx.flow(origin, target, flowW, time, fade * .55f);
-        fx.pixels(s.pos.add(0, .15, 0), Math.max(.55, radius * .55), 12, .16, time, fade * .8f);
-        fx.glow(travelling ? target : s.pos, Math.max(.45, radius * .28), fade * .5f);
+        // 0.56: Lucario opts out — its owner asked for a crisp read of the body animation, and the
+        // stream+halo pass was what smeared the aura skills into one blue blob at close range.
+        if (!s.id.equals("lucario")) {
+            Vec3 origin = anchors.handPrimary().add(0, -.05, 0);
+            boolean travelling = s.phase.equals("projectile") || s.phase.equals("lob");
+            Vec3 target = travelling ? s.position(time) : s.pos;
+            double flowW = Math.max(.34, radius * .18);
+            // 0.65: Gengar only keeps a thin stream — its pixel spark + halo pass was a dense sprite
+            // cloud that covered the skill's own geometry (user: 原版粒子把技能盖住了).
+            if (s.id.equals("gengar")) {
+                fx.flow(origin, target, flowW * .55, time, fade * .3f);
+            } else {
+                fx.flow(origin, target, flowW, time, fade * .55f);
+                fx.pixels(s.pos.add(0, .15, 0), Math.max(.55, radius * .55), 12, .16, time, fade * .8f);
+                fx.glow(travelling ? target : s.pos, Math.max(.45, radius * .28), fade * .5f);
+            }
+        }
         FxView v = new FxView(fx, anchors, s.skill, s.phase, s.pos, dir, ownerPos,
                 time, progress, age, radius, fade);
         switch (s.id) {
@@ -658,6 +703,14 @@ public final class ExpansionEffects {
             case "blaziken" -> switch (skill) {
                 case 0 -> "q_melee";
                 case 1 -> beat % 2 == 0 ? "w_kick_left" : "w_kick_right";
+                case 2 -> "e_melee";
+                default -> "r_melee";
+            };
+            // Bone Rush -> alternating club sweeps (left copy is the mirrored clip), Extreme Speed
+            // -> sprint lean, Close Combat -> the compressed punch.
+            case "lucario" -> switch (skill) {
+                case 0 -> "q_melee";
+                case 1 -> beat % 2 == 0 ? "w_melee2" : "w_melee";
                 case 2 -> "e_melee";
                 default -> "r_melee";
             };

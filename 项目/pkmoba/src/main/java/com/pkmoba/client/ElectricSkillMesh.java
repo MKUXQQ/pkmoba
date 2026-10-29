@@ -14,6 +14,9 @@ public final class ElectricSkillMesh {
     private static final ResourceLocation SURFACE = ResourceLocation.fromNamespaceAndPath("pkmoba", "textures/effect/pikachu_mesh.png");
     private ElectricSkillMesh() { }
     private static VertexConsumer buffer(WorldRenderContext c) {
+        // 0.65：回到普通半透明叠加。加色混合（RenderType.eyes）虽然不会变灰，但会把一层层细线
+        // 叠成饱和的实心光斑——用户 m06085 反馈"用出来像个圆盘"。亮度的真正原因是逐面法线被
+        // minecraft_mix_light 压暗，那个问题已经在 vertex() 里用固定 (0,1,0) 法线解决了。
         return c.consumers().getBuffer(RenderType.entityTranslucentEmissive(SURFACE));
     }
     public static void rod(WorldRenderContext c, Matrix4f m, Vec3 a, Vec3 b, double radius, float alpha) {
@@ -90,8 +93,11 @@ public final class ElectricSkillMesh {
         vertex(out,m,c,1,1,n,alpha);vertex(out,m,d,0,1,n,alpha);
     }
     private static void vertex(VertexConsumer out,Matrix4f m,Vec3 p,float u,float v,Vec3 n,float alpha) {
+        // Uniform up normal: the emissive vertex shader multiplies colour by
+        // minecraft_mix_light(...), so per-face normals dim the quads that face away
+        // from the light and make every effect look muddy grey. (0,1,0) keeps lightAccum at 1.0.
         out.addVertex(m,(float)p.x,(float)p.y,(float)p.z).setColor(255,255,255,(int)(255*Math.clamp(alpha,0,1)))
                 .setUv(u,v).setOverlay(OverlayTexture.NO_OVERLAY).setLight(LightTexture.FULL_BRIGHT)
-                .setNormal((float)n.x,(float)n.y,(float)n.z);
+                .setNormal(0.0F, 1.0F, 0.0F);
     }
 }

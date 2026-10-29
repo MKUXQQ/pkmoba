@@ -21,25 +21,28 @@ public final class ExpansionRoster {
     }
     public static final List<Species> ALL = List.of(
         new Species("lucario", "路卡利欧", 300, List.of(
+            // 0.55 rework: Q builds Aura (max 3), W spends all stacks for +12% each, R spends all
+            // stacks for +18% each. E is mobility only and deals no damage by design.
             m("波导弹", Shape.LINE, 2, 4, 8, 28, 18, .65, 26),
-            m("发劲", Shape.CONE, 3, 7, 6, 6, 4, 55, 30),
-            m("神速", Shape.DASH, 2, 7, 3, 10, 9, .8, 22),
-            m("近身战", Shape.DASH, 3, 9, 12, 32, 7, 1.2, 32))),
+            m("骨棒乱打", Shape.CONE, 3, 7, 6, 18, 4, 55, 44),
+            m("神速", Shape.DASH, 2, 7, 3, 10, 7, .8, 0),
+            m("近身打", Shape.CONE, 3, 9, 10, 12, 3.4, 70, 34))),
         new Species("abomasnow", "暴雪王", 360, List.of(
             m("冰砾", Shape.LINE, 2, 4, 8, 26, 16, .7, 24),
             m("冰冻之风", Shape.CONE, 3, 7, 8, 20, 8, 40, 30),
             m("白雾", Shape.WALL, 3, 10, 12, 80, 10, 3, 0),
             m("暴风雪", Shape.POINT, 3, 9, 24, 80, 14, 4.5, 32))),
         new Species("blaziken", "火焰鸡", 300, List.of(
-            m("火焰踢", Shape.CONE, 2, 4, 5, 8, 3.8, 45, 28),
-            m("二连踢", Shape.CONE, 3, 7, 5, 16, 3.8, 45, 36),
-            m("蓄能焰袭", Shape.DASH, 2, 8, 4, 12, 8, .8, 20),
-            m("闪焰冲锋", Shape.DASH, 3, 9, 18, 16, 14, 1, 34))),
+            // 0.54 rework: Q/W/E/R all feed the Flame Mark loop (apply, detonate, refund, refresh).
+            m("火焰踢", Shape.DASH, 2, 4, 4, 8, 6, .9, 26),
+            m("二连踢", Shape.CONE, 2, 5, 4, 14, 3.8, 45, 34),
+            m("蓄能焰袭", Shape.DASH, 2, 8, 3, 10, 8, .8, 10),
+            m("闪焰冲锋", Shape.DASH, 3, 9, 18, 14, 14, 1, 40))),
         new Species("gengar", "耿鬼", 260, List.of(
             m("暗影球", Shape.LINE, 2, 4, 8, 30, 18, 1.6, 26),
             m("污泥炸弹", Shape.POINT, 3, 7, 8, 24, 13, 2.5, 22),
-            m("催眠术", Shape.CONE, 3, 10, 12, 6, 6, 35, 0),
-            m("食梦", Shape.DASH, 3, 9, 12, 14, 9, 1, 28))),
+            m("催眠光", Shape.LINE, 3, 10, 8, 34, 15, 1.5, 0),
+            m("食梦", Shape.BLINK, 3, 9, 8, 12, 12, 1.6, 30))),
         new Species("tyranitar", "班基拉斯", 380, List.of(
             m("岩崩", Shape.POINT, 3, 6, 20, 8, 12, 2.8, 30),
             m("咬碎", Shape.CONE, 2, 5, 8, 6, 3.5, 35, 38),

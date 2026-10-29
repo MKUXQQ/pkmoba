@@ -2,6 +2,19 @@
 from pathlib import Path
 from PIL import Image,ImageDraw,ImageFilter
 import math,random
+import numpy as np
+
+
+def unpremultiply(im):
+ """高斯模糊会把透明像素的黑色 RGB 混进半透明区（等于把 RGB 乘了 alpha）。
+ 直接保存就会得到发灰的暗边，所以在落盘前把 alpha 除回去。"""
+ a=np.asarray(im).astype(np.float32)
+ al=a[...,3]
+ partial=(al>0)&(al<255)
+ safe=np.where(partial,np.maximum(al/255.0,1/255.0),1.0)
+ a[...,:3]=np.clip(np.where(partial[...,None],a[...,:3]/safe[...,None],a[...,:3]),0,255)
+ return Image.fromarray(np.clip(a,0,255).astype('uint8'),'RGBA')
+
 OUT=Path(__file__).resolve().parents[1]/'src/main/resources/assets/pkmoba/textures/effect'
 OUT.mkdir(parents=True,exist_ok=True)
 S=512
@@ -14,6 +27,7 @@ def make(name,draw):
   d.line(points,fill=(255,255,207,255),width=width,joint='curve')
  draw(d,arc)
  halo=im.filter(ImageFilter.GaussianBlur(7));halo.alpha_composite(im)
+ halo=unpremultiply(halo)
  halo.save(OUT/f'pikachu_{name}.png')
  assert halo.getpixel((0,0))[3]==0
 

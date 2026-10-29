@@ -25,9 +25,79 @@ public final class BlazikenFx {
         }
     }
 
+    /**
+     * 0.54 mark loop. These four cues are not phases of a cast, they are the state of the fight:
+     * a gold mark hovering on the victim, the detonation, the charge telegraph and the haste
+     * trail. They are drawn independently of which slot produced them.
+     */
+    private static boolean markState(Fx fx, FxView v) {
+        float a = v.fade;
+        switch (v.phase) {
+            case "mark" -> { // hovering gold flame + thin ring on the victim
+                Vec3 at = v.pos;
+                double bob = Math.sin(v.time * .28) * .12;
+                fx.glow(at, .65, a * .55f);
+                fx.ring(at.add(0, .55 + bob, 0), .40, .045, a * .9f);
+                fx.ringWave(at.add(0, -.05, 0), .55, .03, 2, v.time, a * .5f);
+                for (int i = 0; i < 5; i++) {
+                    double ang = i * 1.2566 + v.time * .22;
+                    Vec3 p = at.add(Math.cos(ang) * .26, .45 + bob + Math.sin(v.time * .3 + i) * .12,
+                            Math.sin(ang) * .26);
+                    fx.sheet(p, .20, .40, Math.sin(v.time * .2 + i) * .4, a * .85f);
+                }
+                fx.motes(at.add(0, .5, 0), .45, 6, .05, v.time, a * .7f);
+                return true;
+            }
+            case "detonate" -> { // the stored flame bursts outward from the victim
+                Vec3 at = v.pos;
+                fx.groundRing(at.add(0, -.45, 0), .9 + 1.5 * v.progress, 3, v.time, a);
+                fx.burst(at, .9 + 1.1 * v.progress, 10, .30, v.time, a * .95f);
+                tongues(fx, at.add(0, -.2, 0), .85 + .5 * v.progress, 12, v.time, a);
+                fx.sphere(at, new Vec3(.45 + .35 * v.progress, .45 + .35 * v.progress, .45 + .35 * v.progress),
+                        v.time * .3, false, a * .8f);
+                return true;
+            }
+            case "warn" -> { // red lane the charge will travel along
+                Vec3 from = v.owner;
+                Vec3 to = v.pos;
+                float blink = (float) (.35 + .45 * Math.abs(Math.sin(v.time * .35)));
+                fx.streak(from, to, .55, a * blink);
+                fx.streak(from, to, .18, a * .8f);
+                for (int i = 1; i <= 5; i++) {
+                    Vec3 p = from.lerp(to, i / 6.0);
+                    fx.cross(p, .34 + .06 * Math.sin(v.time * .4 + i), v.time * .05, a * .55f);
+                }
+                fx.groundRing(to, 1.1, 2, v.time, a * .45f);
+                return true;
+            }
+            case "haste" -> { // short-lived speed: fire streaming off the heels
+                Vec3 base = v.owner;
+                tongues(fx, base, .45, 7, v.time, a * .8f);
+                for (int i = 1; i <= 4; i++) {
+                    fx.sheet(base.subtract(v.dir.scale(i * .45)), .38 - i * .05, .6 - i * .08,
+                            v.time * .12, a * (.55f - i * .1f));
+                }
+                fx.groundRing(base, .7, 2, v.time, a * .4f);
+                return true;
+            }
+            case "refresh" -> { // Q/W/E came back: gold rings climbing the body
+                Vec3 base = v.owner;
+                for (int i = 0; i < 4; i++) {
+                    fx.ring(base.add(0, .25 + i * .45, 0), .55 - i * .06, .04, a * (.9f - i * .15f));
+                }
+                fx.starBurst(v.chest(), .7, 6, v.time, a * .7f);
+                return true;
+            }
+            default -> {
+                return false;
+            }
+        }
+    }
+
     public static void render(FxView v) {
         Fx fx = v.fx;
         float a = v.fade;
+        if (markState(fx, v)) return;
         switch (v.skill) {
             case 0 -> { // Blaze Kick: a single burning foot arc
                 if (v.is("start")) {

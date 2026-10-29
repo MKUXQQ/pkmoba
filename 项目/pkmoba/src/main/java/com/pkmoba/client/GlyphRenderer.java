@@ -115,6 +115,8 @@ public final class GlyphRenderer {
                 .setUv(u, v)
                 .setOverlay(OverlayTexture.NO_OVERLAY)
                 .setLight(LightTexture.FULL_BRIGHT)
-                .setNormal(0.0F, 0.0F, 1.0F);
+                // 0.64：法线必须朝上。entityTranslucentEmissive 的顶点着色器会乘
+                // minecraft_mix_light()，(0,0,1) 只拿到 0.74 亮度 → 字形整体发灰。
+                .setNormal(0.0F, 1.0F, 0.0F);
     }
 }

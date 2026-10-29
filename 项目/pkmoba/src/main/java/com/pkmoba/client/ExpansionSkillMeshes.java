@@ -131,6 +131,8 @@ public final class ExpansionSkillMeshes {
         out.addVertex(matrix, (float) p.x, (float) p.y, (float) p.z)
                 .setColor(value, value, value, (int) (255 * Math.clamp((float) Math.sqrt(alpha), 0F, 1F)))
                 .setUv(u, v).setOverlay(OverlayTexture.NO_OVERLAY).setLight(LightTexture.FULL_BRIGHT)
-                .setNormal((float) n.x, (float) n.y, (float) n.z);
+                // Uniform up normal: the emissive shader dims faces whose normal points away from
+                // the light (lightAccum down to 0.4), which reads as a grey veil. (0,1,0) keeps it at 1.0.
+                .setNormal(0.0F, 1.0F, 0.0F);
     }
 }

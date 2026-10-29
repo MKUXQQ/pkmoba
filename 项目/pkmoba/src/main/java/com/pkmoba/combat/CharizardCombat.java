@@ -503,9 +503,13 @@ public final class CharizardCombat {
 
     public static boolean blocksMovement(PokemonEntity entity) {
         State st = peek(entity);
-        // Cast channels lock only their snapshotted geometry; only the legacy flight dash owns locomotion.
+        // 0.64：站桩输出锁地面移动 —— Q 火焰放射(1)/W 龙卷前摇(2)/R 大字爆蓄力(4) 都是原地引导，
+        // 用户 m05844："我不希望大部分技能都是可以边输出边跑路的"。E 飞行冲刺依然只靠 dashTicks 接管。
+        boolean channeling = st != null && (st.channel == 1 || st.channel == 2 || st.channel == 4);
         boolean busy = st != null && st.dashTicks > 0;
-        return busy || (entity != null && ExpansionCombat.blocksMovement(entity));
+        return channeling || busy
+                || BlastoiseCombat.blocksMovement(entity) || VenusaurCombat.blocksMovement(entity)
+                || PikachuCombat.blocksMovement(entity) || (entity != null && ExpansionCombat.blocksMovement(entity));
     }
 
     private static boolean authorizedActor(ServerPlayer player, PokemonEntity entity) {

@@ -205,8 +205,8 @@ public final class VenusaurCombat {
     public static boolean isChanneling(PokemonEntity entity) { return channel(entity) != 0; }
     public static boolean blocksBasicAttack(PokemonEntity entity) { return isChanneling(entity); }
     public static boolean basicBlocked(PokemonEntity entity) { return blocksBasicAttack(entity); }
-    // CastLock snapshots geometry; Venusaur skills do not root ordinary movement.
-    public static boolean blocksMovement(PokemonEntity entity) { return false; }
+    // 站桩输出：妙蛙花四个技能都是原地引导（藤鞭/污泥/催眠粉/日光束），引导期间锁地面移动。
+    public static boolean blocksMovement(PokemonEntity entity) { return isChanneling(entity); }
     public static int channel(PokemonEntity entity) {
         State state = entity == null ? null : STATES.get(entity.getUUID());
         return state == null ? 0 : state.channel;

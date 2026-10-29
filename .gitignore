@@ -33,8 +33,15 @@ pkmoba-*.jar
 
 # ---------- 会话 / 本地环境 ----------
 .dsh-vision-router/
+.scratch/
+_preview/
+_preview_out/
+_ob_agent_src/
+blockbench-mcp/
 项目/pkmoba/.local-maven/
 项目/pkmoba/.tmp_buildcp.py
+项目/pkmoba/venusaur_atlas_preview.png
+项目/pkmoba/tools/_binprobe*.txt
 /src/
 *.local.json
 *.tmp
@@ -51,3 +58,4 @@ __pycache__/
 *.py[cod]
 .venv/
 node_modules/
+��Ŀ/pkmoba/blockbench/preview_*.png

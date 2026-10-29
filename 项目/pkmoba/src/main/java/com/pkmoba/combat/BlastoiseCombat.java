@@ -376,8 +376,16 @@ public final class BlastoiseCombat {
         resetAll();
     }
 
-    // CastLock snapshots geometry; ordinary movement remains available during channels.
-    public static boolean blocksMovement(PokemonEntity entity) { return false; }
+    /**
+     * 站桩输出：引导中的技能锁住地面移动指令（用户 m05844：不许大部分技能边跑边打）。
+     *
+     * <p>例外只有 W 高速旋转 —— 它的设计本来就是"变球滚着走"，不锁。
+     * 冲浪（E）虽然是自驱位移，地面指令照样要锁，位移由技能 tick 自己写。
+     */
+    public static boolean blocksMovement(PokemonEntity entity) {
+        int c = channel(entity);
+        return c != 0 && c != CHANNEL_SPIN;
+    }
 
     public static boolean blocksBasicAttack(PokemonEntity entity) {
         State state = entity == null ? null : STATES.get(entity.getUUID());
