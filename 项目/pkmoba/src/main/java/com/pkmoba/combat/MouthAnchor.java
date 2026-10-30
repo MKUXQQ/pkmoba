@@ -1,9 +1,8 @@
 package com.pkmoba.combat;
 
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
-import net.minecraft.world.phys.Vec3;
-
 import java.util.Map;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * 嘴部锚点的唯一数据源（服务端弹道原点 + 客户端特效原点共用）。

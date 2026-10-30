@@ -5,19 +5,19 @@ import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 import com.cobblemon.mod.common.pokemon.Pokemon;
 import com.cobblemon.mod.common.pokemon.Species;
 import com.pkmoba.PkmobaMod;
+import com.pkmoba.pokemon.SpeciesRegistry;
 import com.pkmoba.network.CharizardSyncPayload;
 import kotlin.Unit;
 import kotlin.jvm.functions.Function1;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.phys.Vec3;
-
+import net.minecraft.server.MinecraftServer;
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -151,7 +151,7 @@ public final class CharizardManager {
     public static PokemonEntity findControlled(ServerPlayer player, @Nullable ResourceLocation speciesId) {
         if (player == null || speciesId == null) return null;
         for (PokemonEntity entity : getActiveList(player)) {
-            if (speciesId.equals(entity.getPokemon().getSpecies().getResourceIdentifier())) return entity;
+            if (com.pkmoba.pokemon.TeamService.sameSpecies(entity, speciesId.toString())) return entity;
         }
         return null;
     }
@@ -413,7 +413,8 @@ public final class CharizardManager {
         }
 
         if (!com.pkmoba.pokemon.SpeciesRegistry.contains(speciesId)) return null;
-        Species species = PokemonSpecies.getByIdentifier(speciesId);
+        // 0.87: pick the concrete Cobblemon species (regional forms map through the registry).
+        Species species = PokemonSpecies.getByIdentifier(SpeciesRegistry.cobbleSpecies(speciesId));
         if (species == null) {
             PkmobaMod.LOGGER.error("[pkmoba] 找不到物种 {}，Cobblemon 数据是否加载完成？", speciesId);
             return null;
@@ -421,6 +422,7 @@ public final class CharizardManager {
 
         Pokemon pokemon = new Pokemon();
         pokemon.setSpecies(species);
+        SpeciesRegistry.applyForm(pokemon, speciesId);
         pokemon.setLevel(50);
         if ("pikachu".equals(speciesId.getPath())) pokemon.setScaleModifier(2.0F);
 
@@ -538,10 +540,12 @@ public final class CharizardManager {
     @Nullable
     public static PokemonEntity spawnMatchEntityExact(ServerLevel level, Vec3 pos, ResourceLocation speciesId) {
         if (!com.pkmoba.pokemon.SpeciesRegistry.contains(speciesId)) return null;
-        Species species = PokemonSpecies.getByIdentifier(speciesId);
+        // 0.87: pick the concrete Cobblemon species (regional forms map through the registry).
+        Species species = PokemonSpecies.getByIdentifier(SpeciesRegistry.cobbleSpecies(speciesId));
         if (species == null) return null;
         Pokemon pokemon = new Pokemon();
         pokemon.setSpecies(species);
+        SpeciesRegistry.applyForm(pokemon, speciesId);
         pokemon.setLevel(50);
         if ("pikachu".equals(speciesId.getPath())) pokemon.setScaleModifier(2.0F);
         return pokemon.sendOut(level, pos, null, e -> {

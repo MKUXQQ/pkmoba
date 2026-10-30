@@ -1,11 +1,10 @@
 package com.pkmoba.world;
 
-import net.minecraft.world.phys.Vec3;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * 场地陷阱（撒菱/毒菱一类）的内存服务（0.38 只落接口）。

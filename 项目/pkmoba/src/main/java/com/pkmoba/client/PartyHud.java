@@ -2,9 +2,9 @@ package com.pkmoba.client;
 
 import com.pkmoba.pokemon.SpeciesRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.resources.ResourceLocation;
 
 /** Compact party strip rendered immediately above the vanilla experience bar. */
 public final class PartyHud {

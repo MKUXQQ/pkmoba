@@ -4,10 +4,9 @@ import com.cobblemon.mod.common.CobblemonSounds;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.core.particles.DustParticleOptions;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.phys.Vec3;
+import net.minecraft.server.MinecraftServer;
 import org.joml.Vector3f;
 
 import java.util.ArrayList;

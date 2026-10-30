@@ -1,10 +1,10 @@
 package com.pkmoba.client;
 
 import com.pkmoba.combat.Skill;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.entity.Entity;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 
 /** Client-side presentation metadata and texture rendering for the supported moveset. */
@@ -35,7 +35,7 @@ public final class SkillPresentation {
     private static final String[] BLASTOISE_ICONS = {"blastoise_0", "blastoise_1", "blastoise_2", "blastoise_3"};
     private static final String[] VENUSAUR_ICONS = {"venusaur_vine", "venusaur_razor", "venusaur_solar", "venusaur_sludge"};
 
-    private static final String[] PIKACHU_ICONS = {"pikachu_thundershock", "pikachu_electroweb", "pikachu_quick_attack", "pikachu_thunder"};
+    private static final String[] PIKACHU_ICONS = {"pikachu_thundershock", "pikachu_thunderbolt", "pikachu_quick_attack", "pikachu_thunder"};
 
     private SkillPresentation() { }
 
@@ -57,7 +57,7 @@ public final class SkillPresentation {
 
     /** 按物种 id 取图标（宝可梦还没召唤出来时 HUD 也要能画对）。 */
     public static ResourceLocation icon(String speciesId, int index) {
-        var expansion = com.pkmoba.combat.ExpansionRoster.find(speciesId);
+        var expansion = com.pkmoba.combat.ExpansionRoster.resolve(speciesId);
         if (expansion != null) return ResourceLocation.fromNamespaceAndPath("pkmoba", "textures/gui/skills/" + expansion.id() + "_" + "qwer".charAt(index) + ".png");
         String[] icons = Skill.isPikachu(speciesId) ? PIKACHU_ICONS : Skill.isVenusaur(speciesId) ? VENUSAUR_ICONS
                 : Skill.isBlastoise(speciesId) ? BLASTOISE_ICONS : ICONS;

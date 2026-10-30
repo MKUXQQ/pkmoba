@@ -6,9 +6,22 @@
 [![License](https://img.shields.io/badge/license-All%20Rights%20Reserved-lightgrey)](LICENSE)
 
 > Minecraft **1.21.1** · Fabric · **Cobblemon 1.8.2** 附属模组
-> 当前源码版本：**0.66.0**（喷火龙 / 水箭龟 / 妙蛙花 / 皮卡丘 / 火焰鸡 / 路卡利欧 / 耿鬼 等 12 只 · 房间对战与人机挑战）
+> 当前源码版本：**0.139.1**（喷火龙 / 水箭龟 / 妙蛙花 / 皮卡丘 / 火焰鸡 / 路卡利欧 / 耿鬼 / 沙奈朵 / 班基拉斯 / 阿罗拉九尾 / 甲贺忍蛙 / 魔幻假面喵 / 苍炎刃鬼 / 洗翠索罗亚克 / 流氓鳄 / 红莲铠骑 共 16 只 · 房间对战与人机挑战）
 >
-> **下载**：[已发布版本](https://github.com/MKUXQQ/pkmoba/releases/latest)。源码版本可能领先于 Release；0.66.0 可按下文自行构建。
+> **下载**：[已发布版本](https://github.com/MKUXQQ/pkmoba/releases/latest)。源码版本可能领先于 Release；0.139.1 可按下文自行构建。
+
+## 0.139.1 更新
+
+- 移除“选择你最初的伙伴”新手提示：该功能依赖的 Cobblemon 方法已改名，Mixin 每次启动都注入失败并刷一条 ERROR，现已把 `StarterOverlayMixin` 整个删除，启动日志恢复干净。
+
+## 0.139.0 更新
+
+- 移除炽焰咆哮虎（incineroar）：该物种的骨骼动画在 Cobblemon 模型上无法生效，模型全程停在静息姿势，实测反馈“没有动作”，因此整只下线，不再出现在队伍与注册表里；旧存档中的该条目会自动清除。
+- 新增红莲铠骑（armarouge）：普攻三段火焰弹改为**真实飞行投射物**（`combat/BasicShots.java`，10/10/15 伤害、11 格射程），Q 精神冲击、W 火焰旋涡、E 铠甲炮、R 扩展力量，13 张 `ar_*` 特效贴图与四套粒子映射。
+- 新增流氓鳄（krookodile）：咬碎 / 挖洞 / 地震 / 嚣张，三段咬击普攻与 `pkmoba_krookodile` 动画组。
+- 新增甲贺忍蛙（greninja）与魔幻假面喵（meowscarada）：各自四技能、独立 FX、贴图、图标与动画组。
+- 修复队伍界面看不到部分宝可梦：`TeamStatePayload.MAX_LIST` 从 16 提到 40，此前第 17 只起会被网络包截断。
+- 移除已下线的阿勃梭鲁、烈咬陆鲨、巨钳螳螂相关特效代码与贴图。
 
 ## 0.66.0 更新
 

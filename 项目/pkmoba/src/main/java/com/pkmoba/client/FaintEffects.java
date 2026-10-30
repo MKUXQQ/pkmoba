@@ -2,10 +2,9 @@ package com.pkmoba.client;
 
 import com.cobblemon.mod.common.entity.PosableEntity;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
-import net.minecraft.client.Minecraft;
-import net.minecraft.world.entity.Entity;
-
 import java.util.List;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.client.Minecraft;
 
 /**
  * 战败动画：服务端判到血量归零后先广播 {@code FaintPayload}，等动画播完再移除实体。

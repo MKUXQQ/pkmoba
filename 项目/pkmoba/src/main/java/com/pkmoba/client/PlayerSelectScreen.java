@@ -4,9 +4,9 @@ import com.pkmoba.network.MenuActionPayload;
 import com.pkmoba.network.MenuOpenPayload.MenuKind;
 import java.util.List;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.minecraft.network.chat.Component;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.network.chat.Component;
 
 /**
  * 分页在线玩家选择界面。

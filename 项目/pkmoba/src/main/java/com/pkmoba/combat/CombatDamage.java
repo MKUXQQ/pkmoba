@@ -5,13 +5,13 @@ import com.pkmoba.PkmobaMod;
 import com.pkmoba.charizard.CharizardManager;
 import com.pkmoba.network.EffectPayload;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.phys.Vec3;
 
 /**
  * World-entity damage, not Cobblemon turn-based battle HP. Never writes health directly.
@@ -58,6 +58,11 @@ public final class CombatDamage {
                 || !Float.isFinite(amount) || amount <= 0
                 || com.pkmoba.duel.DuelManager.isPreparing(source)
                 || com.pkmoba.duel.DuelManager.isPreparing(target)) return false;
+        // 0.87 timed buffs: Swords Dance raises the attacker's output, Aurora Veil
+        // softens what the guarded target takes. Both default to 1.0 for everyone else.
+        amount *= (float) (ExpansionControl.powerMultiplier(source)
+                * ExpansionControl.damageTakenMultiplier(target));
+        if (!Float.isFinite(amount) || amount <= 0) return false;
         String species = target instanceof PokemonEntity pokemon && pokemon.getPokemon() != null
                 ? pokemon.getPokemon().getSpecies().getResourceIdentifier().toString() : "";
         TypeEffectiveness.MoveType actualType = moveType == null

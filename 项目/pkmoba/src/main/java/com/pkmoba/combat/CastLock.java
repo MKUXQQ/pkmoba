@@ -1,9 +1,8 @@
 package com.pkmoba.combat;
 
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
-import net.minecraft.world.phys.Vec3;
-
 import javax.annotation.Nullable;
+import net.minecraft.world.phys.Vec3;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;

@@ -28,7 +28,7 @@ public enum Skill {
         return translationKey(isBlastoise(pokemon), isVenusaur(pokemon), isPikachu(pokemon), index);
     }
     public static String translationKey(String id, int index) {
-        var expansion = ExpansionRoster.find(id);
+        var expansion = ExpansionRoster.resolve(id);
         if (expansion != null) {
             if (index < 0 || index > 3) throw new IndexOutOfBoundsException(index);
             return "skill.pkmoba." + expansion.id() + "." + "qwer".charAt(index);
@@ -58,7 +58,7 @@ public enum Skill {
                 : index < 0 || index > 3 ? 0 : expansion.move(index).cost();
     }
     public static int cost(String id, int index) {
-        var expansion = ExpansionRoster.find(id);
+        var expansion = ExpansionRoster.resolve(id);
         return expansion == null ? cost(isBlastoise(id), isVenusaur(id), isPikachu(id), index)
                 : index < 0 || index > 3 ? 0 : expansion.move(index).cost();
     }
@@ -73,7 +73,7 @@ public enum Skill {
                 : index < 0 || index > 3 ? 40 : expansion.move(index).cooldown();
     }
     public static int cooldownTicks(String id, int index) {
-        var expansion = ExpansionRoster.find(id);
+        var expansion = ExpansionRoster.resolve(id);
         return expansion == null ? cooldownTicks(isBlastoise(id), isVenusaur(id), isPikachu(id), index)
                 : index < 0 || index > 3 ? 40 : expansion.move(index).cooldown();
     }

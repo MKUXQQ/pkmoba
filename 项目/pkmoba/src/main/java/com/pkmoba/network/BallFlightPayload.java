@@ -1,11 +1,11 @@
 package com.pkmoba.network;
 
+import java.util.List;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.phys.Vec3;
-import java.util.List;
 import java.util.ArrayList;
 
 /** Server-clipped trajectory, one sample per tick. Empty points cancels this flight. */

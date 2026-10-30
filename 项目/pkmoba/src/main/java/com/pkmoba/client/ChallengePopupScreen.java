@@ -3,9 +3,9 @@ package com.pkmoba.client;
 import com.pkmoba.network.ChallengeActionPayload;
 import java.util.UUID;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.minecraft.network.chat.Component;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.network.chat.Component;
 
 /**
  * 被挑战者的全屏挑战弹窗：米黄底 + 深棕描边，含接受/拒绝与 10 秒倒计时。

@@ -1,14 +1,14 @@
 package com.pkmoba.combat;
 
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
-import net.minecraft.server.level.ServerLevel;
+import java.util.Comparator;
+import java.util.List;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
-import java.util.Comparator;
-import java.util.List;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.ClipContext;
 
 /** Swept-volume targeting and sub-stepped, grounded dash/blink movement. Never edits blocks. */
 public final class ExpansionGeometry {

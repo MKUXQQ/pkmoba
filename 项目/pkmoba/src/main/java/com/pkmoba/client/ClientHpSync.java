@@ -4,10 +4,9 @@ import com.cobblemon.mod.common.client.CobblemonClient;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 import com.cobblemon.mod.common.pokemon.Pokemon;
 import com.pkmoba.combat.PokemonHp;
-import net.minecraft.client.Minecraft;
-import net.minecraft.nbt.CompoundTag;
-
 import java.util.UUID;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.client.Minecraft;
 
 /**
  * 客户端兜底：把服务端下发的"设计血量上限"写进本地 {@link Pokemon} 对象。

@@ -1,7 +1,7 @@
 package com.pkmoba.client;
 
-import net.minecraft.util.RandomSource;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.util.RandomSource;
 
 /**
  * 「大」字采样蒙版（加粗版：笔宽 0.14，撇捺末端 0.06）。

@@ -19,7 +19,6 @@
     "KeyboardInputMixin",
     "KeyMappingMixin",
     "HudMixin",
-    "StarterOverlayMixin",
     "PlayerRendererMixin",
     "BlastoiseSpinPoseMixin",
     "PokemonNameHiderMixin",

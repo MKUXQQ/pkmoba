@@ -5,13 +5,13 @@ import com.pkmoba.client.GodView;
 import com.pkmoba.network.MoveOrderPayload;
 import com.pkmoba.network.PlaceOrderPayload;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
-import net.minecraft.client.Camera;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.MouseHandler;
-import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.MouseHandler;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.client.Camera;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -47,6 +47,12 @@ public abstract class MouseHandlerMixin {
         boolean placing = ClientState.isPlacementArmed();
         if (!god && !placing) {
             return;
+        }
+
+        // 0.93：左键 = 受控宝可梦的普通攻击（路卡利欧 3 格近身，玩家自己点）。
+        // 只在上帝视角（正在操控宝可梦）且没有点 HUD 的格子上生效；命中的实体 id 由服务端复核。
+        if (god && button == 0 && action == 1 && !com.pkmoba.client.SkillHud.isMouseOver()) {
+            pkmoba$punch(mc);
         }
 
         // HUD mouse presses must not fall through into world orders or rebound attacks.
@@ -93,6 +99,25 @@ public abstract class MouseHandlerMixin {
      * 打到台阶/斜坡的侧面时，XZ 还会落在不可站立的薄边上。
      * 统一成"格心 + 站立面高度"后，落点和寻路节点天然对齐，不会再为了够点而绕路。
      */
+
+    /** 左键普攻：先看受控宝可梦是不是路卡利欧，再把准心指到的实体 id 发给服务端。 */
+    private static void pkmoba$punch(Minecraft mc) {
+        if (mc.level == null) return;
+        int controlled = ClientState.getCharizardId();
+        if (controlled < 0) return;
+        var entity = mc.level.getEntity(controlled);
+        if (!(entity instanceof com.cobblemon.mod.common.entity.pokemon.PokemonEntity pokemon)) return;
+        // 0.132.2: the whitelist here (lucario/blaziken) silently dropped every other Pokémon, so
+        // Ceruledge never sent its click and the twin blades never moved. The server already knows
+        // which species have a punch, so it stays authoritative and the client just forwards the aim.
+
+        int targetId = mc.crosshairPickEntity instanceof net.minecraft.world.entity.LivingEntity living
+                ? living.getId() : -1;
+        if (ClientPlayNetworking.canSend(com.pkmoba.network.BasicAttackPayload.TYPE)) {
+            ClientPlayNetworking.send(new com.pkmoba.network.BasicAttackPayload(targetId));
+        }
+    }
+
     /** 倒计时期间点地 = 选定出战落点（方案 §三.2）。 */
     private static void pkmoba$maybeSendLanding(Vec3 goal) {
         if (!com.pkmoba.client.ClientRooms.inCountdown()) return;

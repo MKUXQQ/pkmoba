@@ -3,15 +3,15 @@ package com.pkmoba.client;
 import com.pkmoba.combat.Skill;
 import com.pkmoba.network.EffectPayload;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.resources.sounds.AbstractSoundInstance;
 import net.minecraft.client.resources.sounds.SoundInstance;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.client.Minecraft;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.RandomSource;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.phys.Vec3;
 
 /**
  * 战斗音效管理：<b>循环音只在状态真正开始/结束时启动/淡出一次，绝不每 tick 重播</b>。
@@ -265,11 +265,8 @@ public final class CombatAudio {
 
     // ---------------------------------------------------------------- 播放工具
 
-    private static void playAt(Minecraft mc, SoundEvent event, float volume, float pitch, Vec3 pos) {
-        if (mc.level == null || event == null) {
-            return;
-        }
-        mc.level.playLocalSound(pos.x, pos.y, pos.z, event, SoundSource.PLAYERS, volume, pitch, false);
+    private static void playAt(Minecraft mc, SoundEvent event, float volume, float pitch, Vec3 at) {
+        // 0.79: all skill audio was removed at the user's request - the whole class now stays silent.
     }
 
     private static void stopQuietly(SoundInstance instance) {

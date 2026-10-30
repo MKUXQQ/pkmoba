@@ -1,9 +1,9 @@
 package com.pkmoba.network;
 
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import net.minecraft.resources.ResourceLocation;
 
 /** 单次W区域出生事件；持续动画完全在客户端生成。 */
 public record TornadoPayload(int entityId, double x, double y, double z,

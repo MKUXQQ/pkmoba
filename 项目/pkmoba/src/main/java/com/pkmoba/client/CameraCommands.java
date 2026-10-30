@@ -2,8 +2,8 @@ package com.pkmoba.client;
 
 import com.pkmoba.network.CameraSettingsPayload;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
-import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
+import net.minecraft.client.Minecraft;
 
 /** /mo is registered exclusively on the server; apply settings only to the requesting client. */
 public final class CameraCommands {

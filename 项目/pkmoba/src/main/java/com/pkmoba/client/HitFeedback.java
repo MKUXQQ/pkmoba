@@ -6,15 +6,14 @@ import com.pkmoba.network.EffectPayload;
 import com.pkmoba.particle.PkmobaParticles;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
-import net.minecraft.client.Camera;
-import net.minecraft.client.DeltaTracker;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.util.Mth;
+import net.minecraft.client.Camera;
 import net.minecraft.util.RandomSource;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.phys.Vec3;
+import net.minecraft.client.DeltaTracker;
 import org.joml.Vector3f;
 
 /**
@@ -94,6 +93,8 @@ public final class HitFeedback {
     private static boolean initialized;
     /** 上一次做镜头反馈的客户端 tick（同 tick 的多段命中只反馈一次）。 */
     private static long lastCameraTick = Long.MIN_VALUE;
+    private static long lastEarthquakeTick = Long.MIN_VALUE;
+    private static long lastEpicSlamTick = Long.MIN_VALUE;
     private static int lastPikachuStrikeEntity = Integer.MIN_VALUE;
     private static long lastPikachuStrikeTick = Long.MIN_VALUE;
 
@@ -130,6 +131,57 @@ public final class HitFeedback {
         lastPikachuStrikeEntity = Integer.MIN_VALUE;
         lastPikachuStrikeTick = Long.MIN_VALUE;
         CombatAudio.reset();
+    }
+
+    /**
+     * 打雷的“吟唱感”：蓄力每两 tick 收到一次进度，镜头随之逐渐抖动并轻轻压暗，
+     * 像喷火龙大字爆炎那样先把屏幕顶起来，落雷那一下再爆开。
+     */
+    public static void onPikachuCharge(int entityId, float progress) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || entityId != ClientState.getCharizardId()) return;
+        float t = Math.max(0.0F, Math.min(1.0F, progress));
+        shakeAmplitude = Math.max(shakeAmplitude, 0.05 + 0.16 * t);
+        shakeTicks = Math.max(shakeTicks, 3);
+        shakeTotal = Math.max(shakeTotal, 3);
+        shakePhase += 0.35;
+    }
+
+    /**
+     * Heavy Gardevoir impact: one shake per slam wherever the player is standing, so Moonblast
+     * and Future Sight land with weight even when the user is only watching. The cue is sent once
+     * per impact, so this cannot run every frame.
+     */
+    public static void onEpicSlam(Vec3 at) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || mc.player == null) return;
+        if (mc.player.position().distanceToSqr(at) > 40.0 * 40.0) return;
+        long now = mc.level.getGameTime();
+        if (now - lastEpicSlamTick < 6) return;
+        lastEpicSlamTick = now;
+        Vec3 away = mc.player.position().subtract(at);
+        addShake(EffectPayload.Power.HEAVY, away.lengthSqr() < 1.0E-4 ? Vec3.ZERO : away.normalize());
+        beginHitstop(EffectPayload.Power.LIGHT);
+    }
+
+    /**
+     * 0.101 (m15488): Earthquake needs a real screen shake with distance falloff, a sharp first
+     * kick and a decaying tail. It is driven by the server's quake beats, so the shake starts, peaks
+     * and fades with the actual rupture instead of buzzing randomly for the whole cast.
+     */
+    public static void onEarthquake(Vec3 at) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || mc.player == null || at == null) return;
+        double dist = mc.player.position().distanceTo(at);
+        if (dist > 26.0) return;
+        long now = mc.level.getGameTime();
+        if (now - lastEarthquakeTick < 4) return;
+        lastEarthquakeTick = now;
+        Vec3 away = mc.player.position().subtract(at);
+        if (away.lengthSqr() < 1.0E-4) away = Vec3.ZERO; else away = away.normalize();
+        double strength = Math.max(.22, 1.0 - dist / 26.0);
+        addShake(EffectPayload.Power.HEAVY, away.scale(strength));
+        if (dist < 12.0) beginHitstop(EffectPayload.Power.LIGHT);
     }
 
     /** One camera shake per locally controlled Pikachu R cast, independent of target hits. */

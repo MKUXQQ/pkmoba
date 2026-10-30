@@ -6,11 +6,11 @@ import com.pkmoba.network.RoomListPayload;
 import com.pkmoba.pokemon.SpeciesRegistry;
 import java.util.List;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
 
 /**
  * 开局选择（PICK）与「获取宝可梦」（ADD）共用的界面。

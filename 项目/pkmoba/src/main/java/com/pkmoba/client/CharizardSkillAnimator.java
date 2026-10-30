@@ -8,9 +8,8 @@ import com.cobblemon.mod.common.entity.PosableEntity;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 import com.pkmoba.charizard.CharizardManager;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.Entity;
-
+import net.minecraft.client.Minecraft;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;

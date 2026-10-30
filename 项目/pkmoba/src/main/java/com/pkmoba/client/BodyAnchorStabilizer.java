@@ -1,8 +1,8 @@
 package com.pkmoba.client;
 
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.client.player.LocalPlayer;
 
 /** Prevent client gravity prediction from fighting the server's suspended body anchor. */
 public final class BodyAnchorStabilizer {

@@ -1,9 +1,9 @@
 package com.pkmoba.client;
 
 import com.pkmoba.network.RoomListPayload;
+import net.minecraft.network.chat.Component;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
 
 /** Password prompt for joining a protected room. */

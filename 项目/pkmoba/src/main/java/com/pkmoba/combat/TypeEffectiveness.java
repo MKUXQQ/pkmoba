@@ -19,13 +19,13 @@ public final class TypeEffectiveness {
             case "venusaur" -> MoveType.GRASS;
             case "pikachu" -> MoveType.ELECTRIC;
             case "lucario" -> MoveType.FIGHTING;
-            case "abomasnow" -> MoveType.ICE;
+            case "alolan_ninetales" -> MoveType.ICE;
             case "blaziken" -> MoveType.FIRE;
             case "gengar" -> MoveType.GHOST;
             case "tyranitar" -> MoveType.ROCK;
-            case "garchomp" -> MoveType.DRAGON;
-            case "scizor" -> MoveType.STEEL;
             case "gardevoir" -> MoveType.PSYCHIC;
+            case "greninja" -> MoveType.WATER;
+            case "meowscarada" -> MoveType.GRASS;
             default -> MoveType.PHYSICAL;
         };
     }
@@ -45,16 +45,28 @@ public final class TypeEffectiveness {
 
     public static MoveType expansionMoveType(String id, int skill) {
         return switch (normalize(id)) {
-            case "lucario" -> skill==2?MoveType.NORMAL:MoveType.FIGHTING;
-            case "abomasnow" -> MoveType.ICE;
+            case "lucario" -> switch (skill) { case 0 -> MoveType.NORMAL; case 2 -> MoveType.ELECTRIC; default -> MoveType.FIGHTING; };
+            case "alolan_ninetales" -> switch (skill) { case 3 -> MoveType.NORMAL; default -> MoveType.ICE; };
             case "blaziken" -> skill==1?MoveType.FIGHTING:MoveType.FIRE;
             case "gengar" -> skill==0?MoveType.GHOST:skill==1?MoveType.POISON:MoveType.PSYCHIC;
             case "tyranitar" -> skill==1?MoveType.DARK:MoveType.ROCK;
-            case "garchomp" -> skill==1 || skill==2?MoveType.GROUND:MoveType.DRAGON;
-            case "scizor" -> skill==0?MoveType.STEEL:skill==3?MoveType.NORMAL:MoveType.BUG;
             case "gardevoir" -> skill==1?MoveType.FAIRY:MoveType.PSYCHIC;
+            case "greninja" -> switch (skill) { case 1, 2 -> MoveType.DARK; default -> MoveType.WATER; };
+            case "meowscarada" -> switch (skill) { case 1 -> MoveType.BUG; default -> MoveType.GRASS; };
+            case "ceruledge" -> switch (skill) { case 0 -> MoveType.PSYCHIC; case 1 -> MoveType.GHOST; default -> MoveType.FIRE; };
+            case "hisuian_zoroark" -> switch (skill) { case 0 -> MoveType.GHOST; case 1 -> MoveType.GHOST; case 2 -> MoveType.GHOST; default -> MoveType.NORMAL; };
+            // Crunch is Dark, Dig and Earthquake are Ground, Outrage is Dragon - the real typings.
+            case "krookodile" -> switch (skill) { case 0 -> MoveType.DARK; case 1 -> MoveType.GROUND; case 2 -> MoveType.GROUND; default -> MoveType.DRAGON; };
+            case "armarouge" -> switch (skill) { case 0 -> MoveType.PSYCHIC; case 1 -> MoveType.FIRE; case 2 -> MoveType.FIRE; default -> MoveType.PSYCHIC; };
             default -> MoveType.PHYSICAL;
         };
+    }
+
+    /** Water defenders take double damage from Freeze-Dry instead of resisting it. */
+    public static boolean waterDefender(String defenderSpecies) {
+        String species = normalize(defenderSpecies);
+        return species.equals("blastoise") || species.equals("vaporeon") || species.equals("lapras")
+                || species.equals("gyarados") || species.equals("milotic") || species.equals("primarina");
     }
 
     public static double multiplier(MoveType moveType, String defenderSpecies) {
@@ -87,13 +99,17 @@ public final class TypeEffectiveness {
                 default -> 1.0;
             };
             case "lucario" -> dual(move, "fighting", "steel");
-            case "abomasnow" -> dual(move, "grass", "ice");
+            case "alolan_ninetales" -> dual(move, "ice", "fairy");
             case "blaziken" -> dual(move, "fire", "fighting");
             case "gengar" -> dual(move, "ghost", "poison");
             case "tyranitar" -> dual(move, "rock", "dark");
-            case "garchomp" -> dual(move, "dragon", "ground");
-            case "scizor" -> dual(move, "bug", "steel");
             case "gardevoir" -> dual(move, "psychic", "fairy");
+            case "greninja" -> dual(move, "water", "dark");
+            case "meowscarada" -> dual(move, "grass", "dark");
+            case "ceruledge" -> dual(move, "fire", "ghost");
+            case "hisuian_zoroark" -> dual(move, "normal", "ghost");
+            case "krookodile" -> dual(move, "ground", "dark");
+            case "armarouge" -> dual(move, "fire", "psychic");
             default -> 1.0;
         };
         return Math.max(MIN_MULTIPLIER, Math.min(MAX_MULTIPLIER, value));
@@ -164,6 +180,9 @@ public final class TypeEffectiveness {
         if (value == null) return "";
         String normalized = value.toLowerCase(Locale.ROOT).trim();
         int colon = normalized.indexOf(':');
-        return colon >= 0 ? normalized.substring(colon + 1) : normalized;
+        String bare = colon >= 0 ? normalized.substring(colon + 1) : normalized;
+        // 0.87: Alolan Ninetales spawns as cobblemon:ninetales with the alolan aspect; the local
+        // roster id is what the typing table keys on.
+        return bare.equals("ninetales") ? "alolan_ninetales" : bare;
     }
 }

@@ -1,13 +1,12 @@
 package com.pkmoba.client;
 
 import com.pkmoba.network.RoomListPayload;
+import java.util.List;
+import net.minecraft.network.chat.Component;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.multiplayer.PlayerInfo;
-import net.minecraft.network.chat.Component;
-
-import java.util.List;
 
 /** Native Minecraft room browser. All joins wait for the authoritative server snapshot. */
 public final class RoomLobbyScreen extends Screen {

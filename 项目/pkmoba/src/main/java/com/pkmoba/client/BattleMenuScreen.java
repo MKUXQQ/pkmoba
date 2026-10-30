@@ -5,10 +5,10 @@ import com.pkmoba.network.MenuOpenPayload;
 import com.pkmoba.network.MenuOpenPayload.MenuKind;
 import java.util.List;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.minecraft.network.chat.Component;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.network.chat.Component;
 
 /** Native, non-pausing entry screen for the battle item. */
 public final class BattleMenuScreen extends Screen {

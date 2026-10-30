@@ -13,25 +13,24 @@ import com.pkmoba.network.SkillCastPayload;
 import com.pkmoba.network.SkillStatePayload;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
-import net.minecraft.core.particles.ParticleTypes;
-import net.minecraft.world.level.ClipContext;
-import net.minecraft.world.phys.HitResult;
-import net.minecraft.world.phys.BlockHitResult;
 import com.pkmoba.network.TornadoPayload;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.sounds.SoundEvent;
-import net.minecraft.sounds.SoundSource;
-import net.minecraft.util.Mth;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.world.phys.Vec3;
-
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.util.Mth;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.server.MinecraftServer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -75,7 +74,7 @@ public final class CharizardCombat {
 
     /** 按物种 id 取最大血量（实体已被移除、只剩物种名时用）。 */
     public static float maxHpFor(String speciesId) {
-        var expansion = ExpansionRoster.find(speciesId);
+        var expansion = ExpansionRoster.resolve(speciesId);
         if (expansion != null) return expansion.maxHp();
         return Skill.isPikachu(speciesId) ? PIKACHU_MAX_HP
                 : Skill.isBlastoise(speciesId) ? BLASTOISE_MAX_HP
@@ -142,8 +141,8 @@ public final class CharizardCombat {
      * 起手时的瞄准误差，又不会让喷火像水炮那样整片扫过去；喷火射线与锥形伤害都读锁定方向，
      * 所以转向后"看到的方向 = 实际打到的方向"。
      */
-    private static final float Q_STEER_MAX_DEG = 22.0F;
-    private static final float Q_STEER_DEG_PER_TICK = 5.0F;
+    private static final float Q_STEER_MAX_DEG = 150.0F;
+    private static final float Q_STEER_DEG_PER_TICK = 9.0F;
 
     /**
      * W 火焰旋涡前摇：先蓄力、再落区。用户 m01881："火焰漩涡怎么都没有前摇特效的立马施法了"。
@@ -168,7 +167,7 @@ public final class CharizardCombat {
     /** 飞翔的水平总路程：明显拉长（15 → 30 格），飞行途中一直造成伤害。 */
     private static final double E_MAX_DISTANCE = 30.0;
     private static final double E_FINISH_DISTANCE = E_MAX_DISTANCE * 0.15;
-    private static final int E_ACCEL_TICKS = 4;
+    private static final int E_ACCEL_TICKS = 1;
     private static final int E_LANDING_TICKS = 6;
     /**
      * E 允许的"小幅转向"（0.53）：相对起飞方向最多偏 40°，每 tick 最多 2.5°。
@@ -177,8 +176,10 @@ public final class CharizardCombat {
      * 但也不能退回 0.48.5 之前的"8°/tick 一直追鼠标"（轨迹画弧、终点漂移）。
      * 现在是限速 + 限偏角：转向后立刻重算锁定终点，剩余里程不变。
      */
-    private static final float E_STEER_MAX_DEG = 40.0F;
-    private static final float E_STEER_DEG_PER_TICK = 2.5F;
+    // 0.101 (m15488): flight keeps chasing the cursor, so the budget is wide and the turn is quick.
+    // The landing point is recomputed from the steered heading every tick in tickDash().
+    private static final float E_STEER_MAX_DEG = 165.0F;
+    private static final float E_STEER_DEG_PER_TICK = 8.0F;
     /** 飞翔途中每次接触造成的伤害（同一趟飞行每个目标只算一次）。 */
     /** 飞翔撞击伤害（0.37：16 -> 14，约占对方血量 5%）。 */
     private static final float E_CONTACT_DAMAGE = 20.0F;
@@ -1456,7 +1457,13 @@ public final class CharizardCombat {
                 st.dashDir = dir;
                 // 0.48.5：位移锁方向 + 锁终点。终点取射程末端、夹回场地内并贴地，
                 // 飞行过程中既不转向也不再吃新鼠标（旧的 8°/tick 追鼠标会让轨迹画弧）。
-                Vec3 travelEnd = entity.position().add(dir.scale(E_MAX_DISTANCE));
+                // 0.102 (m15730): fly straight at the clicked point instead of always burning the
+                // full range - the player wants the take-off to land exactly where they aimed.
+                Vec3 clicked = aim;
+                double reach = clicked == null ? E_MAX_DISTANCE : entity.position().distanceTo(clicked);
+                Vec3 travelEnd = clicked != null && reach <= E_MAX_DISTANCE
+                        ? clicked
+                        : entity.position().add(dir.scale(E_MAX_DISTANCE));
                 double endGround = groundBelow(level, entity, travelEnd);
                 Vec3 dashEnd = clampToArena(entity, new Vec3(travelEnd.x,
                         Double.isFinite(endGround) ? endGround : entity.getY(), travelEnd.z));

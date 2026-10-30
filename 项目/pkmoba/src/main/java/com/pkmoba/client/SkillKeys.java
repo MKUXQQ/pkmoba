@@ -1,14 +1,14 @@
 package com.pkmoba.client;
 
-import com.mojang.blaze3d.platform.InputConstants;
 import com.pkmoba.network.AimPayload;
 import com.pkmoba.network.SkillCastPayload;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
-import net.minecraft.world.phys.Vec3;
+import com.mojang.blaze3d.platform.InputConstants;
 import org.lwjgl.glfw.GLFW;
 
 /**
@@ -46,7 +46,7 @@ public final class SkillKeys {
      */
     public static int slotForChannel(String speciesId, int channel) {
         if (channel == 0) return -1;
-        var expansion = com.pkmoba.combat.ExpansionRoster.find(speciesId);
+        var expansion = com.pkmoba.combat.ExpansionRoster.resolve(speciesId);
         if (expansion != null) {
             int slot=channel-expansion.channel(0);
             return slot>=0 && slot<4 ? slot : -1;
@@ -165,7 +165,7 @@ public final class SkillKeys {
         String species = pokemon.getPokemon().getSpecies().getResourceIdentifier().toString();
         return species.equals("cobblemon:charizard") || species.equals("cobblemon:blastoise")
                 || species.equals("cobblemon:venusaur") || species.equals("cobblemon:pikachu")
-                || com.pkmoba.combat.ExpansionRoster.find(species)!=null;
+                || com.pkmoba.combat.ExpansionRoster.resolve(species)!=null;
     }
 
     /**

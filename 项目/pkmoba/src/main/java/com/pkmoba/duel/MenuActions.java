@@ -2,11 +2,10 @@ package com.pkmoba.duel;
 
 import com.pkmoba.network.MenuOpenPayload;
 import com.pkmoba.network.MenuOpenPayload.MenuKind;
-import net.minecraft.network.chat.Component;
-import net.minecraft.server.level.ServerPlayer;
-
 import java.util.ArrayList;
 import java.util.List;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
 
 /**
  * 对战菜单的服务端入口：把客户端菜单点击翻译成对局操作。

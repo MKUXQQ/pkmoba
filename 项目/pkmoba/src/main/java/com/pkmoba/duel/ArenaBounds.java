@@ -3,9 +3,9 @@ package com.pkmoba.duel;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 import com.pkmoba.charizard.CharizardManager;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.MinecraftServer;
 import org.jetbrains.annotations.Nullable;
 
 /**

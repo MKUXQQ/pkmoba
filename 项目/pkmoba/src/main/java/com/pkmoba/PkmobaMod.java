@@ -36,6 +36,8 @@ public class PkmobaMod implements ModInitializer {
     public void onInitialize() {
         // 召回/放出红光效果（死亡与召唤共用，仿原版宝可梦）。
         com.pkmoba.combat.RecallBeam.init();
+        com.pkmoba.combat.Malice.init();
+        com.pkmoba.combat.Illusions.init();
         com.pkmoba.duel.ArenaBounds.init();
         // C2S
         PayloadTypeRegistry.playC2S().register(GodTogglePayload.TYPE, GodTogglePayload.CODEC);
@@ -49,6 +51,7 @@ public class PkmobaMod implements ModInitializer {
         PayloadTypeRegistry.playC2S().register(com.pkmoba.network.SummonPayload.TYPE, com.pkmoba.network.SummonPayload.CODEC);
         PayloadTypeRegistry.playC2S().register(com.pkmoba.network.ChallengeActionPayload.TYPE, com.pkmoba.network.ChallengeActionPayload.CODEC);
         PayloadTypeRegistry.playC2S().register(com.pkmoba.network.RoomActionPayload.TYPE, com.pkmoba.network.RoomActionPayload.CODEC);
+        PayloadTypeRegistry.playC2S().register(com.pkmoba.network.BasicAttackPayload.TYPE, com.pkmoba.network.BasicAttackPayload.CODEC);
         // S2C
         PayloadTypeRegistry.playS2C().register(com.pkmoba.network.CameraSettingsPayload.TYPE, com.pkmoba.network.CameraSettingsPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(GodStatePayload.TYPE, GodStatePayload.CODEC);
@@ -89,6 +92,7 @@ public class PkmobaMod implements ModInitializer {
         com.pkmoba.charizard.CharizardSleepSuppressor.init();
         // 技能系统（技能点 / 冷却 / 四技能判定）
         com.pkmoba.combat.CharizardCombat.init();
+        com.pkmoba.combat.BasicAttackInput.init();
         // 0.35：关闭世界自然生成（只拦截自然生成，玩家主动召唤不受影响）
         com.pkmoba.world.NaturalSpawnBlocker.init();
         com.pkmoba.world.PokemonDropBlocker.init();

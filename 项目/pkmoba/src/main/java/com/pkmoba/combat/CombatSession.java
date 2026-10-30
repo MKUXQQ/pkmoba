@@ -1,9 +1,8 @@
 package com.pkmoba.combat;
 
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
-import net.minecraft.world.phys.Vec3;
-
 import java.util.UUID;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Per-controlled-Pokemon session identity and lifecycle boundary.

@@ -1,11 +1,11 @@
 package com.pkmoba.client;
 
 import com.pkmoba.network.RoomListPayload;
-import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.screens.Screen;
+import java.util.List;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
-import java.util.List;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.screens.Screen;
 
 /** 0.49：固定 1v1 房间，左右席位、真实本场阵容、准备倒计时及下角入口。 */
 public final class RoomDetailScreen extends Screen {

@@ -1,13 +1,12 @@
 package com.pkmoba.network;
 
 import com.pkmoba.PkmobaMod;
-import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import net.minecraft.resources.ResourceLocation;
-
 import java.util.ArrayList;
 import java.util.List;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.network.codec.StreamCodec;
 
 /**
  * S2C：玩家自己的队伍状态，用于 HUD 左侧头像 + 圆点 + 换人倒计时。
@@ -25,7 +24,7 @@ public record TeamStatePayload(List<String> team, List<String> fainted, String a
     public static final ResourceLocation ID =
             ResourceLocation.fromNamespaceAndPath(PkmobaMod.MOD_ID, "team_state");
     public static final CustomPacketPayload.Type<TeamStatePayload> TYPE = new CustomPacketPayload.Type<>(ID);
-    private static final int MAX_LIST = 16;
+    private static final int MAX_LIST = 40;
     private static final int MAX_STRING = 64;
 
     public static final StreamCodec<FriendlyByteBuf, TeamStatePayload> CODEC = StreamCodec.of(

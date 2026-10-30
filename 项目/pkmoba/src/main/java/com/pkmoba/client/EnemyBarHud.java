@@ -1,10 +1,10 @@
 package com.pkmoba.client;
 
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.network.chat.Component;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.network.chat.Component;
-import net.minecraft.world.entity.LivingEntity;
 
 /**
  * 锁敌时屏幕上方那条"敌方粗血条"（0.39.5 新增）。

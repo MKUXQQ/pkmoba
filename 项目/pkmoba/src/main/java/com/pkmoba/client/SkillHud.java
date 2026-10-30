@@ -2,12 +2,12 @@ package com.pkmoba.client;
 
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.Util;
-import net.minecraft.client.DeltaTracker;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.client.DeltaTracker;
 
 /** Compact cream moveset panel for the currently controlled supported Pokemon. */
 public final class SkillHud {
@@ -34,6 +34,11 @@ public final class SkillHud {
     private static final int WATER_BORDER = 0xFF245875;
     private static final int WATER_TEXT = 0xFF173D55;
     private static final int WATER_MUTED = 0xFF6E8B9A;
+    // 0.76 沙奈朵：淡紫面板 + 洋红描边，专属皮肤与她的粉紫技能图标同一套配色。
+    private static final int PSY_PANEL = 0xFFF7E9F8;
+    private static final int PSY_BORDER = 0xFF8A4F9E;
+    private static final int PSY_TEXT = 0xFF43264F;
+    private static final int PSY_MUTED = 0xFF957AA3;
 
     // ---- 0.38.10 技能栏统一化：按下反馈、冷却读秒、施法灰化 ----
 
@@ -142,7 +147,7 @@ public final class SkillHud {
         String species = pokemon.getPokemon().getSpecies().getResourceIdentifier().toString();
         return species.equals("cobblemon:charizard") || species.equals("cobblemon:blastoise")
                 || species.equals("cobblemon:venusaur") || species.equals("cobblemon:pikachu")
-                || com.pkmoba.combat.ExpansionRoster.find(species)!=null ? pokemon : null;
+                || com.pkmoba.combat.ExpansionRoster.resolve(species)!=null ? pokemon : null;
     }
 
     /**
@@ -213,7 +218,8 @@ public final class SkillHud {
         if (next == null || next.isBlank()) return;
         net.minecraft.resources.ResourceLocation speciesRl = net.minecraft.resources.ResourceLocation.tryParse(
                 next.contains(":") ? next : "cobblemon:" + next);
-        String name = com.pkmoba.pokemon.SpeciesRegistry.displayName(speciesRl);
+        var exp = com.pkmoba.combat.ExpansionRoster.resolve(speciesRl.toString());
+        String name = exp != null ? exp.name() : com.pkmoba.pokemon.SpeciesRegistry.displayName(speciesRl);
         if (name == null || name.isEmpty()) name = next;
 
         String tag = "下一只";
@@ -360,10 +366,12 @@ public final class SkillHud {
         boolean water = com.pkmoba.combat.Skill.isBlastoise(speciesId);
         boolean venusaur = com.pkmoba.combat.Skill.isVenusaur(speciesId);
         boolean electric = com.pkmoba.combat.Skill.isPikachu(speciesId);
-        int panelColor = electric ? 0xFFFFEEA6 : (water ? WATER_PANEL : PANEL);
-        int borderColor = electric ? 0xFFD28A0E : (water ? WATER_BORDER : (venusaur ? 0xFF3D6B3D : BORDER));
-        int textColor = water ? WATER_TEXT : (venusaur ? 0xFF214D2B : TEXT);
-        int mutedColor = water ? WATER_MUTED : (venusaur ? 0xFF648064 : MUTED);
+        boolean psychic = speciesId != null && speciesId.contains("gardevoir");
+        int panelColor = psychic ? PSY_PANEL : (electric ? 0xFFFFEEA6 : (water ? WATER_PANEL : PANEL));
+        int borderColor = psychic ? PSY_BORDER
+                : (electric ? 0xFFD28A0E : (water ? WATER_BORDER : (venusaur ? 0xFF3D6B3D : BORDER)));
+        int textColor = psychic ? PSY_TEXT : (water ? WATER_TEXT : (venusaur ? 0xFF214D2B : TEXT));
+        int mutedColor = psychic ? PSY_MUTED : (water ? WATER_MUTED : (venusaur ? 0xFF648064 : MUTED));
         net.minecraft.resources.ResourceLocation speciesRl = net.minecraft.resources.ResourceLocation.tryParse(
                 speciesId.contains(":") ? speciesId : "cobblemon:" + speciesId);
         String displayName = summoned
@@ -374,7 +382,7 @@ public final class SkillHud {
         ctx.fill(x - 2, y + 2, x + PANEL_W + 2, y + PANEL_H - 2, borderColor);
         ctx.fill(x, y, x + PANEL_W, y + PANEL_H, panelColor);
         ctx.fill(x + 3, y + 3, x + PANEL_W - 3, y + 4,
-                water ? 0xFFE9F8FA : (venusaur ? 0xFFE8F6DE : 0xFFFFF8E8));
+                psychic ? 0xFFFDF5FF : (water ? 0xFFE9F8FA : (venusaur ? 0xFFE8F6DE : 0xFFFFF8E8)));
 
         // 标题做成挂在面板上沿的小铭牌（原先是浮在面板外的裸文字，与米黄 UI 不搭）
         drawNamePlate(ctx, mc, displayName, x + PANEL_W / 2, y,
@@ -402,12 +410,24 @@ public final class SkillHud {
                 withAlpha(hp < 0.3F ? 0xFFC94F3D : 0xFF6E9A52, valueAlpha));
         ctx.drawString(mc.font, hpText, hpTextX, y + 4, withAlpha(textColor, valueAlpha), false);
 
+        // 被催眠状态：服务端用隐形 UNLUCK 标记（amplifier 9 = 已睡着，0..2 = 催眠标记数），
+        // 这里在状态栏里直接写出来，玩家不用盯头顶图标也知道自家宝可梦的状态。
+        if (pokemon != null) {
+            var hypnotised = pokemon.getEffect(net.minecraft.world.effect.MobEffects.UNLUCK);
+            if (hypnotised != null) {
+                int amp = hypnotised.getAmplifier();
+                String tag = amp >= 9 ? "被催眠" : "催眠标记 " + (amp + 1) + "/3";
+                int tagColor = amp >= 9 ? 0xFF7B4FD0 : 0xFF9A6FE0;
+                ctx.drawString(mc.font, tag, barLeft, y + PANEL_H - 11, tagColor, false);
+            }
+        }
+
         // 0.38.3：引导条不再写死 channel 号，改用 SkillKeys 的物种感知映射（与瞄准预览同一份）。
         // channel 4/6 有服务端下发的 charge（大字爆炎/加农水炮/喷水前摇），其余引导只画满条提示。
         int channel = ClientState.getChannel();
         int guidedSlot = SkillKeys.slotForChannel(speciesId, channel);
         boolean chargeBar = channel == 4 || channel == 6 || (electric && channel == 14)
-                || com.pkmoba.combat.ExpansionRoster.find(speciesId) != null;
+                || com.pkmoba.combat.ExpansionRoster.resolve(speciesId) != null;
         float charge = Math.max(0.0F, Math.min(1.0F, ClientState.getCharge()));
         boolean casting = channel != 0;
         long now = Util.getMillis();
@@ -431,7 +451,7 @@ public final class SkillHud {
             // SkillPresentation 的布局常量统一决定，四格不会再出现大小/位置不一致。
             ctx.fill(cellX, y + SkillPresentation.CELL_TOP, cellX + SkillPresentation.CELL_W,
                     y + SkillPresentation.CELL_BOTTOM,
-                    water ? 0x334A829B : (venusaur ? 0x334C7A45 : 0x33765A3C));
+                    psychic ? 0x338A4F9E : (water ? 0x334A829B : (venusaur ? 0x334C7A45 : 0x33765A3C)));
             ctx.fill(cellX + 1, y + SkillPresentation.CELL_TOP + 1,
                     cellX + SkillPresentation.CELL_W - 1, y + SkillPresentation.CELL_TOP + 2, 0x55FFFFFF);
             ctx.fill(iconX - 1, iconY - 1, iconX + iconSize + 1, iconY + iconSize + 1, borderColor);
@@ -441,13 +461,15 @@ public final class SkillHud {
 
             if (inCast) {
                 // 施法/前摇/引导：整张图标压成灰色（灰色盖住图标本身），不再写"施法中"文字。
-                ctx.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, electric ? 0x33FFF27A : 0xB46F7A82);
+                ctx.fill(iconX, iconY, iconX + iconSize, iconY + iconSize,
+                        electric ? 0x33FFF27A : (psychic ? 0x33FFB4E8 : 0xB46F7A82));
             } else if (cooldown > 0) {
                 // 冷却遮罩：分母与服务端同一张表（Skill.cooldownTicks），自下而上退去。
                 int full = Math.max(1, com.pkmoba.combat.Skill.cooldownTicks(speciesId, i));
                 int mask = Math.max(1, Math.min(iconSize, (int) (iconSize * cooldown / (float) full)));
                 ctx.fill(iconX, iconY + iconSize - mask, iconX + iconSize, iconY + iconSize,
-                        electric ? 0x337E5100 : (water ? 0x99174666 : 0x9934291E));
+                        electric ? 0x337E5100
+                                : (psychic ? 0x99412A50 : (water ? 0x99174666 : 0x9934291E)));
                 // 剩余秒数自带深色底：压在遮罩上仍然清晰，0.1s 精度（<1s 显示 0.x），不裁切。
                 String remaining = remainText(cooldown);
                 int chipW = mc.font.width(remaining) + 4;
@@ -468,18 +490,19 @@ public final class SkillHud {
                 if (chargeBar) {
                     int fillRight = iconX + 1 + (int) ((iconSize - 2) * charge);
                     ctx.fill(iconX + 1, barTop, fillRight, barTop + 2,
-                            water ? 0xFF62C8E2 : 0xFFFFC35A);
+                            psychic ? 0xFFFF9EDB : (water ? 0xFF62C8E2 : 0xFFFFC35A));
                 } else {
                     float pulse = 0.5F + 0.5F * (float) Math.sin(now / 160.0);
                     ctx.fill(iconX + 1, barTop, iconX + iconSize - 1, barTop + 2,
-                            withAlpha(water ? 0xFF62C8E2 : 0xFFFFC35A, 0.55F + 0.35F * pulse));
+                            withAlpha(psychic ? 0xFFFF9EDB : (water ? 0xFF62C8E2 : 0xFFFFC35A),
+                                    0.55F + 0.35F * pulse));
                 }
             }
 
             int cellCenter = cellX + SkillPresentation.CELL_W / 2;
             ctx.fill(cellCenter - 13, y + 48, cellCenter + 13, y + 60, borderColor);
             drawCenteredText(ctx, mc, bindingLabel(i), cellCenter, y + 49,
-                    water ? 0xFFE4F5F8 : 0xFFFFF3D4);
+                    psychic ? 0xFFFFE6F8 : (water ? 0xFFE4F5F8 : 0xFFFFF3D4));
             drawCenteredText(ctx, mc, skillName(speciesId, i), cellCenter, y + 64,
                     affordable ? textColor : mutedColor);
         }

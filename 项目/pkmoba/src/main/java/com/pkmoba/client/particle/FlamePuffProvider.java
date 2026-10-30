@@ -1,10 +1,10 @@
 package com.pkmoba.client.particle;
 
+import net.minecraft.core.particles.SimpleParticleType;
+import net.minecraft.client.particle.SpriteSet;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.particle.Particle;
 import net.minecraft.client.particle.ParticleProvider;
-import net.minecraft.client.particle.SpriteSet;
-import net.minecraft.core.particles.SimpleParticleType;
 
 /**
  * 火焰团粒子的工厂：尺寸和寿命由注册的档位决定，速度由网络包传进来。

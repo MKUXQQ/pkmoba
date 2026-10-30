@@ -10,17 +10,16 @@ import com.pkmoba.network.EffectPayload;
 import com.pkmoba.network.SkillStatePayload;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.level.ClipContext;
-import net.minecraft.world.phys.HitResult;
-import net.minecraft.world.phys.Vec3;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -33,7 +32,7 @@ import java.util.UUID;
 public final class PikachuCombat {
     public static final double Q_RANGE = 18.0, W_RANGE = 16.0, E_RANGE = 10.0, R_RANGE = 20.0;
     public static final double W_RADIUS = 4.0, R_RADIUS = 4.5;
-    public static final int R_CHARGE_TICKS = 16;
+    public static final int R_CHARGE_TICKS = 34;
     public static double wTravelDistance(double requested) {
         return Math.min(W_RANGE, Math.max(0.0, requested));
     }
@@ -44,12 +43,14 @@ public final class PikachuCombat {
         return ground((ServerLevel) entity.level(), entity, entity.position().add(delta));
     }
     private static final int Q_TELEGRAPH_TICKS = 4;
-    private static final int W_TELEGRAPH_TICKS = 5;
+    private static final int W_TELEGRAPH_TICKS = 6;
     private static final int E_DASH_TICKS = 10;
     private static final int R_FIELD_TICKS = 16;
-    private static final int W_TRAVEL_TICKS = 24;
-    private static final double W_PROJECTILE_RADIUS = 0.7;
-    private static final double W_SPEED = W_RANGE / W_TRAVEL_TICKS;
+    /** v2: 十万伏特 is a sustained beam, not a thrown pulse ball. */
+    private static final int W_TRAVEL_TICKS = 12;
+    private static final int W_HIT_EVERY = 4;
+    private static final float W_BEAM_DAMAGE = 7.0F;
+    private static final double W_BEAM_RADIUS = 0.9;
     private static final Map<UUID, State> STATES = new HashMap<>();
     private static final Map<UUID, Map<UUID, Long>> SLOW_SOURCES = new HashMap<>();
     private static boolean initialized;
@@ -153,17 +154,18 @@ public final class PikachuCombat {
         current.hit.clear();
         if (index == 0) current.aim = current.start.add(current.direction.scale(Q_RANGE));
         if (index == 1) {
-            current.webPosition = current.start;
             current.detonated = false;
+        current.dashRoute = null;
         }
         if (index == 3) current.field = aimedPoint(entity, current.aim, R_RANGE);
-        if (index == 1) current.field = aimedPoint(entity, current.aim, W_RANGE);
         if (index == 1) {
-            Vec3 flight = current.field.subtract(current.start).multiply(1, 0, 1);
-            if (flight.length() > W_RANGE) flight = flight.normalize().scale(W_RANGE);
-            current.field = current.start.add(flight);
-            current.webDistance = flight.length();
-            current.projectileDirection = flight.lengthSqr() < 1.0e-4 ? current.direction : flight.normalize();
+            // The beam runs from the chest to the aimed point (clipped by terrain later), so the
+            // aiming HUD and the server damage use the same endpoint.
+            current.field = aimedPoint(entity, aim, W_RANGE);
+            Vec3 flatten = current.field.subtract(current.start).multiply(1, 0, 1);
+            if (flatten.lengthSqr() < 1.0e-4) flatten = current.direction;
+            current.direction = flatten.normalize();
+            current.aim = current.field;
         }
         if (index == 2) current.direction = current.direction.normalize();
         MoveOrderService.cancelPending(entity);
@@ -173,7 +175,28 @@ public final class PikachuCombat {
         level.playSound(null, entity.blockPosition(), SoundEvents.BEACON_ACTIVATE,
                 SoundSource.PLAYERS, 0.55F, index == 3 ? 1.65F : 1.9F);
         if (index == 1) sendCue(level, entity, "w_charge", current.start, new Vec3(0, 0, 0));
-        else if (index == 2) sendCue(level, entity, "e_start", entity.position(), current.direction);
+        else if (index == 2) {
+            // v3：电光一闪先画出一条完整的闪电路径，皮卡丘再沿着它冲过去。所以这里送的是
+            // “起点 -> 落点”的真实位移向量（按地形裁短），而不是单位朝向。
+            Vec3 chest = entity.position().add(0, 0.45, 0);
+            Vec3 intended = chest.add(current.direction.scale(E_RANGE));
+            Vec3 dashEnd = clippedEnd(level, entity, chest, intended);
+            Vec3 path = dashEnd.subtract(chest).multiply(1, 0, 1);
+            if (path.lengthSqr() < 1.0e-3) path = current.direction.scale(E_RANGE).multiply(1, 0, 1);
+            Vec3 flat = path.multiply(1, 0, 1);
+            Vec3 pathDir = flat.lengthSqr() < 1.0e-4 ? current.direction.multiply(1, 0, 1).normalize()
+                    : flat.normalize();
+            Vec3 side = new Vec3(-pathDir.z, 0, pathDir.x);
+            double span = flat.length();
+            Vec3 base = entity.position();
+            current.dashRoute = new Vec3[]{
+                    base,
+                    base.add(pathDir.scale(span * .32)).add(side.scale(1.5)),
+                    base.add(pathDir.scale(span * .66)).subtract(side.scale(1.5)),
+                    new Vec3(base.x + flat.x, dashEnd.y, base.z + flat.z)
+            };
+            sendCue(level, entity, "e_start", chest, path);
+        }
         else if (index == 3) {
             sendCue(level, entity, "r_charge", current.start, new Vec3(0, 0, 0));
             sendCue(level, entity, "r_warn", current.field, new Vec3(R_RADIUS, 0, 0));
@@ -182,7 +205,7 @@ public final class PikachuCombat {
         // 鼠标再动、AI 或旧移动指令都改不了；伤害/特效/模型朝向读的是同一份，不会再对不上。
         switch (index) {
             case 0 -> CastLock.begin(entity, CastLock.Shape.LINE, current.direction, current.aim, Q_TELEGRAPH_TICKS);
-            case 1 -> CastLock.begin(entity, CastLock.Shape.POINT, current.direction, current.field,
+            case 1 -> CastLock.begin(entity, CastLock.Shape.LINE, current.direction, current.field,
                     W_TELEGRAPH_TICKS + W_TRAVEL_TICKS);
             case 2 -> {
                 Vec3 travelEnd = entity.position().add(current.direction.scale(E_RANGE));
@@ -235,7 +258,7 @@ public final class PikachuCombat {
             sparkCloud(level, entity.position().add(0, entity.getBbHeight() * 0.65, 0), 6, 0.42);
         switch (current.skillIndex) {
             case 0 -> tickThunderShock(level, entity, current);
-            case 1 -> tickElectroweb(level, entity, current);
+            case 1 -> tickThunderbolt(level, entity, current);
             case 2 -> tickQuickAttack(level, entity, current);
             case 3 -> tickThunder(level, entity, current);
             default -> { }
@@ -260,31 +283,60 @@ public final class PikachuCombat {
                 SoundSource.PLAYERS, .65F, 1.7F);
         if (hit != null && current.hit.add(hit.getUUID())) {
             damage(level, entity, hit, 18.0F, TypeEffectiveness.MoveType.ELECTRIC);
+            // v2 电击: the bolt arcs on to up to two more targets inside 6 blocks.
+            Vec3 arcFrom = hit.getBoundingBox().getCenter();
+            float arcDamage = 11.0F;
+            for (int link = 0; link < 2; link++) {
+                LivingEntity next = chainTarget(level, entity, arcFrom, 6.0, current.hit);
+                if (next == null) break;
+                current.hit.add(next.getUUID());
+                Vec3 arcTo = next.getBoundingBox().getCenter();
+                sendCue(level, entity, "q_chain", arcFrom, arcTo.subtract(arcFrom));
+                damage(level, entity, next, arcDamage, TypeEffectiveness.MoveType.ELECTRIC);
+                sparkCloud(level, arcTo, 8, .35);
+                arcFrom = arcTo;
+                arcDamage *= 0.7F;
+            }
         }
     }
 
-    private static void tickElectroweb(ServerLevel level, PokemonEntity entity, State current) {
-        if (current.detonated) return;
-        if (current.elapsed < W_TELEGRAPH_TICKS) {
-            return;
+    /** Nearest extra target for a chain arc, excluding everything already struck this cast. */
+    private static LivingEntity chainTarget(ServerLevel level, PokemonEntity source, Vec3 center,
+                                            double radius, java.util.Set<UUID> exclude) {
+        LivingEntity best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (LivingEntity candidate : targets(level, source, center, radius)) {
+            if (exclude.contains(candidate.getUUID())) continue;
+            if (!clearLine(level, source, center, candidate.getBoundingBox().getCenter())) continue;
+            double distance = candidate.position().distanceToSqr(center);
+            if (distance < bestDistance) { best = candidate; bestDistance = distance; }
         }
-        Vec3 from = current.webPosition;
-        Vec3 remaining = current.field.subtract(from);
-        double step = Math.min(W_SPEED, remaining.length());
-        if (step <= 0.02) {
-            detonatePulse(level, entity, current, current.field);
-            return;
+        return best;
+    }
+
+    /** v2 十万伏特: a 12 tick sustained beam that ticks damage four times along its length. */
+    private static void tickThunderbolt(ServerLevel level, PokemonEntity entity, State current) {
+        if (current.elapsed <= W_TELEGRAPH_TICKS) return;
+        int beamAge = current.elapsed - W_TELEGRAPH_TICKS;
+        if (beamAge > W_TRAVEL_TICKS) return;
+        Vec3 from = current.start;
+        Vec3 end = clippedEnd(level, entity, from, current.field);
+        LivingEntity target = firstAlong(level, entity, from, end, 0.55);
+        if (target != null) end = target.getBoundingBox().getCenter();
+        if (beamAge == 1 || beamAge % 2 == 0) {
+            sendCue(level, entity, "w_beam", from, end.subtract(from));
         }
-        Vec3 intended = from.add(remaining.normalize().scale(step));
-        Vec3 next = clippedEnd(level, entity, from, intended);
-        LivingEntity target = firstAlong(level, entity, from, next, W_PROJECTILE_RADIUS);
-        boolean blocked = next.distanceToSqr(intended) > .001;
-        current.webPosition = target == null ? next : target.getBoundingBox().getCenter();
-        sendCue(level, entity, "w_orb_fly", current.webPosition,
-                current.field.subtract(current.webPosition));
-        if (target != null || blocked || current.webPosition.distanceToSqr(current.field) < .15) {
-            Vec3 impact = target == null ? current.webPosition : target.getBoundingBox().getCenter();
-            detonatePulse(level, entity, current, impact);
+        if (beamAge == 1) {
+            level.playSound(null, entity.blockPosition(), SoundEvents.LIGHTNING_BOLT_IMPACT,
+                    SoundSource.PLAYERS, .75F, 1.45F);
+        }
+        if (beamAge == 1 || beamAge % W_HIT_EVERY == 0) {
+            for (LivingEntity hit : targets(level, entity, end, W_BEAM_RADIUS)) {
+                if (!clearLine(level, entity, from, hit.getBoundingBox().getCenter())) continue;
+                current.hit.add(hit.getUUID());
+                damage(level, entity, hit, W_BEAM_DAMAGE, TypeEffectiveness.MoveType.ELECTRIC);
+            }
+            sparkCloud(level, end, 10, .45);
         }
     }
 
@@ -310,6 +362,19 @@ public final class PikachuCombat {
     }
 
     private static void tickQuickAttack(ServerLevel level, PokemonEntity entity, State current) {
+        if (current.dashRoute != null) {
+            // 0.48.5：电光一闪沿折线跑，模型贴着客户端画出的那条闪电走。
+            Vec3 target = pointAlong(current.dashRoute, Math.min(1.0, current.elapsed / (double) E_DASH_TICKS));
+            Vec3 move = target.subtract(entity.position());
+            if (move.horizontalDistanceSqr() > 1.0e-4
+                    && level.noCollision(entity, entity.getBoundingBox().move(move.x, 0, move.z))) {
+                entity.setPos(target.x, entity.getY(), target.z);
+            }
+            entity.setDeltaMovement(Vec3.ZERO);
+            if (current.elapsed % 2 == 0) sendCue(level, entity, "e_trail", entity.position(), current.direction);
+            tickQuickAttackHit(level, entity, current);
+            return;
+        }
         Vec3 step = current.direction.scale(E_RANGE / E_DASH_TICKS);
         // 0.48.5：E 冲刺的真实路径也按施法锁定终点收（CastLock.DASH 的 point）——
         // 起手时终点可能被场地边界夹短（多房间各裁各的），后续 tick 不能还按 E_RANGE 一路冲过头。
@@ -330,6 +395,24 @@ public final class PikachuCombat {
         }
         entity.setDeltaMovement(Vec3.ZERO);
         if (current.elapsed % 2 == 0) sendCue(level, entity, "e_trail", entity.position(), current.direction);
+        tickQuickAttackHit(level, entity, current);
+    }
+
+    /** Samples the E dash polyline by fractional arc length. */
+    private static Vec3 pointAlong(Vec3[] route, double t) {
+        double total = 0;
+        for (int i = 0; i < route.length - 1; i++) total += route[i].distanceTo(route[i + 1]);
+        if (total < 1.0e-4) return route[route.length - 1];
+        double want = Math.max(0, Math.min(1, t)) * total;
+        for (int i = 0; i < route.length - 1; i++) {
+            double len = route[i].distanceTo(route[i + 1]);
+            if (want <= len) return route[i].lerp(route[i + 1], want / Math.max(len, 1.0e-4));
+            want -= len;
+        }
+        return route[route.length - 1];
+    }
+
+    private static void tickQuickAttackHit(ServerLevel level, PokemonEntity entity, State current) {
         if (current.hit.isEmpty()) {
             LivingEntity target = targets(level, entity,
                     entity.position().add(0, entity.getBbHeight() * 0.4, 0), 1.45).stream()
@@ -338,7 +421,15 @@ public final class PikachuCombat {
             if (target != null) {
                 current.hit.add(target.getUUID());
                 damage(level, entity, target, 14.0F, TypeEffectiveness.MoveType.PHYSICAL);
-                sendCue(level, entity, "e_hit", target.getBoundingBox().getCenter(), current.direction);
+                Vec3 impact = target.getBoundingBox().getCenter();
+                sendCue(level, entity, "e_hit", impact, current.direction);
+                // v2 电光一闪: the impact discharges into anything else standing next to it.
+                for (LivingEntity extra : targets(level, entity, impact, 3.0)) {
+                    if (!current.hit.add(extra.getUUID())) continue;
+                    Vec3 spot = extra.getBoundingBox().getCenter();
+                    sendCue(level, entity, "e_chain", impact, spot.subtract(impact));
+                    damage(level, entity, extra, 6.0F, TypeEffectiveness.MoveType.ELECTRIC);
+                }
             }
         }
     }
@@ -348,6 +439,9 @@ public final class PikachuCombat {
         if (current.elapsed < R_CHARGE_TICKS) {
             if (current.elapsed % 5 == 0) level.playSound(null, entity.blockPosition(), SoundEvents.BEACON_POWER_SELECT,
                     SoundSource.PLAYERS, .45F, .7F + current.elapsed*.035F);
+            if (current.elapsed % 4 == 0) {
+                sendCue(level, entity, "r_cloud", current.field, new Vec3(R_RADIUS, 0, 0));
+            }
             return;
         }
         int strikeAge = current.elapsed - R_CHARGE_TICKS;
@@ -565,5 +659,7 @@ public final class PikachuCombat {
         Vec3 webPosition = Vec3.ZERO;
         double webDistance;
         LivingEntity caught;
+        /** E 电光一闪：模型沿这条折线（起点→左→右→落点）走，不是直线冲过去。 */
+        Vec3[] dashRoute;
     }
 }

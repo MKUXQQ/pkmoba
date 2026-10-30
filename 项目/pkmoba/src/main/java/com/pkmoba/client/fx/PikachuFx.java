@@ -1,180 +1,224 @@
 package com.pkmoba.client.fx;
 
-import com.pkmoba.client.ElectricSkillMesh;
+import com.pkmoba.client.ExpansionSkillMeshes;
+import com.pkmoba.combat.PikachuCombat;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.phys.Vec3;
-import org.joml.Matrix4f;
+import net.minecraft.resources.ResourceLocation;
 
 /**
- * Pikachu: lightning first, texture second.
+ * Pikachu v4: continuous textured lightning, no outlines, low density.
  *
- * <p>The moves read as electricity because every one of them carries real jagged bolts (the closed
- * emissive meshes in {@link ElectricSkillMesh}) with a bright white-hot core, branching forks and
- * ground arcs. The painted sheets only add the glow around them. Q 十万伏特 = a long fork storm,
- * W 电球 = a plasma sphere shedding bolts, E 电光一闪 = a volt-tackle banner with a bolt tail,
- * R 打雷 = a storm cage and a falling strike.
+ * <p>v3 drew every segment as its own textured block with a dark rim, which read as a chain of
+ * separated chips. Here a bolt is one continuous ribbon: the texture scrolls along the whole path
+ * (u = running length), the width is carried from segment to segment, and the white-hot core is a
+ * second continuous ribbon inside it. Zigzags stay in the camera plane so the drawing always reads
+ * as a bolt, and the layer count is capped at bolt + core + one spark + one ground ring.
  */
 public final class PikachuFx {
     private PikachuFx() {
     }
 
-    private static final ResourceLocation Q = tex("pikachu_q");
-    private static final ResourceLocation W = tex("pikachu_w");
-    private static final ResourceLocation E = tex("pikachu_e");
-    private static final ResourceLocation R = tex("pikachu_r");
+    private static final ResourceLocation SHOCK = tex("pikachu_thunder_shock");
+    private static final ResourceLocation CHANNEL = tex("pikachu_thunderbolt");
+    private static final ResourceLocation COLUMN = tex("pikachu_thunder_bolt");
+    private static final ResourceLocation CLOUD_BODY = tex("pikachu_cloud_body");
+    private static final ResourceLocation SPARK = tex("pikachu_spark");
+
+    /** How many texture repeats one world unit of bolt consumes; keeps the band from smearing. */
+    private static final double UV_SCALE = 3.2;
 
     private static ResourceLocation tex(String name) {
         return ResourceLocation.fromNamespaceAndPath("pkmoba", "textures/effect/" + name + ".png");
     }
 
-    /** World-space matrix for the closed mesh helpers (they skip the camera subtraction themselves). */
-    private static Matrix4f offset(WorldRenderContext c) {
-        Vec3 cam = c.camera().getPosition();
-        return new Matrix4f().translation((float) -cam.x, (float) -cam.y, (float) -cam.z);
-    }
-
-    private static void fork(WorldRenderContext c, Matrix4f m, Vec3 from, Vec3 to, double radius,
-                             float alpha, double seed) {
-        ElectricSkillMesh.bolt(c, m, from, to, radius, alpha, seed);
-        ElectricSkillMesh.bolt(c, m, from, to, radius * .55, alpha, seed + 2.7);
-        Vec3 axis = to.subtract(from);
-        if (axis.lengthSqr() > .5) {
-            Vec3 mid = from.add(axis.scale(.45 + .2 * Math.sin(seed)));
-            Vec3 side = axis.cross(new Vec3(0, 1, 0));
-            if (side.lengthSqr() < 1E-4) side = new Vec3(1, 0, 0);
-            side = side.normalize().scale(axis.length() * .28);
-            ElectricSkillMesh.bolt(c, m, mid, mid.add(side).add(0, -.15, 0), radius * .45, alpha * .85f, seed + 1.3);
-            ElectricSkillMesh.bolt(c, m, mid, mid.subtract(side).add(0, .12, 0), radius * .45, alpha * .8f, seed + 4.1);
-        }
-    }
-
-    public static void render(WorldRenderContext c, String kind, Vec3 pos, Vec3 vec, double t, float alpha) {
-        Matrix4f m = offset(c);
-        Fx base = new Fx(c, kind.startsWith("q") ? Q : kind.startsWith("e") ? E : kind.startsWith("r") ? R : W);
-        base.glow(pos, .55 + Math.min(1.2, vec.length() * .22), alpha * .7f);
-        base.pixels(pos, 1.0, 16, .16, t, alpha * .9f);
-        Vec3 tail = pos.subtract(vec.lengthSqr() < 1e-4 ? new Vec3(0, 0, .9) : vec.normalize().scale(.9));
-        base.flow(tail, pos, .34, t, alpha * .7f);
+    public static void render(WorldRenderContext c, String kind, Vec3 pos, Vec3 vec, double t,
+                              float alpha, double seed) {
         switch (kind) {
             case "q_bolt" -> {
                 Vec3 end = pos.add(vec);
-                Vec3 up = new Vec3(0, .45, 0);
-                fork(c, m, pos.add(up.scale(.4)), end, .14, alpha, t);
-                for (int i = 0; i < 3; i++) {
-                    double seed = t * .7 + i * 2.3;
-                    Vec3 mid = pos.add(vec.scale(.3 + i * .2)).add(0, .1 - i * .25, 0);
-                    fork(c, m, mid, mid.add(vec.normalize().scale(1.1)).add(
-                            Math.sin(seed) * .5, Math.cos(seed * 1.4) * .5, Math.cos(seed) * .5), .08, alpha * .8f, seed);
-                }
-                Fx fx = new Fx(c, Q);
-                fx.sheet(end, .8, .8, t * .5, alpha);
-                fx.sheet(pos.add(vec.scale(.55)), .7, 1.1, t * .3, alpha * .7f);
-                fx.burst(end, 1.2, 10, .35, t, alpha * .9f);
-                fx.groundRing(end, .9, 2, t, alpha * .5f);
+                Vec3[] path = zig(c, pos, end, 5, .55, seed);
+                bolt(c, path, SHOCK, .95, alpha);
+                forks(c, path, 1, .9, alpha * .7f, seed);
+                spark(c, end, 1.5, t, alpha);
             }
-            case "w_charge", "r_charge" -> {
-                boolean ult = kind.equals("r_charge");
-                Fx fx = new Fx(c, ult ? R : W);
-                Vec3 core = pos.add(0, .45, 0);
-                double size = (ult ? .42 : .28) + Math.min(1, Math.max(0, vec.x)) * .35;
-                ElectricSkillMesh.orb(c, m, core, size, alpha * .95f, t * .4);
-                fx.sheet(core, size * 2.0, size * 2.0, t * .3, alpha * .85f);
-                base.pixels(core, size * 1.6, 10, .12, t, alpha);
-                int spokes = ult ? 8 : 5;
-                for (int i = 0; i < spokes; i++) {
-                    double ang = i * Math.PI * 2 / spokes + t * .25;
-                    Vec3 out = core.add(Math.cos(ang) * size * 1.8, Math.sin(ang * 1.7) * size, Math.sin(ang) * size * 1.8);
-                    ElectricSkillMesh.bolt(c, m, core, out, .035, alpha * .8f, i + t * .5);
-                }
-                for (int i = 0; i < (ult ? 4 : 3); i++) fx.ring(core, size * (1 + i * .32), .018, alpha * .7f);
-                if (ult) fx.groundRing(pos, 1.5, 3, t, alpha * .6f);
-            }
-            case "w_orb_fly" -> {
-                Fx fx = new Fx(c, W);
-                Vec3 dir = vec.lengthSqr() < 1e-4 ? new Vec3(0, 0, 1) : vec.normalize();
-                ElectricSkillMesh.orb(c, m, pos, .34, alpha, t * .5);
-                fx.sheet(pos, 1.0, 1.0, t * .5, alpha);
-                for (int i = 0; i < 4; i++) {
-                    Vec3 a = pos.subtract(dir.scale(.25 + i * .22));
-                    ElectricSkillMesh.bolt(c, m, a, a.add(dir.cross(new Vec3(0, 1, 0)).normalize().scale(
-                            Math.sin(i + t * .4) * .35)).add(0, Math.cos(i * 1.3 + t * .3) * .3, 0),
-                            .045, alpha * (.8f - i * .15f), i + t);
-                }
-            }
-            case "w_orb_burst" -> {
-                Fx fx = new Fx(c, W);
-                double radius = Math.max(.5, vec.x) * (.5 + .5 * Math.min(1, t % 8 / 4));
-                ElectricSkillMesh.ring(c, m, pos.add(0, .12, 0), radius * .9, .05, alpha * .8f, t);
-                for (int i = 0; i < 10; i++) {
-                    double ang = i * Math.PI * 2 / 10 + t * .3;
-                    Vec3 end = pos.add(Math.cos(ang) * radius, .25 + Math.sin(i * 1.7) * .5, Math.sin(ang) * radius);
-                    ElectricSkillMesh.bolt(c, m, pos.add(0, .25, 0), end, .05, alpha * .85f, i + t);
-                }
-                fx.disc(pos.add(0, .05, 0), radius * 1.3, alpha * .7f);
-                fx.burst(pos.add(0, .25, 0), radius, 12, .3, t, alpha * .85f);
-                fx.groundRing(pos, radius * 1.1, 3, t, alpha * .6f);
-            }
-            case "e_start", "e_trail", "e_hit" -> {
-                Fx fx = new Fx(c, E);
-                Vec3 head = pos.add(0, .5, 0);
-                Vec3 dir = vec.lengthSqr() < .001 ? new Vec3(0, 0, 1) : vec.normalize();
-                for (int i = 0; i < 4; i++) {
-                    double seed = t * .6 + i * 1.9;
-                    Vec3 a = head.subtract(dir.scale(.5 + i * .45));
-                    Vec3 b = head.subtract(dir.scale(.15 + i * .3)).add(
-                            Math.sin(seed) * .22, Math.cos(seed * 1.3) * .18, 0);
-                    ElectricSkillMesh.bolt(c, m, a, b, .05, alpha * (.85f - i * .15f), seed);
-                }
-                fx.beam(head.subtract(dir.scale(2.2)), head, .5, alpha * .45f);
-                fx.sheet(head, 1.1, .6, dir.y, alpha);
-                if (kind.equals("e_hit")) {
-                    fx.disc(pos.add(0, .05, 0), 1.6, alpha * .75f);
-                    for (int i = 0; i < 8; i++) {
-                        double ang = i * Math.PI / 4 + t;
-                        ElectricSkillMesh.bolt(c, m, pos.add(0, .2, 0),
-                                pos.add(Math.cos(ang) * 1.3, .2, Math.sin(ang) * 1.3), .05, alpha * .8f, i + t);
-                    }
-                    fx.burst(pos.add(0, .3, 0), 1.4, 10, .3, t, alpha * .85f);
-                }
-            }
-            case "r_warn", "r_field" -> {
-                Fx fx = new Fx(c, R);
-                double radius = kind.equals("r_field") ? Math.max(1, Math.min(9, vec.x)) : Math.max(1, vec.x);
-                fx.disc(pos.add(0, .05, 0), radius, alpha * .5f);
-                fx.groundRing(pos, radius, 4, t, alpha * .7f);
-                int count = kind.equals("r_field") ? 12 : 7;
-                for (int i = 0; i < count; i++) {
-                    double ang = i * Math.PI * 2 / count + t * .05;
-                    Vec3 foot = pos.add(Math.cos(ang) * radius * .85, 0, Math.sin(ang) * radius * .85);
-                    Vec3 top = foot.add(0, 2.4 + (i % 3) * 1.0, 0);
-                    ElectricSkillMesh.bolt(c, m, foot, top, .06, alpha * .85f, i + t);
-                    ElectricSkillMesh.bolt(c, m, foot, foot.add(Math.cos(ang) * radius * .25, 1.2, Math.sin(ang) * radius * .25),
-                            .035, alpha * .6f, i * 2 + t);
-                }
-                base.pixels(pos.add(0, 1, 0), radius * .8, 12, .16, t, alpha);
-            }
-            case "r_strike" -> {
-                Fx fx = new Fx(c, R);
+            case "q_chain" -> bolt(c, zig(c, pos, pos.add(vec), 4, .3, seed), SHOCK, .5, alpha * .9f);
+            case "w_charge" -> charge(c, pos, t, alpha, seed);
+            case "w_beam" -> {
                 Vec3 end = pos.add(vec);
-                double radius = com.pkmoba.combat.PikachuCombat.R_RADIUS;
-                fork(c, m, pos, end, .22, alpha, t);
-                for (int i = 0; i < 5; i++) {
-                    double seed = t + i * 2.1;
-                    Vec3 from = pos.add(vec.scale(.15 + i * .16));
-                    fork(c, m, from, from.add(vec.normalize().scale(1.4)).add(
-                            Math.sin(seed) * .8, Math.cos(seed) * .5, Math.cos(seed * .7) * .8), .09, alpha * .75f, seed);
+                Vec3[] path = zig(c, pos, end, 6, .95, seed);
+                bolt(c, path, CHANNEL, 1.7, alpha);
+                forks(c, path, 1, 1.4, alpha * .7f, seed + 9);
+                spark(c, end, 2.2 + .15 * Math.sin(t * 7), t * .6, alpha);
+            }
+            case "w_beam_end" -> spark(c, pos, 2.4, t, alpha);
+            case "e_start" -> dashPath(c, pos, vec, t, alpha);
+            case "e_trail" -> {
+                Vec3 dir = vec.lengthSqr() < .01 ? new Vec3(0, 0, 1) : vec.normalize();
+                Vec3 back = pos.subtract(dir.scale(1.8)).add(0, .45, 0);
+                bolt(c, zig(c, back, pos.add(0, .45, 0), 4, .4, seed), SHOCK, .55, alpha * .8f);
+            }
+            case "e_hit" -> spark(c, pos, 2.0, t, alpha);
+            case "e_chain" -> bolt(c, zig(c, pos, pos.add(vec), 4, .26, seed), SHOCK, .42, alpha * .85f);
+            // Charging happens on Pikachu, but the storm cloud only ever appears where the strike
+            // is aimed - a cloud over the caster's head made the real lightning unreadable.
+            case "r_charge" -> charge(c, pos, t, alpha, seed);
+            case "r_cloud", "r_warn" -> cloud3d(c, pos.add(0, 7.3, 0), 1.15, t, alpha, seed);
+            case "r_strike" -> {
+                Vec3 ground = pos.add(vec);
+                Vec3 cloudAt = ground.add(0, 7.3, 0);
+                cloud3d(c, cloudAt, 1.2, t, alpha * .95f, seed);
+                Vec3[] path = zig(c, cloudAt.add(0, -1.1, 0), ground, 6, 1.35, seed + 5);
+                bolt(c, path, COLUMN, 1.8, alpha);
+                forks(c, path, 1, 1.4, alpha * .7f, seed + 17);
+                spark(c, ground, 2.6, t, alpha);
+            }
+            case "r_field" -> {
+                double radius = Math.max(1, Math.min(PikachuCombat.R_RADIUS, vec.x));
+                for (int i = 0; i < 3; i++) {
+                    double ang = i * Math.PI * 2 / 3 + t * .1;
+                    Vec3 foot = pos.add(Math.cos(ang) * radius * .65, 0, Math.sin(ang) * radius * .65);
+                    bolt(c, zig(c, foot, foot.add(0, 1.6, 0), 3, .3, seed + i), SHOCK, .45, alpha * .7f);
                 }
-                fx.disc(end.add(0, .05, 0), radius, alpha * .7f);
-                fx.groundRing(end, radius, 4, t, alpha * .85f);
-                for (int i = 0; i < 12; i++) {
-                    double ang = i * Math.PI * 2 / 12 + t * .1;
-                    Vec3 foot = end.add(Math.cos(ang) * radius * .7, 0, Math.sin(ang) * radius * .7);
-                    ElectricSkillMesh.bolt(c, m, foot, foot.add(0, 2.2 + (i % 4) * .8, 0), .06, alpha * .8f, i + t);
-                }
-                fx.burst(end.add(0, .2, 0), radius * .9, 14, .15, t, alpha * .8f);
             }
             default -> { }
         }
+    }
+
+    // ---- compositions ----------------------------------------------------------------------
+
+    private static void charge(WorldRenderContext c, Vec3 pos, double t, float alpha, double seed) {
+        Vec3 core = pos.add(0, .2, 0);
+        spark(c, core, 1.0 + .1 * Math.sin(t * 6), t * .8, alpha);
+        for (int i = 0; i < 2; i++) {
+            double ang = i * Math.PI + t * .5;
+            Vec3 out = core.add(Math.cos(ang) * 1.1, .2, Math.sin(ang) * 1.1);
+            bolt(c, zig(c, out, core, 3, .28, seed + i), SHOCK, .38, alpha * .7f);
+        }
+    }
+
+    /** The 电光一闪 route: start, left, right, landing spot - the caster runs along this path. */
+    private static void dashPath(WorldRenderContext c, Vec3 pos, Vec3 vec, double t, float alpha) {
+        // Only the lightning path is drawn: the stacked Pikachu silhouettes read as a glitch.
+        bolt(c, dashRoute(pos, vec), SHOCK, 1.0, alpha);
+        spark(c, pos, 1.1, t, alpha * .7f);
+    }
+
+    public static Vec3[] dashRoute(Vec3 start, Vec3 vec) {
+        Vec3 flat = new Vec3(vec.x, 0, vec.z);
+        if (flat.lengthSqr() < 1.0e-4) flat = new Vec3(0, 0, 1);
+        Vec3 dir = flat.normalize();
+        Vec3 side = new Vec3(-dir.z, 0, dir.x);
+        double len = flat.length();
+        // pos from the cue is already the chest height, and the server walks the body along this
+        // same polyline, so the bolt has to sit exactly on it - no extra vertical offset.
+        return new Vec3[]{
+                start,
+                start.add(dir.scale(len * .32)).add(side.scale(1.5)),
+                start.add(dir.scale(len * .66)).subtract(side.scale(1.5)),
+                start.add(vec)
+        };
+    }
+
+    /**
+     * A real solid cloud instead of a camera-facing sticker: three rough textured lumps, no icon
+     * badge, so the lightning below it stays the only readable shape.
+     */
+    private static void cloud3d(WorldRenderContext c, Vec3 at, double size, double t, float alpha,
+                                double seed) {
+        ExpansionSkillMeshes.sphere(c, at, new Vec3(size * 1.75, size * .85, size * 1.2), seed,
+                CLOUD_BODY, alpha, true);
+        ExpansionSkillMeshes.sphere(c, at.add(size * .95, -.12, size * .15),
+                new Vec3(size * .95, size * .6, size * .85), seed + 1, CLOUD_BODY, alpha, true);
+        ExpansionSkillMeshes.sphere(c, at.add(-size * .95, -.05, -size * .2),
+                new Vec3(size * .85, size * .55, size * .8), seed + 2, CLOUD_BODY, alpha, true);
+    }
+
+    // ---- primitives ------------------------------------------------------------------------
+
+    /**
+     * One continuous ribbon along the polyline: shared width and running UV at every joint, so the
+     * lightning never breaks into separate chips.
+     */
+    private static void bolt(WorldRenderContext c, Vec3[] pts, ResourceLocation body, double thickness,
+                             float alpha) {
+        if (pts.length < 2 || alpha <= .01f) return;
+        Vec3 camera = c.camera().getPosition();
+        Vec3[] sides = new Vec3[pts.length];
+        for (int i = 0; i < pts.length; i++) {
+            Vec3 prev = pts[Math.max(0, i - 1)], next = pts[Math.min(pts.length - 1, i + 1)];
+            Vec3 axis = next.subtract(prev);
+            Vec3 side = axis.cross(camera.subtract(pts[i]));
+            if (side.lengthSqr() < 1.0e-6) side = axis.cross(new Vec3(0, 1, 0));
+            sides[i] = side.normalize().scale(thickness * .5);
+        }
+        double u = 0;
+        for (int i = 0; i < pts.length - 1; i++) {
+            Vec3 from = pts[i], to = pts[i + 1];
+            double len = from.distanceTo(to);
+            if (len < 1.0e-4) continue;
+            double u2 = u + len * UV_SCALE;
+            Vec3 a = from.subtract(sides[i]), b = from.add(sides[i]);
+            Vec3 d = to.add(sides[i + 1]), e = to.subtract(sides[i + 1]);
+            // one ribbon only: the white-hot core is baked into the band texture, so segments can
+            // never drift apart into separate chips and no second outline appears.
+            ExpansionSkillMeshes.raw(c, body, a, b, d, e, (float) u, 0, (float) u2, 1, alpha);
+            u = u2;
+        }
+    }
+
+    private static void forks(WorldRenderContext c, Vec3[] path, int count, double length,
+                              float alpha, double seed) {
+        java.util.Random rnd = new java.util.Random((long) (seed * 1000));
+        for (int i = 0; i < count; i++) {
+            Vec3 base = path[1 + rnd.nextInt(Math.max(1, path.length - 2))];
+            Vec3 dir = new Vec3(rnd.nextDouble() - .5, rnd.nextDouble() * .6 - .15,
+                    rnd.nextDouble() - .5).normalize().scale(length);
+            bolt(c, zig(c, base, base.add(dir), 3, .35, seed + i * 7), SHOCK, .55, alpha);
+        }
+    }
+
+    private static void spark(WorldRenderContext c, Vec3 at, double size, double t, float alpha) {
+        sheet(c, SPARK, at, size * 1.5, size * 1.5, t * .4, alpha);
+    }
+
+    private static void sheet(WorldRenderContext c, ResourceLocation tex, Vec3 center, double w, double h,
+                              double angle, float alpha) {
+        if (alpha <= .01f) return;
+        Vec3[] axes = axes(c, angle);
+        Vec3 right = axes[0].scale(w * .5), up = axes[1].scale(h * .5);
+        ExpansionSkillMeshes.raw(c, tex, center.subtract(right).subtract(up),
+                center.subtract(right).add(up), center.add(right).add(up),
+                center.add(right).subtract(up), 0, 0, 1, 1, alpha);
+    }
+
+    private static Vec3[] axes(WorldRenderContext c, double angle) {
+        var q = c.camera().rotation();
+        var r = q.transform(new org.joml.Vector3f(1, 0, 0));
+        var u = q.transform(new org.joml.Vector3f(0, 1, 0));
+        Vec3 right = new Vec3(r.x, r.y, r.z);
+        Vec3 up = new Vec3(u.x, u.y, u.z);
+        double cs = Math.cos(angle), sn = Math.sin(angle);
+        return new Vec3[]{right.scale(cs).add(up.scale(sn)), up.scale(cs).subtract(right.scale(sn))};
+    }
+
+    /** Jagged polyline whose offsets live in the camera plane, so it reads as a drawn bolt. */
+    private static Vec3[] zig(WorldRenderContext c, Vec3 from, Vec3 to, int segments, double amp,
+                              double seed) {
+        Vec3[] axes = axes(c, 0);
+        Vec3 right = axes[0], up = axes[1];
+        java.util.Random rnd = new java.util.Random((long) (seed * 9176) + 31);
+        Vec3[] pts = new Vec3[segments + 1];
+        pts[0] = from;
+        pts[segments] = to;
+        for (int i = 1; i < segments; i++) {
+            double f = (double) i / segments;
+            Vec3 base = from.lerp(to, f);
+            double sign = (i % 2 == 0) ? 1 : -1;
+            double dx = sign * amp * (.6 + .4 * rnd.nextDouble());
+            double dy = (rnd.nextDouble() - .5) * amp * .35;
+            pts[i] = base.add(right.scale(dx)).add(up.scale(dy));
+        }
+        return pts;
     }
 }

@@ -1,14 +1,14 @@
 package com.pkmoba.client;
 
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
-import com.mojang.blaze3d.vertex.PoseStack;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
-import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.client.Minecraft;
+import net.minecraft.util.Mth;
+import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.renderer.MultiBufferSource;
 import org.joml.Quaternionf;
 
 /**
@@ -21,10 +21,10 @@ import org.joml.Quaternionf;
 public final class PokemonOverheadBar {
     private static final double RANGE_SQR = 64.0 * 64.0;
     /** One bar pixel is this many world units, so the bar keeps a readable size at distance. */
-    private static final float WORLD_SCALE = 0.0185F;
-    private static final int BAR_WIDTH = 54;
-    private static final int BAR_HEIGHT = 5;
-    private static final double BAR_LIFT = 0.05;
+    private static final float WORLD_SCALE = 0.0155F;
+    private static final int BAR_WIDTH = 46;
+    private static final int BAR_HEIGHT = 4;
+    private static final double BAR_LIFT = 0.62;
 
     private static final int OUTLINE = 0xFF0A0E10;
     private static final int TRACK = 0xFF232A2D;
@@ -80,12 +80,14 @@ public final class PokemonOverheadBar {
             pose.scale(WORLD_SCALE * scale, -WORLD_SCALE * scale, WORLD_SCALE * scale);
 
             int left = -BAR_WIDTH / 2;
-            rect(buffers, pose, OverheadBarRenderType.BACK, left - 1, -1, BAR_WIDTH + 2, BAR_HEIGHT + 2,
-                    OUTLINE, -0.030F);
-            rect(buffers, pose, OverheadBarRenderType.TRACK, left, 0, BAR_WIDTH, BAR_HEIGHT, TRACK, -0.020F);
+            // Single render type, single depth plane: paint order decides the stack. Tiny z offsets
+            // between layers z-fought at steep camera angles and turned the bar into a black block.
+            rect(buffers, pose, OverheadBarRenderType.BAR, left - 1, -1, BAR_WIDTH + 2, BAR_HEIGHT + 2,
+                    OUTLINE, 0.0F);
+            rect(buffers, pose, OverheadBarRenderType.BAR, left, 0, BAR_WIDTH, BAR_HEIGHT, TRACK, 0.0F);
             if (filled > 0) {
-                rect(buffers, pose, OverheadBarRenderType.FILL, left, 0, filled, BAR_HEIGHT, fill, -0.010F);
-                rect(buffers, pose, OverheadBarRenderType.TRIM, left, 0, filled, 1, shine, -0.004F);
+                rect(buffers, pose, OverheadBarRenderType.BAR, left, 0, filled, BAR_HEIGHT, fill, 0.0F);
+                rect(buffers, pose, OverheadBarRenderType.BAR, left, 0, filled, 1, shine, 0.0F);
             }
             pose.popPose();
         }
@@ -108,19 +110,28 @@ public final class PokemonOverheadBar {
         consumer.addVertex(matrix, x + width, y, z).setColor(r, g, b, a);
     }
 
+    /** Head height of the rendered model, in world units above the feet. */
     private static double visualHeight(PokemonEntity pokemon) {
         String species = pokemon.getPokemon().getSpecies().getResourceIdentifier().getPath();
-        double height = pokemon.getBoundingBox().getYsize();
-        if (species.contains("venusaur") || species.contains("snorlax") || species.contains("dragonite")) {
-            return Math.max(height, 2.25);
+        double box = Math.max(pokemon.getBbHeight(), pokemon.getEyeHeight() + 0.35);
+        // Pokedex heights are block-scaled by the model pack; these floors keep the bar clear of the
+        // head (and any wings or horns that stick out beyond the collision box).
+        if (species.contains("tyranitar")) {
+            return Math.max(box, 2.95);
         }
-        if (species.contains("blastoise") || species.contains("charizard") || species.contains("golem")
-                || species.contains("tyranitar") || species.contains("garchomp")) {
-            return Math.max(height, 1.95);
+        if (species.contains("charizard") || species.contains("venusaur") || species.contains("snorlax")
+                || species.contains("dragonite")) {
+            return Math.max(box, 2.70);
+        }
+        if (species.contains("blastoise") || species.contains("golem") || species.contains("blaziken")) {
+            return Math.max(box, 2.45);
+        }
+        if (species.contains("ninetales")) {
+            return Math.max(box, 1.75);
         }
         if (species.contains("pikachu") || species.contains("eevee") || species.contains("jigglypuff")) {
-            return Math.min(height, 1.15);
+            return Math.min(box, 1.15);
         }
-        return height;
+        return box;
     }
 }

@@ -3,10 +3,9 @@ package com.pkmoba.client;
 import com.cobblemon.mod.common.client.entity.PokemonClientDelegate;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 import com.pkmoba.combat.MouthAnchor;
-import net.minecraft.world.phys.Vec3;
-
 import java.util.ArrayList;
 import java.util.List;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * 客户端嘴部锚点：优先读 Cobblemon 活体骨骼定位器（会跟着施法动画一起动），

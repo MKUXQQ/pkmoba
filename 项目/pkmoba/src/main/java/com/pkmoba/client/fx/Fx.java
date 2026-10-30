@@ -2,8 +2,8 @@ package com.pkmoba.client.fx;
 
 import com.pkmoba.client.ExpansionSkillMeshes;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.resources.ResourceLocation;
 
 /**
  * Small textured drawing kit shared by the per-skill visuals.
@@ -66,6 +66,38 @@ public final class Fx {
         Vec3 r = ax[0].scale(w * .5), u = ax[1].scale(h * .5);
         ExpansionSkillMeshes.raw(c, tex, center.subtract(r).subtract(u), center.subtract(r).add(u),
                 center.add(r).add(u), center.add(r).subtract(u), u0, v0, u1, v1, alpha);
+    }
+
+    /**
+     * 0.94: a plane that stays upright in the WORLD instead of following the camera.
+     *
+     * <p>{@link #sheet} is camera-UP aligned, so a "vertical" texture tilts with the camera and, from a
+     * high angle, visually lies down. Blades and banners must stand on the Y axis, so they are built
+     * from two crossed vertical quads (any camera sees at least one of them).
+     */
+    public void upright(Vec3 center, double w, double h, double yawDeg, float alpha) {
+        if (alpha <= 0) return;
+        double yaw = Math.toRadians(yawDeg);
+        Vec3 up = new Vec3(0, 1, 0).scale(h * .5);
+        Vec3 dir = new Vec3(Math.cos(yaw), 0, Math.sin(yaw)).scale(w * .5);
+        Vec3 side = new Vec3(-Math.sin(yaw), 0, Math.cos(yaw)).scale(w * .5);
+        for (Vec3 axis : new Vec3[]{dir, side}) {
+            ExpansionSkillMeshes.raw(c, tex, center.subtract(axis).subtract(up), center.subtract(axis).add(up),
+                    center.add(axis).add(up), center.add(axis).subtract(up), 0, 0, 1, 1, alpha);
+        }
+    }
+
+    /**
+     * 0.101: a quad lying FLAT on the ground (XZ plane). Used for the earthquake's bouncing slabs:
+     * the real blocks never move, the visible ground just hops in place.
+     */
+    public void slab(Vec3 center, double w, double d, double yawDeg, float alpha) {
+        if (alpha <= 0) return;
+        double yaw = Math.toRadians(yawDeg);
+        Vec3 ax = new Vec3(Math.cos(yaw), 0, Math.sin(yaw)).scale(w * .5);
+        Vec3 az = new Vec3(-Math.sin(yaw), 0, Math.cos(yaw)).scale(d * .5);
+        ExpansionSkillMeshes.raw(c, tex, center.subtract(ax).subtract(az), center.add(ax).subtract(az),
+                center.add(ax).add(az), center.subtract(ax).add(az), 0, 0, 1, 1, alpha);
     }
 
     /**

@@ -2,9 +2,9 @@ package com.pkmoba.network;
 
 import com.pkmoba.PkmobaMod;
 import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.network.codec.StreamCodec;
 
 /**
  * C2S：玩家在宝可梦选择界面里选定了某只宝可梦。

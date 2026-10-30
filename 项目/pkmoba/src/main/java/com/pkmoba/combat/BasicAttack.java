@@ -4,11 +4,11 @@ import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 import com.pkmoba.duel.BotDuelService;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.ClipContext;
 
 /** Shared target and geometry helpers used by skill hit validation. */
 public final class BasicAttack {
@@ -16,6 +16,7 @@ public final class BasicAttack {
 
     public static boolean validTarget(LivingEntity target, Entity self) {
         if (target == null || target == self || !target.isAlive() || target.isRemoved()) return false;
+        if (Illusions.isIllusion(target)) return false;
         if ((self instanceof PokemonEntity pokemonSelf && BotDuelService.isBot(pokemonSelf))
                 || (target instanceof PokemonEntity pokemonTarget && BotDuelService.isBot(pokemonTarget))) {
             return BotDuelService.areOpponents(self, target);

@@ -1,14 +1,13 @@
 package com.pkmoba.pokemon;
 
 import com.pkmoba.PkmobaMod;
-import net.minecraft.core.HolderLookup;
+import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.StringTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.world.level.saveddata.SavedData;
-
 import javax.annotation.Nullable;
 import java.util.HashMap;
 import java.util.Map;
@@ -88,6 +87,9 @@ public final class ProfileStore extends SavedData {
     public PlayerProfile collection(UUID id) {
         PlayerProfile profile = profiles.computeIfAbsent(id, PlayerProfile::new);
         boolean changed = false;
+        // 0.86: Garchomp and Scizor were removed; purge them (and any other retired id) from saves.
+        if (profile.team.removeIf(species -> SpeciesRegistry.parse(species) == null)) changed = true;
+        profile.favorites.removeIf(species -> SpeciesRegistry.parse(species) == null);
         for (String species : SpeciesRegistry.ids()) {
             if (!profile.team.contains(species)) {
                 profile.team.add(species);

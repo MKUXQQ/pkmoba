@@ -13,17 +13,15 @@ import com.pkmoba.pokemon.TeamService;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.phys.Vec3;
-
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ClientInformation;
+import net.minecraft.server.MinecraftServer;
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -537,9 +535,9 @@ public final class BotDuelService {
     private static double desiredRange(PokemonEntity pokemon) {
         var expansion = com.pkmoba.combat.ExpansionCombat.species(pokemon);
         if (expansion != null) return switch (expansion.id()) {
-            case "lucario", "blaziken", "scizor", "garchomp" -> 2.6;
+            case "lucario", "blaziken" -> 2.6;
             case "tyranitar" -> 3.0;
-            case "abomasnow" -> 6.0;
+            case "alolan_ninetales" -> 7.0;
             default -> 9.0;
         };
         if (Skill.isBlastoise(pokemon)) {

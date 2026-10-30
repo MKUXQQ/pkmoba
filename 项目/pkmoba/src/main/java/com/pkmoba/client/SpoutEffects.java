@@ -1,21 +1,21 @@
 package com.pkmoba.client;
 
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
-import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.pkmoba.network.SpoutPayload;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.RenderType;
-import net.minecraft.core.particles.ParticleTypes;
-import net.minecraft.util.RandomSource;
-import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.client.Minecraft;
+import net.minecraft.world.level.ClipContext;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.minecraft.util.RandomSource;
+import net.minecraft.client.multiplayer.ClientLevel;
 import org.joml.Matrix4f;
 import java.util.ArrayList;
 import java.util.HashMap;

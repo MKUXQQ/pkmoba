@@ -2,15 +2,19 @@ package com.pkmoba.client;
 
 import com.cobblemon.mod.common.entity.PosableEntity;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
-import com.pkmoba.client.fx.AbomasnowFx;
+import com.pkmoba.client.fx.NinetalesFx;
 import com.pkmoba.client.fx.BlazikenFx;
+import com.pkmoba.client.fx.CeruledgeFx;
+import com.pkmoba.client.fx.KrookodileFx;
+import com.pkmoba.client.fx.ArmarougeFx;
+import com.pkmoba.client.fx.ZoroarkFx;
 import com.pkmoba.client.fx.Fx;
 import com.pkmoba.client.fx.FxView;
-import com.pkmoba.client.fx.GarchompFx;
 import com.pkmoba.client.fx.GardevoirFx;
 import com.pkmoba.client.fx.GengarFx;
+import com.pkmoba.client.fx.GreninjaFx;
 import com.pkmoba.client.fx.LucarioFx;
-import com.pkmoba.client.fx.ScizorFx;
+import com.pkmoba.client.fx.MeowscaradaFx;
 import com.pkmoba.client.fx.TyranitarFx;
 import com.pkmoba.combat.ExpansionRoster;
 import com.pkmoba.combat.ExpansionWalls;
@@ -19,14 +23,12 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
-import net.minecraft.client.Minecraft;
-import net.minecraft.core.particles.ParticleTypes;
-import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.sounds.SoundEvents;
-import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,6 +50,8 @@ public final class ExpansionEffects {
 
     public static void init() {
         WorldRenderEvents.AFTER_ENTITIES.register(ExpansionEffects::render);
+        // 0.133.1: one-line proof that the baked animation groups resolve, visible without playing.
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, mc) -> logAnimationGroups());
         ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> clear());
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
             fireScheduled(mc);
@@ -55,6 +59,21 @@ public final class ExpansionEffects {
             SCENES.values().removeIf(s -> ++s.age > s.life || mc.level == null || mc.level.getEntity(s.owner) == null);
         });
     }
+    private static void logAnimationGroups() {
+        String[][] probes = {{"ceruledge", "physical"}, {"ceruledge", "animation.ceruledge.physical"},
+                {"pkmoba_ceruledge", "q_cast"}, {"pkmoba_ceruledge", "animation.pkmoba_ceruledge.q_cast"}};
+        for (String[] probe : probes) {
+            boolean found;
+            try {
+                found = com.cobblemon.mod.common.client.render.models.blockbench.bedrock.animation
+                        .BedrockAnimationRepository.INSTANCE.tryGetAnimation(probe[0], probe[1]) != null;
+            } catch (RuntimeException error) {
+                found = false;
+            }
+            CLIP_LOG.info("animprobe {} :: {} -> {}", probe[0], probe[1], found);
+        }
+    }
+
     private static void clear() {
         SCENES.clear();
         PENDING.clear();
@@ -83,7 +102,7 @@ public final class ExpansionEffects {
             PENDING.remove(i);
             Entity entity = mc.level.getEntity(p.owner);
             if (entity instanceof PokemonEntity pokemon) {
-                if (!pokemon.getPokemon().getSpecies().getResourceIdentifier().getPath().equals(p.species)) continue;
+                if (!matches(pokemon, p.species)) continue;
                 playClip(pokemon, p.species, p.clip);
             }
         }
@@ -92,10 +111,14 @@ public final class ExpansionEffects {
     public static boolean isMelee(String id, int skill) {
         return switch (id) {
             case "lucario" -> skill > 0;
-            case "blaziken", "garchomp" -> true;
+            case "blaziken" -> true;
             case "tyranitar" -> skill == 1;
-            case "scizor" -> skill < 3;
             case "gengar" -> skill == 3;
+            case "greninja" -> skill == 1;
+            case "meowscarada" -> skill == 1;
+            case "ceruledge" -> skill == 1 || skill == 2;
+            case "hisuian_zoroark" -> skill == 0 || skill == 1;
+            case "krookodile" -> skill == 0;
             default -> false;
         };
     }
@@ -104,22 +127,72 @@ public final class ExpansionEffects {
     private static String style(String id, int skill) {
         return switch (id) {
             case "lucario" -> switch (skill) { case 0 -> "AURA"; case 1 -> "FIST"; case 2 -> "RUSH"; default -> "FIST"; };
-            case "abomasnow" -> switch (skill) { case 0 -> "ICE"; case 1 -> "ICE"; case 2 -> "MIST"; default -> "ICE"; };
+            case "alolan_ninetales" -> switch (skill) { case 2 -> "MIST"; default -> "ICE"; };
             case "blaziken" -> "FLAME";
             case "gengar" -> switch (skill) { case 0 -> "SHADOW"; case 1 -> "SLUDGE"; case 2 -> "HYPNOSIS"; default -> "DREAM"; };
             case "tyranitar" -> switch (skill) { case 0 -> "ROCK"; case 1 -> "FANG"; case 2 -> "SAND"; default -> "ROCK"; };
-            case "garchomp" -> switch (skill) { case 0 -> "DRAGON"; case 1 -> "QUAKE"; case 2 -> "QUAKE"; default -> "DRAGON"; };
-            case "scizor" -> switch (skill) { case 0 -> "FIST"; case 1 -> "BLADE"; case 2 -> "RUSH"; default -> "BLADE"; };
-            case "gardevoir" -> switch (skill) { case 0 -> "PSYCHIC"; case 1 -> "MOON"; case 2 -> "BLINK"; default -> "MOON"; };
+            case "gardevoir" -> switch (skill) { case 0 -> "PSYCHIC"; case 1 -> "MOON"; case 2 -> "BLINK"; default -> "GLEAM"; };
+            case "greninja" -> switch (skill) { case 0 -> "SHURIKEN"; case 1 -> "DARKBLADE"; case 2 -> "DARK"; default -> "WATER"; };
+            case "meowscarada" -> switch (skill) { case 0 -> "FLOWER"; case 1 -> "CLAW"; case 2 -> "FLIP"; default -> "GRASS"; };
+            case "ceruledge" -> switch (skill) { case 0 -> "PSYBLADE"; case 1 -> "SHADOW"; case 2 -> "BITTER"; default -> "DANCE"; };
+            case "hisuian_zoroark" -> switch (skill) { case 0 -> "GHOSTCLAW"; case 1 -> "MALICE"; case 2 -> "SHADOWBALL"; default -> "ILLUSION"; };
+            case "krookodile" -> switch (skill) { case 0 -> "CRUNCH"; case 1 -> "DIG"; case 2 -> "QUAKE"; default -> "OUTRAGE"; };
+            case "armarouge" -> switch (skill) { case 0 -> "PSYSHOCK"; case 1 -> "FLAMECHARGE"; case 2 -> "CANNON"; default -> "FORCE"; };
             default -> "AURA";
         };
     }
 
+
+    /**
+     * 0.81 蓄能焰袭: a real fire wall that grows out of the ground behind the dash.
+     *
+     * <p>It is a vertical quad spanning the dash direction (a curtain, not a camera-facing sprite),
+     * drawn with the shared textured-mesh path so it is visible from both sides: the early billboard
+     * version sat flat on the floor and could not be seen at all.
+     */
+
+
     public static boolean accept(EffectPayload payload) {
+        // 0.133 Hisuian Zoroark: malice marks ride their own cue because they belong to the victim,
+        // not to the caster's skill scene; zero stacks means the timer ran out and the sigil fades.
+        if (payload.effectId().startsWith("pkmoba:mark/")) {
+            Minecraft markClient = Minecraft.getInstance();
+            if (markClient.level == null) return true;
+            if (world != markClient.level) { clear(); world = markClient.level; }
+            String[] mark = payload.effectId().split("/");
+            int stacks = mark.length > 2 ? Integer.parseInt(mark[2]) : 0;
+            String phase = stacks <= 0 ? "markfade" : "mark" + Math.min(3, stacks);
+            Vec3 at = new Vec3(payload.x(), payload.y(), payload.z());
+            SCENES.put("mark:" + mark[1], new Scene("hisuian_zoroark", 0, phase, Integer.parseInt(mark[1]),
+                    at, Vec3.ZERO, 18, markClient.level.getGameTime()));
+            return true;
+        }
+        if (payload.effectId().startsWith("pkmoba:ars/")) {
+            Minecraft arClient = Minecraft.getInstance();
+            if (arClient.level == null) return true;
+            if (world != arClient.level) { clear(); world = arClient.level; }
+            String[] shot = payload.effectId().split("/");
+            if (shot.length < 3) return true;
+            try {
+                int shotOwner = Integer.parseInt(shot[2]);
+                String stage = shot[1];
+                String shotPhase = stage.equals("hit") ? "shot_hit" : "shot" + stage;
+                Vec3 shotPos = new Vec3(payload.x(), payload.y(), payload.z());
+                Vec3 shotDir = new Vec3(payload.dx(), payload.dy(), payload.dz());
+                if (!ExpansionAnchors.finite(shotPos) || !ExpansionAnchors.finite(shotDir)) return true;
+                int shotLife = stage.equals("hit") ? 8 : 3;
+                SCENES.put("shot:" + shotOwner + ":" + stage, new Scene("armarouge", 0, shotPhase, shotOwner,
+                        shotPos, shotDir, shotLife, arClient.level.getGameTime()));
+            } catch (NumberFormatException ignored) { /* cosmetic only */ }
+            return true;
+        }
         if (!payload.effectId().startsWith(PREFIX)) return false;
         String[] parts = payload.effectId().split("/");
         Minecraft mc = Minecraft.getInstance();
         if (parts.length != 5 || mc.level == null) return true;
+        if (CUE_LOG.size() < 60 && CUE_LOG.add(parts[1] + ":" + parts[2] + ":" + parts[3])) {
+            CLIP_LOG.info("cue in {} skill={} phase={} owner={}", parts[1], parts[2], parts[3], parts[4]);
+        }
         if (world != mc.level) { clear(); world = mc.level; }
         try {
             int owner = Integer.parseInt(parts[4]);
@@ -130,7 +203,7 @@ public final class ExpansionEffects {
                 SCENES.values().removeIf(s -> s.owner == owner);
                 return true;
             }
-            var species = ExpansionRoster.find(parts[1]);
+            var species = ExpansionRoster.resolve(parts[1]);
             int skill = Integer.parseInt(parts[2]);
             if (species == null || skill < 0 || skill > 3) return true;
             Vec3 pos = new Vec3(payload.x(), payload.y(), payload.z());
@@ -143,28 +216,26 @@ public final class ExpansionEffects {
                         && (s.phase.equals("start") || s.phase.equals("release")));
                 return true;
             }
+            // 0.101 (m15488): the hypnosis badge is owned by the server's StatusBadges stream only.
+            // Mirroring the cue here created a second icon on the victim's head, so it is gone.
             boolean melee = isMelee(species.id(), skill);
+            if (phase.equals("quake")) HitFeedback.onEarthquake(pos);
             if (phase.equals("start")) animate(entity, species.id(), skill, "_windup");
             if (phase.equals("release")) animate(entity, species.id(), skill, "_cast");
             // Action beats are server-timed independently of a successful hit, so a whiff still
             // looks like a real attack and multi-hit moves can alternate limbs cleanly.
+            // 0.81: the flip is timed to the actual airborne leap, not to the button press, so the
+            // animation matches what the body is doing on screen.
+        if (phase.equals("leap") && species.id().equals("blaziken") && skill == 3) {
+                animate(entity, species.id(), skill, "_leap");
+            }
             if (phase.equals("attack")) {
                 animateAttack(entity, species.id(), skill, pos, dir);
-                // Bullet Punch is one beat on the server; chain extra jabs client-side so it reads
-                // as a continuous flurry instead of a single punch.
-                if (species.id().equals("scizor") && skill == 0) {
-                    schedule(entity, species.id(), "q_melee", 4);
-                    schedule(entity, species.id(), "q_melee", 8);
-                }
                 // 0.54: the two Blaziken dashes keep the borrowed run cycle going after the
                 // impact pose, so the body does not freeze mid-dash.
                 if (species.id().equals("blaziken") && skill == 2) {
                     schedule(entity, species.id(), "e_sustain", 5);
                     schedule(entity, species.id(), "e_sustain", 12);
-                }
-                if (species.id().equals("blaziken") && skill == 3) {
-                    schedule(entity, species.id(), "r_sustain", 6);
-                    schedule(entity, species.id(), "r_sustain", 14);
                 }
                 // 0.56 Lucario Extreme Speed: keep the sprint stance for the whole dash instead of
                 // dropping back to the locomotion cycle between the dash beats.
@@ -174,16 +245,14 @@ public final class ExpansionEffects {
                 }
                 return true;
             }
-            if (phase.equals("buff") && species.id().equals("scizor") && skill == 3) {
-                // Swords Dance: keep the twirl going for the whole buff instead of one pose.
-                animate(entity, species.id(), skill, "_sustain");
-                schedule(entity, species.id(), "r_sustain", 24);
-                schedule(entity, species.id(), "r_sustain", 48);
-            }
             if (phase.equals("melee") || (phase.equals("followup") && melee)) {
                 animate(entity, species.id(), skill, "_melee");
                 sound(pos, true);
-            } else if (phase.equals("impact") || phase.equals("detonate")) sound(pos, true);
+            } else if (phase.equals("impact") || phase.equals("detonate")) {
+                sound(pos, true);
+                if (species.id().equals("gardevoir") && skill == 1)
+                    HitFeedback.onEpicSlam(pos);
+            }
             else if (phase.equals("release")) sound(pos, false);
             if (phase.equals("wall") && entity instanceof PokemonEntity pokemon) {
                 ExpansionWalls.create(pokemon, pos, dir, move.radius(), move.duration());
@@ -192,27 +261,81 @@ public final class ExpansionEffects {
                 // Effects linger noticeably longer than the cast itself: users want the skill to be
                 // readable after the input, not a single-frame flash.
                 case "start" -> Math.max(8, move.windup() + 8);
+                // 0.78: Moonblast is launched once and animated client-side for the whole fall;
+                // the Blaziken kit adds a thrown kick, its charge and the brand flash.
+                case "launch" -> 27;
+                case "kick" -> 16;
+                // 0.80 蓄能焰袭 leaves one low fire-wall segment per dash step.
+                // A fire wall has to stand on the field for about five seconds.
+                case "trail" -> 105;
+                // 0.124 Greninja: a dash streak lives a third of a second, not five.
+                case "streak" -> 6;
+                case "brand" -> 18;
+                case "charge" -> 16;
                 case "projectile", "lob" -> 9;
                 case "melee", "followup" -> 14;
                 case "impact", "blink", "heal" -> 24;
                 // 0.54 Blaziken mark loop: the mark is re-cued at 2 Hz on a moving victim, the
                 // warning lane during the charge every 4 ticks, the other two fire once.
                 case "mark" -> 16;
+                // 巨声: the arc wave is re-cued every other tick while it travels.
+                case "sound" -> 12;
                 case "detonate" -> 26;
                 case "warn" -> 12;
                 case "haste" -> 34;
+                case "dance" -> 44;
                 case "refresh" -> 22;
                 // 0.55 Lucario: the aura ring is re-cued at 2 Hz while stacks are held (short life,
                 // like the Blaziken mark), and a spend burst is a one-shot that outlives the cue.
                 case "aura1", "aura2", "aura3" -> 14;
+                // 0.86 Lucario: palm blast, sprint streaks and the aura detonation.
+                case "palm" -> 16;
+                case "meteor" -> 18;
+                case "bolt" -> 14;
+                case "dash" -> 26;
+                case "buff" -> 18;
+                case "blade" -> 20;
+                // 0.96: the aurora screen has to stay up for the full five seconds of the guard.
+                case "veil" -> 100;
+                // 0.90 Alolan Ninetales: frost fan, channelled beam and drifting storm.
+                case "wind" -> 24;
+                case "whip" -> 10;
+                case "beam" -> 10;
+                // 0.94 Ninеtales: the crystal shard keeps its wake while it flies.
+                case "shard" -> 14;
+                case "blizzard" -> 30;
+                case "rush" -> 12;
+                case "grow" -> 14;
                 case "spend0", "spend1", "spend2", "spend3" -> 26;
                 case "spike" -> 32;
-                case "field", "buff", "wall" -> Math.max(40, move.duration() + 14);
-                default -> 14;
+                case "quake" -> 22;
+                case "frost" -> 18;
+                case "wall" -> Math.max(40, move.duration() + 14);
+                case "field" -> Math.max(140, move.duration() + 14);
+                // 0.134 Krookodile: the digging trail is re-cued every tick, the quake charge
+                // every other tick, and both ground effects outlive their cue.
+                case "dig_move" -> 4;
+                case "bite_step" -> 6;
+                case "quake_charge" -> 8;
+                case "quake_hit" -> 22;
+                case "rage_start" -> 56;
+                case "dig_down", "dig_up" -> 18;
+                // 0.135 Armarouge: the psy lance, the flame trail and the cannon shell all ride the
+                // same scene object and are refreshed every tick, so they only need a few frames of
+                // afterglow; the rune and the pulses want to linger.
+                case "psy", "flame" -> 4;
+                case "cannon" -> 5;
+                case "rune" -> 20;
+                case "pulse1", "pulse2", "pulse3", "pulse4", "pulse5" -> 12;
+                default -> phase.startsWith("shuriken") ? 5 : 14;
             };
             String key = owner + ":" + skill + ":" + phase;
             Scene previous = SCENES.get(key);
-            if ((phase.equals("projectile") || phase.equals("lob")) && previous != null) {
+            if ((phase.equals("projectile") || phase.equals("lob") || phase.equals("dig_move")
+                    || phase.equals("psy") || phase.equals("flame") || phase.equals("cannon")
+                    || phase.equals("charge") || phase.equals("rise") || phase.equals("air")
+                    || phase.startsWith("shuriken"))
+                    && previous != null) {
                 previous.from = previous.position(mc.level.getGameTime());
                 previous.pos = pos;
                 previous.updateTime = mc.level.getGameTime();
@@ -237,8 +360,11 @@ public final class ExpansionEffects {
         if (mc.level == null || fade <= .05f || radius <= 0) return;
         long now = mc.level.getGameTime();
         java.util.Random rnd = new java.util.Random((long) (at.x * 7349 + at.y * 1571 + at.z * 4513) * 31 + now / 2);
-        if (rnd.nextFloat() > .62f) return;
-        int n = 2 + (int) Math.min(7, radius * 2.2);
+        // 0.81: fire has its own textured sheets now, so particles are embers only.
+        final boolean FLAME_EMBERS = "FLAME".equals(style);
+        if (rnd.nextFloat() > (FLAME_EMBERS ? .40f : .62f)) return;
+        int n = FLAME_EMBERS ? 2 + (int) Math.min(3, radius * .9)
+                : 2 + (int) Math.min(7, radius * 2.2);
         for (int i = 0; i < n; i++) {
             double x = at.x + (rnd.nextDouble() - .5) * radius * 2.0;
             double y = at.y + (rnd.nextDouble() - .15) * radius * 1.7;
@@ -256,6 +382,18 @@ public final class ExpansionEffects {
                 case "AURA" -> mc.level.addParticle(ParticleTypes.ELECTRIC_SPARK, x, y, z, vx, vy, vz);
                 case "ROCK", "SAND", "QUAKE" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.CRIT : ParticleTypes.POOF, x, y, z, vx, vy * .6, vz);
                 case "FIST", "RUSH", "BLADE", "FANG" -> mc.level.addParticle(ParticleTypes.CRIT, x, y, z, vx * 1.4, vy, vz * 1.4);
+                case "WATER", "SHURIKEN" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.SPLASH : ParticleTypes.BUBBLE, x, y, z, vx * .6, vy * .6, vz * .6);
+                case "DARK", "FLIP" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.SQUID_INK : ParticleTypes.CRIT, x, y, z, vx, vy * .5, vz);
+                case "FLOWER", "GRASS" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.HAPPY_VILLAGER : ParticleTypes.COMPOSTER, x, y, z, vx * .5, vy * .5, vz * .5);
+                case "CLAW" -> mc.level.addParticle(ParticleTypes.CRIT, x, y, z, vx * 1.5, vy, vz * 1.5);
+                case "PSYSHOCK" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.END_ROD
+                        : (rnd.nextBoolean() ? ParticleTypes.ENCHANT : ParticleTypes.ELECTRIC_SPARK), x, y, z, vx * .6, vy * .5, vz * .6);
+                case "FLAMECHARGE" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.FLAME
+                        : (rnd.nextBoolean() ? ParticleTypes.SMALL_FLAME : ParticleTypes.LAVA), x, y, z, vx, vy * 1.2, vz);
+                case "CANNON" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.FLAME
+                        : (rnd.nextBoolean() ? ParticleTypes.LARGE_SMOKE : ParticleTypes.CRIT), x, y, z, vx * .8, vy, vz * .8);
+                case "FORCE" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.ENCHANT
+                        : (rnd.nextBoolean() ? ParticleTypes.END_ROD : ParticleTypes.PORTAL), x, y, z, vx * .5, vy * .6, vz * .5);
                 case "DRAGON" -> mc.level.addParticle(rnd.nextBoolean() ? ParticleTypes.DRAGON_BREATH : ParticleTypes.CRIT, x, y, z, vx, vy * .5, vz);
                 default -> mc.level.addParticle(ParticleTypes.END_ROD, x, y, z, vx, vy, vz);
             }
@@ -279,16 +417,33 @@ public final class ExpansionEffects {
             Vec3 dir = s.dir.lengthSqr() > 1E-5 ? s.dir.normalize() : owner.getLookAngle();
             ResourceLocation tex = material(s.id, s.skill);
             boolean melee = isMelee(s.id, s.skill);
-            double radius = ExpansionRoster.find(s.id).move(s.skill).radius();
+            var move = ExpansionRoster.resolve(s.id);
+            if (move == null) continue;
+            double radius = move.move(s.skill).radius();
             String st = style(s.id, s.skill);
-            // 0.66: Gengar's vanilla garnish is decoration only — a thin trail behind the two
-            // projectiles. Everywhere else the textured pixel body has to stand on its own, because
-            // the sprite cloud made the hit area look twice its real size.
-            if (s.id.equals("gengar")) {
-                if (s.phase.equals("projectile") || s.phase.equals("lob"))
-                    mcParticles(s, st, s.position(time), radius * .5, fade * .6f);
-            } else {
-                mcParticles(s, st, s.position(time), radius * 1.4, fade);
+            // 0.67: Gengar runs purely on its own textured shapes — vanilla particle smoke and the
+            // packet stream read as leftovers from the old kit, so no particle call happens for it.
+            // Gengar and Gardevoir are drawn purely from their own textured sheets: vanilla
+            // particles are what made the redesigned skills still read as the old kit.
+            // 0.80 Blaziken opts back in to the chunky vanilla flame particles: they are the clearest
+            // "this is fire" signal at any distance, and its own sheets now draw the shapes.
+            // 0.100: every skill is drawn only from its own textured sheets - vanilla particles are gone.
+            // 0.135 Armarouge: the textured layers are the art; these chunky particles are the
+            // garnish that makes fire feel thick in the air and psy energy feel charged.
+            if ("armarouge".equals(s.id)) {
+                double pr = switch (s.phase) {
+                    case "psy" -> .58;
+                    case "cannon" -> .85;
+                    case "flame" -> .95;
+                    case "rune", "quake" -> 2.2;
+                    case "pulse1", "pulse2", "pulse3", "pulse4", "pulse5" -> 1.7;
+                    case "shot1", "shot2", "shot3" -> .35;
+                    case "shot_hit", "impact", "release" -> 1.15;
+                    default -> .8;
+                };
+                Vec3 pat = (s.phase.equals("psy") || s.phase.equals("cannon") || s.phase.startsWith("shot"))
+                        ? s.pos : owner.position().add(0, 1.0, 0);
+                mcParticles(s, st, pat, pr, fade);
             }
             if (dispatch(context, s, anchors, tex, time, age, progress, fade, dir, radius, owner.position())) continue;
             switch (s.phase) {
@@ -437,32 +592,22 @@ public final class ExpansionEffects {
         // is bright, textured and visibly in motion at any distance.
         // 0.56: Lucario opts out — its owner asked for a crisp read of the body animation, and the
         // stream+halo pass was what smeared the aura skills into one blue blob at close range.
-        if (!s.id.equals("lucario")) {
-            Vec3 origin = anchors.handPrimary().add(0, -.05, 0);
-            boolean travelling = s.phase.equals("projectile") || s.phase.equals("lob");
-            Vec3 target = travelling ? s.position(time) : s.pos;
-            double flowW = Math.max(.34, radius * .18);
-            // 0.65: Gengar only keeps a thin stream — its pixel spark + halo pass was a dense sprite
-            // cloud that covered the skill's own geometry (user: 原版粒子把技能盖住了).
-            if (s.id.equals("gengar")) {
-                fx.flow(origin, target, flowW * .55, time, fade * .3f);
-            } else {
-                fx.flow(origin, target, flowW, time, fade * .55f);
-                fx.pixels(s.pos.add(0, .15, 0), Math.max(.55, radius * .55), 12, .16, time, fade * .8f);
-                fx.glow(travelling ? target : s.pos, Math.max(.45, radius * .28), fade * .5f);
-            }
-        }
+        // 0.100: no shared streak/spark/halo pass either; the per-species sheets are the whole look.
         FxView v = new FxView(fx, anchors, s.skill, s.phase, s.pos, dir, ownerPos,
                 time, progress, age, radius, fade);
         switch (s.id) {
             case "lucario" -> LucarioFx.render(v);
-            case "abomasnow" -> AbomasnowFx.render(v);
+            case "alolan_ninetales" -> NinetalesFx.render(v);
             case "blaziken" -> BlazikenFx.render(v);
             case "gengar" -> GengarFx.render(v);
             case "tyranitar" -> TyranitarFx.render(v);
-            case "garchomp" -> GarchompFx.render(v);
-            case "scizor" -> ScizorFx.render(v);
             case "gardevoir" -> GardevoirFx.render(v);
+            case "greninja" -> GreninjaFx.render(v);
+            case "meowscarada" -> MeowscaradaFx.render(v);
+            case "ceruledge" -> CeruledgeFx.render(v);
+            case "hisuian_zoroark" -> ZoroarkFx.render(v);
+            case "krookodile" -> KrookodileFx.render(v);
+            case "armarouge" -> ArmarougeFx.render(v);
             default -> {
                 return false;
             }
@@ -677,16 +822,42 @@ public final class ExpansionEffects {
     }
     private static void animate(Entity entity, String species, int skill, String suffix) {
         if (!(entity instanceof PokemonEntity pokemon)) return;
-        if (!pokemon.getPokemon().getSpecies().getResourceIdentifier().getPath().equals(species)) return;
+        if (!matches(pokemon, species)) return;
         playClip(pokemon, species, "qwer".charAt(skill) + suffix);
     }
 
     /** Single place that turns a clip name into a Cobblemon animation command. */
+    private static final java.util.Set<String> LOGGED_CLIPS = new java.util.HashSet<>();
+    private static final java.util.Set<String> CUE_LOG = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final org.slf4j.Logger CLIP_LOG =
+            org.slf4j.LoggerFactory.getLogger("pkmoba/clip");
+
+    /** Regional forms spawn as their base species, so compare through the registry alias. */
+    private static boolean matches(PokemonEntity pokemon, String species) {
+        String path = pokemon.getPokemon().getSpecies().getResourceIdentifier().getPath();
+        return path.equals(species)
+                || path.equals(com.pkmoba.pokemon.SpeciesRegistry.cobblePath(species));
+    }
+
     private static void playClip(PokemonEntity pokemon, String species, String clip) {
         try {
             ((PosableEntity) pokemon).playAnimation(
                     "q.bedrock_primary('pkmoba_" + species + "', '" + clip + "', q.curve('one'))", List.of());
-        } catch (RuntimeException ignored) { }
+            if (LOGGED_CLIPS.size() < 40 && LOGGED_CLIPS.add(species + ":" + clip)) {
+                String group = "pkmoba_" + species;
+                CLIP_LOG.info("clip {} {} -> {} (repo={}/{})", species, clip, pokemon.getId(),
+                        com.cobblemon.mod.common.client.render.models.blockbench.bedrock.animation
+                                .BedrockAnimationRepository.INSTANCE
+                                .tryGetAnimation(group, clip) != null,
+                        com.cobblemon.mod.common.client.render.models.blockbench.bedrock.animation
+                                .BedrockAnimationRepository.INSTANCE
+                                .tryGetAnimation(group, "animation." + group + "." + clip) != null);
+            }
+        } catch (RuntimeException error) {
+            if (LOGGED_CLIPS.size() < 40 && LOGGED_CLIPS.add("!" + species + ":" + clip)) {
+                CLIP_LOG.warn("clip {}/{} failed: {}", species, clip, error.toString());
+            }
+        }
     }
 
     /** Per-owner beat counter so alternating limbs (e.g. Double Kick) really alternate. */
@@ -695,7 +866,7 @@ public final class ExpansionEffects {
     /** Attack beat cues: play the real body attack even when the hit misses. */
     private static void animateAttack(Entity entity, String species, int skill, Vec3 pos, Vec3 dir) {
         if (!(entity instanceof PokemonEntity pokemon)) return;
-        if (!pokemon.getPokemon().getSpecies().getResourceIdentifier().getPath().equals(species)) return;
+        if (!matches(pokemon, species)) return;
         int beat = BEAT.merge(pokemon.getId(), 1, Integer::sum);
         String clip = switch (species) {
             // Blaze Kick -> spinning high kick; Double Kick -> strictly alternating legs;
@@ -714,30 +885,51 @@ public final class ExpansionEffects {
                 case 2 -> "e_melee";
                 default -> "r_melee";
             };
-            // Bullet Punch -> the rapid alternating-arm punch clip, replayed on every hit beat so
-            // it reads as a machine-gun combo instead of one jab.
-            case "scizor" -> switch (skill) {
-                case 0 -> "q_melee";
-                case 1 -> "w_melee";
-                case 2 -> "e_melee";
-                default -> "r_cast";
+            // 0.133.6 Hisuian Zoroark: alternating single-paw rakes for the claw, and the
+            // per-skill finisher for everything else.
+            case "hisuian_zoroark" -> switch (skill) {
+                case 0 -> beat % 2 == 0 ? "q_claw_r" : "q_claw_l";
+                default -> "qwer".charAt(skill) + "_melee";
             };
-            case "garchomp" -> switch (skill) {
-                case 0 -> "q_melee";
-                case 1 -> "w_melee";
-                case 2 -> "e_melee";
-                default -> "r_melee";
+            // 0.135 Armarouge: right arm, left arm, then both cannons for the heavy bolt.
+            case "armarouge" -> switch (skill) {
+                case 0 -> "q_fire_l";
+                case 1 -> "q_fire_r";
+                case 2 -> "q_fire_heavy";
+                default -> "q_fire_heavy";
+            };
+            // 0.134 Krookodile: the punch chain is three different bites, the skills are their own.
+            case "krookodile" -> switch (skill) {
+                case 0 -> switch (beat % 3) {
+                    case 0 -> "q_bite_l";
+                    case 1 -> "q_bite_r";
+                    default -> "q_bite_heavy";
+                };
+                default -> "qwer".charAt(skill) + "_melee";
+            };
+            // 0.133.7 Ceruledge raises both blades on every punch; the real arm rotation comes
+            // from the baked Cobblemon clips, not from a hand-authored pose.
+            case "ceruledge" -> switch (skill) {
+                case 0 -> beat % 2 == 0 ? "q_swing_r" : "q_swing_l";
+                case 1 -> beat % 2 == 0 ? "q_swing_r" : "q_swing_l";
+                case 2 -> "q_swing_r";
+                default -> "q_swing_l";
             };
             default -> "qwer".charAt(skill) + "_melee";
         };
         playClip(pokemon, species, clip);
+        // One swing is over in a few ticks, which reads as a twitch. Both duelists keep the
+        // motion alive by replaying the same clip twice more while the swing is still on screen.
+        if (species.equals("hisuian_zoroark") || species.equals("ceruledge")
+                || species.equals("krookodile")
+                || species.equals("armarouge")) {
+            schedule(pokemon, species, clip, 5);
+            schedule(pokemon, species, clip, 10);
+        }
     }
 
     private static void sound(Vec3 point, boolean impact) {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null || mc.player == null || point.distanceToSqr(mc.player.position()) > 9216) return;
-        mc.level.playLocalSound(point.x, point.y, point.z, impact ? SoundEvents.PLAYER_ATTACK_STRONG : SoundEvents.SNOWBALL_THROW,
-                SoundSource.PLAYERS, impact ? .35F : .28F, 1.1F, false);
+        // 0.79: the user asked for every skill cast sound the player triggers to be removed.
     }
     private static final class Scene {
         final String id, phase;

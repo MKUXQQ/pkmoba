@@ -11,9 +11,9 @@ import com.pkmoba.network.SkillStatePayload;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
-import net.minecraft.client.Minecraft;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.client.Minecraft;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,6 +62,15 @@ public class PkmobaClient implements ClientModInitializer {
         CombatAudio.init();
         TargetOverlay.init();
         PokemonOverheadBar.init();
+        BuffHud.init();
+        SwordAura.init();
+        BladeAura.init();
+        NastyAura.init();
+        StatusBadges.init();
+        BasicAttackFx.init();
+        // 0.68 催眠状态：被催眠术命中的宝可梦头顶显示“被催眠”像素徽标
+        HypnoStatusIcon.init();
+        BlazeMarkIcon.init();
 
         // 投球召唤的精灵球飞行（客户端自己按抛物线渲染）
         ClientPlayNetworking.registerGlobalReceiver(com.pkmoba.network.BallFlightPayload.TYPE, (payload, context) ->
@@ -133,6 +142,9 @@ public class PkmobaClient implements ClientModInitializer {
                 context.client().execute(() -> {
                     // 0.39：命中反馈复用同一个 EffectPayload（effectId 前缀 pkmoba:hit/），
                     // 由 HitFeedback 解析，命中包不再当普通粒子特效处理。
+                    if (BuffHud.accept(payload)) return;
+                    if (StatusBadges.accept(payload)) return;
+                    if (BasicAttackFx.accept(payload)) return;
                     if (ExpansionEffects.accept(payload) || SwitchZoneRenderer.accept(payload) || RemoteSkillAnimations.accept(payload) || PikachuEffects.accept(payload)) return;
                     if (HitFeedback.handle(payload)) {
                         TargetOverlay.captureHit(payload);

@@ -1,12 +1,11 @@
 package com.pkmoba.duel;
 
-import net.minecraft.core.HolderLookup;
+import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.world.level.saveddata.SavedData;
-
 import java.util.HashMap;
 import java.util.Map;
 

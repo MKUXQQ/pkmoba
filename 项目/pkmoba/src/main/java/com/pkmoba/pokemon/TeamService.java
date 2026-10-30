@@ -6,13 +6,12 @@ import com.pkmoba.charizard.CharizardManager;
 import com.pkmoba.network.StarterListPayload;
 import com.pkmoba.network.TeamStatePayload;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.phys.Vec3;
-
+import net.minecraft.server.MinecraftServer;
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
@@ -184,10 +183,20 @@ public final class TeamService {
             return;
         }
         PlayerProfile profile = profile(player.server, player.getUUID());
+        // 0.118: the C menu must list every unlocked species, even mid-match. The battle profile only
+        // carries the room roster (capacity-limited), which hid newly registered species from the switch screen entirely.
+        List<String> shown = new ArrayList<>(profile.team);
+        for (String species : ProfileStore.get(player.server).collection(player.getUUID()).team) {
+            if (!shown.contains(species)) shown.add(species);
+        }
         boolean summoned = CharizardManager.getControlled(player) != null;
         String next = switchTarget(player);
+        // 0.136.1: the C menu renders exactly this list, so log it — that makes "the species is missing"
+        // distinguishable from "the client is still an older jar" at a glance.
+        PkmobaMod.LOGGER.info("[pkmoba] team state -> {} ({} entries, last={})",
+                player.getName().getString(), shown.size(), shown.isEmpty() ? "-" : shown.get(shown.size() - 1));
         net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player,
-                new TeamStatePayload(new ArrayList<>(profile.team), new ArrayList<>(profile.fainted),
+                new TeamStatePayload(shown, new ArrayList<>(profile.fainted),
                         profile.activeSpecies() == null ? "" : profile.activeSpecies(),
                         summoned, com.pkmoba.duel.DuelManager.pendingTicksFor(player),
                         next == null ? "" : next));
@@ -477,14 +486,17 @@ public final class TeamService {
     private static final java.util.Map<java.util.UUID, java.util.Map<String, Long>> RECALL_LOCK =
             new java.util.HashMap<>();
 
-    /** 主动收回后上锁；死亡换宠不受限（那是强制流程，不是玩家的选择）。 */
+    /**
+     * 主动收回后上锁；死亡换宠不受限（那是强制流程，不是玩家的选择）。
+     *
+     * <p>0.67：用户要求删除“收回冷却”，收回后可以立刻再出战同一只，所以这里不再上锁。
+     */
     public static void lockRecalled(ServerPlayer player, String species) {
-        if (player == null || species == null || species.isEmpty()) return;
-        RECALL_LOCK.computeIfAbsent(player.getUUID(), k -> new java.util.HashMap<>())
-                .put(species, (long) player.server.getTickCount() + 20L * 3);
+        // intentionally empty: recall cooldown removed
     }
 
     public static boolean recallLocked(ServerPlayer player, String species) {
+        if (true) return false; // recall cooldown removed (0.67)
         if (player == null || species == null) return false;
         java.util.Map<String, Long> map = RECALL_LOCK.get(player.getUUID());
         if (map == null) return false;
@@ -918,9 +930,29 @@ public final class TeamService {
         }
     }
 
+    /** True when the entity is the given registry species, including regional forms. */
+    public static boolean sameSpecies(@Nullable PokemonEntity entity, @Nullable String localId) {
+        if (entity == null || localId == null) return false;
+        if (speciesOf(entity).equals(localId)) return true;
+        var cobble = entity.getPokemon().getSpecies().getResourceIdentifier();
+        var requested = ResourceLocation.tryParse(localId);
+        if (requested == null) return false;
+        // 0.96: callers may still hand in the raw Cobblemon id (cobblemon:ninetales) rather than the
+        // local registry id, so accept a direct match before consulting the registry.
+        if (requested.equals(cobble)) return true;
+        var parsed = SpeciesRegistry.parse(localId);
+        if (parsed == null) return false;
+        return SpeciesRegistry.cobbleSpecies(parsed).equals(cobble);
+    }
+
     public static String speciesOf(@Nullable PokemonEntity entity) {
         if (entity == null) return "";
-        return entity.getPokemon().getSpecies().getResourceIdentifier().toString();
+        var spawned = entity.getPokemon().getSpecies().getResourceIdentifier();
+        // 0.90: regional forms spawn as their base species, so the profile/team key must be the
+        // registry alias again. Without this an Alolan Ninetales could never be recalled or swapped
+        // out: the recall looked up "cobblemon:ninetales" and silently left the old body in place.
+        var local = SpeciesRegistry.localForCobble(spawned);
+        return (local == null ? spawned : local).toString();
     }
 
     public static List<String> teamOf(ServerPlayer player) {

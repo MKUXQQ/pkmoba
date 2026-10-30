@@ -8,10 +8,9 @@ import com.pkmoba.pokemon.TeamService;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.core.BlockPos;
-import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
-
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerPlayer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;

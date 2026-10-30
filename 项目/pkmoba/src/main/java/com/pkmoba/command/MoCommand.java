@@ -11,17 +11,16 @@ import com.pkmoba.pokemon.ProfileStore;
 import com.pkmoba.pokemon.SpeciesRegistry;
 import com.pkmoba.pokemon.TeamService;
 import com.pkmoba.world.HazardService;
+import java.util.ArrayList;
+import java.util.List;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.phys.Vec3;
-
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * {@code /mo} 指令族（0.31 精简版）。

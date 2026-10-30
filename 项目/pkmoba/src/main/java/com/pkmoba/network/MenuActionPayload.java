@@ -1,10 +1,10 @@
 package com.pkmoba.network;
 
 import com.pkmoba.network.MenuOpenPayload.MenuKind;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import net.minecraft.resources.ResourceLocation;
 
 /** Client menu intent; the server must recheck permissions, players and duel state. */
 public record MenuActionPayload(MenuKind kind, String action, String argA, String argB)

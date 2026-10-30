@@ -1,9 +1,9 @@
 package com.pkmoba.network;
 
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import net.minecraft.resources.ResourceLocation;
 
 /** S2C water visuals: 0 stop skills, 1 blade, 2 falling orb, 3 spin, 4 beam, 5 charge, 6 basic bubble. */
 public record WaterEffectPayload(int entityId, int kind, double x, double y, double z,

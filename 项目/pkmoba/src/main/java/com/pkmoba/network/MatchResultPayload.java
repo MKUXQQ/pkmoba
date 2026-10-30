@@ -2,9 +2,9 @@ package com.pkmoba.network;
 
 import com.pkmoba.PkmobaMod;
 import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.network.codec.StreamCodec;
 
 /** S2C：对局结束与胜方播报。 */
 public record MatchResultPayload(String winnerName, boolean youWin, String reason) implements CustomPacketPayload {

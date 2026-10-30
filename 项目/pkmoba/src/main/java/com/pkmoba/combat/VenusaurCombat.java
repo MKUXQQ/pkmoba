@@ -10,17 +10,16 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
-import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
-
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -36,11 +35,18 @@ public final class VenusaurCombat {
     public static final String KIND_W_LEAF = "W_LEAF";
     public static final String KIND_E_CHARGE = "E_CHARGE";
     public static final String KIND_E_BEAM = "E_BEAM";
+    /** 0.101 (m15488): Solar Beam is four separate phases so the charge never locks the body. */
+    private static final int E_GATHER_TICKS = 26;
+    private static final int E_READY_TICKS = 6;
+    private static final int E_FIRE_TICKS = 34;
+    private static final int E_FADE_TICKS = 12;
+    private static final float E_BEAM_WIDTH = 1.7F;
+
     public static final String KIND_R_FIELD = "R_FIELD";
     public static final String KIND_SEED_SHOT = "SEED_SHOT";
     public static final String KIND_CLEAR = "CLEAR";
     public static final double Q_RANGE = 14.0, Q_RADIUS = 1.25, W_RANGE = 16.0,
-            E_RANGE = 22.0, E_RADIUS = 0.36, R_RANGE = 15.0, R_RADIUS = 4.0;
+            E_RANGE = 22.0, E_RADIUS = 0.60, R_RANGE = 15.0, R_RADIUS = 4.0;
     public static final float Q_DAMAGE = 20, W_LEAF_DAMAGE = 8, E_DAMAGE = 28,
             R_BURST_DAMAGE = 18, R_POISON_DAMAGE = 2;
     public static final int Q_HIT_TICK = 20, Q_CAST_TICKS = 30,
@@ -166,7 +172,7 @@ public final class VenusaurCombat {
         state.channel = index + 1;
         state.elapsed = 0;
         if (skill == Skill.E) state.beamHit.clear();
-        state.castTicks = switch (skill) { case Q -> Q_CAST_TICKS; case W -> 40; case E -> 40; case R -> R_CAST_TICKS; };
+        state.castTicks = switch (skill) { case Q -> Q_CAST_TICKS; case W -> 40; case E -> 80; case R -> R_CAST_TICKS; };
         state.castResolved = false;
         state.castOrigin = entity.position();
         state.destination = ground(level, entity, targeted(entity, aim, index == 1 ? W_RANGE : R_RANGE));
@@ -205,8 +211,17 @@ public final class VenusaurCombat {
     public static boolean isChanneling(PokemonEntity entity) { return channel(entity) != 0; }
     public static boolean blocksBasicAttack(PokemonEntity entity) { return isChanneling(entity); }
     public static boolean basicBlocked(PokemonEntity entity) { return blocksBasicAttack(entity); }
-    // 站桩输出：妙蛙花四个技能都是原地引导（藤鞭/污泥/催眠粉/日光束），引导期间锁地面移动。
-    public static boolean blocksMovement(PokemonEntity entity) { return isChanneling(entity); }
+    /**
+     * 0.101 (m15488): channels no longer root Venusaur for their whole duration - only the short
+     * wind-up does. Once the move is actually resolving the body may walk again, so the recovery
+     * frames never steal the player's movement.
+     */
+    public static boolean blocksMovement(PokemonEntity entity) {
+        State state = entity == null ? null : STATES.get(entity.getUUID());
+        if (state == null || state.channel == 0) return false;
+        int windup = state.channel == 3 ? E_GATHER_TICKS : state.channel == 2 ? 20 : 12;
+        return state.elapsed <= windup;
+    }
     public static int channel(PokemonEntity entity) {
         State state = entity == null ? null : STATES.get(entity.getUUID());
         return state == null ? 0 : state.channel;
@@ -288,6 +303,7 @@ public final class VenusaurCombat {
         LivingEntity vineTarget;
         Vec3 vineEnd;
         final Set<UUID> beamHit = new HashSet<>();
+        int beamPhase;
         float points = 10;
         int channel;
         int elapsed;
@@ -318,17 +334,40 @@ public final class VenusaurCombat {
                 direction = CastLock.dirOr(entity, CharizardCombat.aimDirection(entity, aim));
                 elapsed++;
                 if (channel == 3) {
-                    entity.getNavigation().stop();
-                    stop(entity);
-                    direction = CastLock.dirOr(entity, CharizardCombat.aimDirection(entity, aim));
-                    FacingService.request(entity, FacingService.Priority.CHANNEL, direction, 360);
-                    if (elapsed < 28) sendEffect(level, entity, KIND_E_CHARGE, flower(entity), direction, E_RANGE, 28 - elapsed, elapsed / 28.0F);
-                    else if (elapsed < 40) {
-                        beam(level);
-                        sendEffect(level, entity, KIND_E_BEAM, flower(entity), direction,
-                                beamLength(level), 40 - elapsed, 1.1F);
+                    // 0.101 (m15488): Solar Beam now runs as four separate phases - gather, ready,
+                    // fire, fade - and the beam leaves the MOUTH and follows the cursor, so the body,
+                    // the head and the hit volume all point where the player aims. Only the gather
+                    // roots the body; the firing phase can still be steered.
+                    Vec3 steer = CastLock.steerToward(entity, CharizardCombat.aimDirection(entity, aim));
+                    if (steer != null) direction = steer;
+                    CastLock.steer(entity, direction, null);
+                    Vec3 mouth = mouthOrigin();
+                    boolean gathering = elapsed < E_GATHER_TICKS;
+                    if (gathering) {
+                        stop(entity);
+                        entity.getNavigation().stop();
                     }
-                    if (elapsed >= 40) finishCast();
+                    FacingService.request(entity, FacingService.Priority.CHANNEL, direction, gathering ? 12 : 8);
+                    if (gathering) {
+                        sendEffect(level, entity, KIND_E_CHARGE, mouth, direction, E_RANGE,
+                                E_GATHER_TICKS - elapsed, elapsed / (float) E_GATHER_TICKS);
+                    } else if (elapsed < E_GATHER_TICKS + E_READY_TICKS) {
+                        sendEffect(level, entity, KIND_E_CHARGE, mouth, direction, E_RANGE,
+                                E_READY_TICKS - (elapsed - E_GATHER_TICKS), 1.0F);
+                    } else if (elapsed < E_GATHER_TICKS + E_READY_TICKS + E_FIRE_TICKS) {
+                        beam(level);
+                        sendEffect(level, entity, KIND_E_BEAM, mouth, direction,
+                                beamLength(level), E_FIRE_TICKS - (elapsed - E_GATHER_TICKS - E_READY_TICKS), E_BEAM_WIDTH);
+                    } else {
+                        // Fade: the same beam shrinks and dims instead of snapping off.
+                        int fade = elapsed - (E_GATHER_TICKS + E_READY_TICKS + E_FIRE_TICKS);
+                        float alpha = Math.max(0.0F, 0.55F * (1.0F - fade / (float) E_FADE_TICKS));
+                        if (alpha > 0.0F)
+                            sendEffect(level, entity, KIND_E_BEAM, mouth, direction,
+                                    beamLength(level) * (1.0F - 0.45F * fade / (float) E_FADE_TICKS),
+                                    E_FADE_TICKS - fade, E_BEAM_WIDTH * alpha);
+                    }
+                    if (elapsed >= E_GATHER_TICKS + E_READY_TICKS + E_FIRE_TICKS + E_FADE_TICKS) finishCast();
                 } else {
                     FacingService.request(entity, FacingService.Priority.CHANNEL, direction, 360);
                     if (channel == 1) {
@@ -449,9 +488,10 @@ public final class VenusaurCombat {
         }
 
         void beam(ServerLevel level) {
-            Vec3 from = flower(entity);
-            // 0.48.5：E 是"蓄力后沿确认方向发射光束"，方向读施法锁定值，不再每 tick 追鼠标。
-            Vec3 beamDirection = CastLock.dirOr(entity, CharizardCombat.aimDirection(entity, aim));
+            beamPhase++;
+            Vec3 from = mouthOrigin();
+            // 0.101 (m15488): the beam leaves the mouth and tracks the cursor every tick.
+            Vec3 beamDirection = direction;
             Vec3 intended = from.add(beamDirection.scale(E_RANGE));
             HitResult hit = level.clip(new ClipContext(from, intended, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
             Vec3 end = hit.getType() == HitResult.Type.MISS ? intended : hit.getLocation();
@@ -459,14 +499,17 @@ public final class VenusaurCombat {
             for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class, new AABB(from, end).inflate(E_RADIUS),
                     candidate -> validEnemy(candidate, entity))) {
                 if (!target.getBoundingBox().inflate(E_RADIUS).contains(from) && target.getBoundingBox().inflate(E_RADIUS).clip(from, end).isEmpty()) continue;
+                // 0.107 (m15978): the beam is a sustained stream - anything standing in it keeps
+                // taking damage in 4-tick pulses instead of a single hit per cast.
+                if (beamPhase % 4 == 0) beamHit.remove(target.getUUID());
                 if (!beamHit.add(target.getUUID())) continue;
-                damage(level, entity, target, E_DAMAGE);
+                damage(level, entity, target, E_DAMAGE * .55F);
             }
         }
 
         double beamLength(ServerLevel level) {
-            Vec3 from = flower(entity);
-            Vec3 beamDirection = CastLock.dirOr(entity, CharizardCombat.aimDirection(entity, aim));
+            Vec3 from = mouthOrigin();
+            Vec3 beamDirection = direction;
             Vec3 intended = from.add(beamDirection.scale(E_RANGE));
             HitResult hit = level.clip(new ClipContext(from, intended, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
             return from.distanceTo(hit.getType() == HitResult.Type.MISS ? intended : hit.getLocation());
@@ -484,6 +527,11 @@ public final class VenusaurCombat {
             flowerStart = now;
             flowerPoison = true;
             sendEffect(level, entity, KIND_R_FIELD, center, Vec3.ZERO, R_RADIUS, R_FIELD_TICKS, 1);
+        }
+
+        /** Server-side mouth anchor (same offsets the client uses), pushed a little forward. */
+        Vec3 mouthOrigin() {
+            return com.pkmoba.combat.MouthAnchor.position(entity, 0.55);
         }
 
         void finishCast() {

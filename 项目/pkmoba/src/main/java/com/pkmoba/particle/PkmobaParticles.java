@@ -2,8 +2,8 @@ package com.pkmoba.particle;
 
 import net.minecraft.core.Registry;
 import net.minecraft.core.particles.SimpleParticleType;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.core.registries.BuiltInRegistries;
 
 /**
  * 自定义粒子类型（四档，按用途区分尺寸和寿命）。

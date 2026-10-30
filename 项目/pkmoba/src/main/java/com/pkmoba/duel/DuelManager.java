@@ -13,13 +13,12 @@ import com.pkmoba.pokemon.SpeciesRegistry;
 import com.pkmoba.pokemon.TeamService;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.phys.Vec3;
-
+import net.minecraft.server.MinecraftServer;
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -482,7 +481,7 @@ public final class DuelManager {
             }
             PokemonEntity current = CharizardManager.getControlled(player);
             if (current != null && current.level() != player.level()) return;
-            if (current != null && id.equals(current.getPokemon().getSpecies().getResourceIdentifier())) {
+            if (current != null && TeamService.sameSpecies(current, species)) {
                 recallPartyPokemon(player, species);
                 if (CharizardManager.getControlled(player) != current)
                     PARTY_CONFIRM_UNTIL.put(player.getUUID(), now + 40);
@@ -581,7 +580,7 @@ public final class DuelManager {
         if (!partyActionAllowed(player)) return;
         PokemonEntity current = CharizardManager.getControlled(player);
         if (current != null) {
-            recallPartyPokemon(player, current.getPokemon().getSpecies().getResourceIdentifier().toString());
+            recallPartyPokemon(player, com.pkmoba.pokemon.TeamService.speciesOf(current));
             return;
         }
         if (com.pkmoba.pokemon.BallThrow.hasPending(player.getUUID())) {
@@ -648,8 +647,12 @@ public final class DuelManager {
             player.displayClientMessage(Component.literal("己方尚未设置完整四点换宠区，请先用换宠区工具设置；场地和房间仍可正常使用。"), true);
             return false;
         }
-        Vec3 location = current != null && current.isAlive() ? current.position() : player.position();
-        boolean allowed = arena != null && arena.insideSwitchZone(location, red)
+        // 0.101 (m15488): the player standing in their own zone is enough. Requiring the Pokemon to
+        // be inside as well made switching fail whenever the controlled Pokemon had walked out.
+        Vec3 playerAt = player.position();
+        Vec3 petAt = current != null && current.isAlive() ? current.position() : playerAt;
+        boolean allowed = arena != null
+                && (arena.insideSwitchZone(playerAt, red) || arena.insideSwitchZone(petAt, red))
                 && (landing == null || arena.insideSwitchZone(landing, red));
         if (!allowed) player.displayClientMessage(Component.literal("对战中请进入己方四点换宠区，并在区内召唤或更换宝可梦。"), true);
         return allowed;
@@ -664,8 +667,9 @@ public final class DuelManager {
         if (!partyActionAllowed(player)) return;
         PokemonEntity current = CharizardManager.getControlled(player);
         ResourceLocation requested = SpeciesRegistry.parse(rawSpecies);
-        if (current == null || requested == null
-                || !requested.equals(current.getPokemon().getSpecies().getResourceIdentifier())) {
+        // 0.92: compare through the registry so regional forms (cobblemon:ninetales + alolan) match
+        // their local id; the old identity check made the recall silently do nothing.
+        if (current == null || requested == null || !TeamService.sameSpecies(current, requested.toString())) {
             TeamService.sendTeamState(player);
             return;
         }

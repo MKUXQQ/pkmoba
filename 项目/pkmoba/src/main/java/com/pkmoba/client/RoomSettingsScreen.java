@@ -1,9 +1,9 @@
 package com.pkmoba.client;
 
 import com.pkmoba.network.RoomListPayload;
+import net.minecraft.network.chat.Component;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
 
 /** 0.49：分类设置只提交服务端意图，成员可以查看但不能编辑。 */

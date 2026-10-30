@@ -1,10 +1,10 @@
 package com.pkmoba.network;
 
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.phys.Vec3;
 
 /**
  * C2S：右键点地后，把**鼠标实际命中的精确坐标**发给服务端。

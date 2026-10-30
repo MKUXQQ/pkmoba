@@ -1,15 +1,14 @@
 package com.pkmoba.duel;
 
 import com.pkmoba.PkmobaMod;
-import net.minecraft.core.HolderLookup;
+import net.minecraft.world.level.saveddata.SavedData;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.world.level.saveddata.SavedData;
-import net.minecraft.world.phys.Vec3;
-
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -59,7 +58,7 @@ public final class ArenaStore extends SavedData {
             if (!finite(point) || points.size() != 4 || points.stream().anyMatch(v -> !finite(v))) return false;
             Arena shape = new Arena("zone");
             shape.boundary.addAll(points);
-            return shape.hasBoundary() && Math.abs(point.y - points.stream().mapToDouble(v -> v.y).average().orElse(point.y)) <= 4
+            return shape.hasBoundary() && Math.abs(point.y - points.stream().mapToDouble(v -> v.y).average().orElse(point.y)) <= 8
                     && shape.insideBoundary(point);
         }
 

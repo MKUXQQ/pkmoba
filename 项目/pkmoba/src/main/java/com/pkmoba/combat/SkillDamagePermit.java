@@ -1,11 +1,9 @@
 package com.pkmoba.combat;
 
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
-import net.minecraft.world.entity.Entity;
-
-import net.minecraft.world.entity.LivingEntity;
-
 import java.util.UUID;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 
 /** Scoped authorization for deliberate PKMOBA skill damage through LivingEntity.hurt. */
 public final class SkillDamagePermit {

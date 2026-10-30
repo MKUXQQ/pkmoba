@@ -38,8 +38,10 @@ public final class RoomRules {
         if (requested == null || requested.size() > capacity) throw new IllegalArgumentException("roster exceeds capacity");
         Set<String> unique = new LinkedHashSet<>();
         for (String id : requested) {
-            if (id == null || !owned.contains(id) || (!allowedSpecies.isEmpty() && !allowedSpecies.contains(id)))
-                throw new IllegalArgumentException("roster contains unavailable species");
+            if (id == null || !owned.contains(id)) throw new IllegalArgumentException("roster contains unowned species");
+            // 0.86: a saved roster may still name a species that has since been removed from the game;
+            // drop it instead of blocking the whole room on a stale entry.
+            if (!allowedSpecies.isEmpty() && !allowedSpecies.contains(id)) continue;
             if (!unique.add(id)) throw new IllegalArgumentException("roster contains duplicates");
         }
         return List.copyOf(unique);

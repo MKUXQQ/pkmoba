@@ -53,3 +53,14 @@ __pycache__/
 node_modules/
 项目/pkmoba/blockbench/preview_*.png
 _preview_out/
+# ---------- 会话临时文件（预览拼图、备份包、JVM 崩溃日志）----------
+项目/*_preview*.png
+项目/*_v[0-9]*_icons.png
+项目/*_v[0-9]*_sheets.png
+项目/motifs_*.png
+项目/pkmoba/_tmp_*
+项目/pkmoba/_restore_*.java
+项目/pkmoba/hs_err_pid*.log
+项目/pkmoba/replay_pid*.log
+项目/pkmoba/build-*.log
+项目/pkmoba/_preview*.png

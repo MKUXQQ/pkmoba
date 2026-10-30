@@ -1,10 +1,10 @@
 package com.pkmoba.client.particle;
 
-import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.client.particle.ParticleRenderType;
 import net.minecraft.client.particle.SpriteSet;
 import net.minecraft.client.particle.TextureSheetParticle;
-import net.minecraft.util.Mth;
+import net.minecraft.client.multiplayer.ClientLevel;
 
 /**
  * 火焰团粒子：Cobblemon 的 10 帧火焰贴图（白色）+ 我们自己做的热力染色。

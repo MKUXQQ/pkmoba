@@ -2,8 +2,8 @@ package com.pkmoba.world;
 
 import com.cobblemon.mod.common.world.gamerules.CobblemonGameRules;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.GameRules;
+import net.minecraft.server.MinecraftServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

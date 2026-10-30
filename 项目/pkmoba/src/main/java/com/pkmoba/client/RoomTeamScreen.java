@@ -2,12 +2,12 @@ package com.pkmoba.client;
 
 import com.pkmoba.network.RoomListPayload;
 import com.pkmoba.pokemon.SpeciesRegistry;
+import java.util.*;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
-import java.util.*;
 
 /** Single acquisition/roster grid. Selection is acknowledged by the server; stars reorder only on reopen. */
 public final class RoomTeamScreen extends Screen {

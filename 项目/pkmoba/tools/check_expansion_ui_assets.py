@@ -33,13 +33,13 @@ REGISTRY = ROOT / "src/main/java/com/pkmoba/pokemon/SpeciesRegistry.java"
 BASE_SPECIES = ["charizard", "blastoise", "venusaur", "pikachu"]
 EXPANSION_SPECIES = [
     ("lucario", "路卡利欧"),
-    ("abomasnow", "暴雪王"),
+    ("alolan_ninetales", "阿罗拉九尾"),
     ("blaziken", "火焰鸡"),
     ("gengar", "耿鬼"),
     ("tyranitar", "班基拉斯"),
-    ("garchomp", "烈咬陆鲨"),
-    ("scizor", "巨钳螳螂"),
     ("gardevoir", "沙奈朵"),
+    ("greninja", "甲贺忍蛙"),
+    ("meowscarada", "魔幻假面喵"),
 ]
 SLOTS = "qwer"
 

@@ -2,8 +2,8 @@ package com.pkmoba.combat;
 
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 import com.cobblemon.mod.common.pokemon.Pokemon;
-import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.nbt.CompoundTag;
 
 /**
  * 把"设计血量"写进 Cobblemon {@link Pokemon} 的持久数据，让血量上限只有一个真值。

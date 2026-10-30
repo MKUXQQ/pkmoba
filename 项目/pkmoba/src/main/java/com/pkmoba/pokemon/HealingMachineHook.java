@@ -2,10 +2,10 @@ package com.pkmoba.pokemon;
 
 import com.pkmoba.PkmobaMod;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
-import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.InteractionResult;
+import net.minecraft.core.registries.BuiltInRegistries;
 
 /**
  * 用 Cobblemon 治疗机复活 pkmoba 的阵亡宝可梦。

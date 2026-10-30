@@ -1,6 +1,5 @@
 package com.pkmoba.client;
 
-import com.mojang.blaze3d.platform.InputConstants;
 import com.pkmoba.PkmobaMod;
 import com.pkmoba.network.GodTogglePayload;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -9,6 +8,7 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import com.mojang.blaze3d.platform.InputConstants;
 import org.lwjgl.glfw.GLFW;
 
 /**

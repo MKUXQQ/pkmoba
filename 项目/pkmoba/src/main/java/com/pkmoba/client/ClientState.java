@@ -1,8 +1,7 @@
 package com.pkmoba.client;
 
-import net.minecraft.world.phys.Vec3;
-
 import javax.annotation.Nullable;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * 客户端共享状态：一部分由服务端下发（技能状态），一部分是本地观测（点击点）。
@@ -387,6 +386,9 @@ public final class ClientState {
             clearCombatState();
         }
         team = teamList == null ? java.util.List.of() : java.util.List.copyOf(teamList);
+        // 0.136.2: proves what the C menu will actually draw, independent of the server-side roster.
+        com.pkmoba.PkmobaMod.LOGGER.info("[pkmoba] client team: {} entries, last={}",
+                team.size(), team.isEmpty() ? "-" : team.get(team.size() - 1));
         teamFainted = fainted == null ? java.util.List.of() : java.util.List.copyOf(fainted);
         teamActive = active == null ? "" : active;
         teamSummoned = summoned;
