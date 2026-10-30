@@ -34,6 +34,7 @@ import java.util.UUID;
  * 20 秒（400 tick）内不换自动判负；队伍打光立即判负。场地只提供 4 个点位，不设半径限制。
  */
 public final class DuelManager {
+    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger("pkmoba/switch");
     private static final Map<UUID, Invite> INVITES = new HashMap<>();
     private static final Map<UUID, Match> MATCHES = new HashMap<>();
     /** 界面挑战（道具发起）的有效期：10 秒，服务端 tick 计时。 */
@@ -597,7 +598,14 @@ public final class DuelManager {
         Vec3 serverAim = serverAimHit.getType() == net.minecraft.world.phys.HitResult.Type.MISS
                 ? serverAimEnd : serverAimHit.getLocation();
         // Reject stale or forged hints, but use the server ray as the authoritative aim regardless.
-        if (landing.distanceToSqr(serverAim) > 1.5 * 1.5 || !canUseSwitchZone(player, serverAim)) return;
+        if (serverAim.distanceToSqr(landing) > 1.5 * 1.5) return;
+        // 0.139.3 (m03813): an aim point outside the own-side zone used to block the summon outright,
+        // which made "standing in my zone but aiming slightly beyond it" impossible to play. The zone
+        // rule now rules on where the player stands; a far-off landing is pulled back next to the
+        // player instead of being rejected.
+        Vec3 aim = clampSummonAim(player, serverAim);
+        if (!canUseSwitchZone(player, null)) return;
+        serverAim = aim;
         RoomManager.Room room = RoomManager.roomOf(player.getUUID());
         ArenaStore.Arena arena = room == null ? null : ArenaStore.get(player.server).byName(room.arenaName);
         Match local = matchOf(player);
@@ -632,7 +640,13 @@ public final class DuelManager {
         });
     }
 
-    /** All battle party entry points use the same own-side polygon. Free play is unrestricted. */
+    /**
+     * All battle party entry points use the same own-side polygon. Free play is unrestricted.
+     *
+     * <p>0.139.3: the zone rules on where the <em>player</em> stands; a landing point outside the
+     * zone is no longer a refusal (see {@link #clampSummonAim}). The {@code landing} argument is
+     * kept only for the diagnostic line.
+     */
     public static boolean canUseSwitchZone(ServerPlayer player, @Nullable Vec3 landing) {
         if (!inMatch(player)) return true;
         PokemonEntity current = CharizardManager.getControlled(player);
@@ -652,10 +666,51 @@ public final class DuelManager {
         Vec3 playerAt = player.position();
         Vec3 petAt = current != null && current.isAlive() ? current.position() : playerAt;
         boolean allowed = arena != null
-                && (arena.insideSwitchZone(playerAt, red) || arena.insideSwitchZone(petAt, red))
-                && (landing == null || arena.insideSwitchZone(landing, red));
-        if (!allowed) player.displayClientMessage(Component.literal("对战中请进入己方四点换宠区，并在区内召唤或更换宝可梦。"), true);
+                && (arena.insideSwitchZone(playerAt, red) || arena.insideSwitchZone(petAt, red));
+        if (!allowed) {
+            // m03750: the player reported "standing in the switch zone but still cannot summon".
+            // Log the exact inputs of the decision so one reproduction pins it down.
+            java.util.List<String> zone = arena == null ? java.util.List.of()
+                    : arena.switchPolygon(red).stream().map(DuelManager::describe).toList();
+            LOGGER.info("switch-zone deny -> arena={} red={} side={} player={} pet={} landing={} "
+                            + "playerIn={} petIn={} landingIn={} zone={}",
+                    arena == null ? "null" : arena.name, red, RoomManager.sideOf(player.getUUID()),
+                    describe(playerAt), describe(petAt),
+                    landing == null ? "null" : describe(landing),
+                    arena != null && arena.insideSwitchZone(playerAt, red),
+                    arena != null && arena.insideSwitchZone(petAt, red),
+                    arena != null && landing != null && arena.insideSwitchZone(landing, red),
+                    zone);
+            player.displayClientMessage(Component.literal("对战中请进入己方四点换宠区，并在区内召唤或更换宝可梦。"), true);
+        }
         return allowed;
+    }
+
+    /**
+     * X 召唤的落点纠偏：玩家站在己方换宠区里时，准星打到区外（m03813 的实测是
+     * landing=(x,-57.88,6.50)，区只到 z=3.50）就把落点拉回脚下，而不是直接拒绝召唤。
+     */
+    private static Vec3 clampSummonAim(ServerPlayer player, Vec3 aim) {
+        if (!inMatch(player)) return aim;
+        PokemonEntity current = CharizardManager.getControlled(player);
+        ArenaStore.Arena arena = current == null ? null : arenaForEntity(current);
+        RoomManager.Room room = RoomManager.roomOf(player.getUUID());
+        if (arena == null && room != null) arena = ArenaStore.get(player.server).byName(room.arenaName);
+        Match match = matchOf(player);
+        if (arena == null && match != null) arena = match.arena;
+        if (arena == null) return aim;
+        boolean red = RoomManager.sideOf(player.getUUID()) != 2;
+        if (room == null && match != null) red = match.a.equals(player.getUUID());
+        Vec3 playerAt = player.position();
+        if (!arena.insideSwitchZone(playerAt, red) || arena.insideSwitchZone(aim, red)) return aim;
+        Vec3 fallback = playerAt.add(player.getLookAngle().multiply(1.0, 0.0, 1.0).normalize().scale(1.2));
+        LOGGER.info("switch-zone aim clamped: aim={} -> {} (player={})", describe(aim), describe(fallback),
+                describe(playerAt));
+        return fallback;
+    }
+
+    private static String describe(Vec3 point) {
+        return point == null ? "null" : String.format(java.util.Locale.ROOT, "(%.2f,%.2f,%.2f)", point.x, point.y, point.z);
     }
 
     public static boolean canRecallForSwitch(ServerPlayer player, PokemonEntity current) {

@@ -1626,13 +1626,24 @@ public final class ExpansionCombat {
     public static void clearReserves(UUID owner) {if(owner!=null)RESERVES.keySet().removeIf(key->key.owner().equals(owner));}
     public static void resetAll() {STATES.clear();RESERVES.clear();MARKS.clear();Malice.clear();Illusions.clearAll();ExpansionControl.resetAll();ExpansionWalls.resetAll();}
     public static void syncHud(ServerPlayer player,PokemonEntity e) {
-        if(player==null || !ServerPlayNetworking.canSend(player,SkillStatePayload.TYPE)) return;
+        // 0.139.4 (m03841)：人机释放技能时 player 是 match.actor（玩家本人），但那份连接可能已被
+        // 换掉/还没建好，Fabric 的 canSend 会在内部 NPE（Cannot read field "field_14140" because
+        // "handler" is null）把整个服务端线程打崩。这里自己判连接，异常一律当作“发不了”。
+        if(player==null || player.connection == null || e == null || !sendsSkillState(player)) return;
         State s=state(e); Vec3 c=CharizardCombat.arenaCenter();
         var m=s.skill<0?null:species(e).move(s.skill);
         float progress=m==null?0:Math.min(1,s.age/(float)Math.max(1,m.windup()));
         ServerPlayNetworking.send(player,new SkillStatePayload(e.getHealth(),e.getMaxHealth(),s.points,
             s.cd[0],s.cd[1],s.cd[2],s.cd[3],channel(e),progress,CharizardCombat.distanceToBorder(e),
             (float)c.x,(float)c.y,(float)c.z,(float)CharizardCombat.arenaRadius()));
+    }
+    /** 0.139.4：canSend 包一层，第三方 mod（Flashback 等）注入过的变体可能抛异常。 */
+    private static boolean sendsSkillState(ServerPlayer player) {
+        try {
+            return ServerPlayNetworking.canSend(player, SkillStatePayload.TYPE);
+        } catch (RuntimeException error) {
+            return false;
+        }
     }
     /** 0.87: tells the owning client that its fighter has a timed self buff, so the HUD can show it. */
     static void buffCue(PokemonEntity e, String label, int ticks) {
